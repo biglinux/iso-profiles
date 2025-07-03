@@ -61,8 +61,6 @@ hdparm
     biglinux-improve-compatibility
     big-mount
     biglinux-systemd-swap
-    #disable-fsync  # REMOVER?
-    # # # dbus-broker-enable
     biglinux-neofetch
     power-profiles-daemon-biglinux
     auto-rules-io
@@ -187,6 +185,7 @@ gst-plugins-bad
 gst-plugins-base
 gst-plugins-good
 gst-plugins-ugly
+jamesdsp
 libdvdcss
 gst-plugin-pipewire
 pipewire
