@@ -64,7 +64,6 @@ kinfocenter
 kmenuedit
 kscreenlocker
 ksshaskpass
-plasma-systemmonitor
 kwallet-pam
 kwayland-integration
 qt6-virtualkeyboard  # Virtual keyboard support for kwin-wayland
@@ -123,6 +122,7 @@ poppler-data  # encoding data to display PDF documents containing CJK characters
 #manjaro-application-utility
 # # # manjaro-settings-manager-kcm
 manjaro-settings-manager-knotifier
+resources
 
 ## Flatpak support
 libpamac-flatpak-plugin
