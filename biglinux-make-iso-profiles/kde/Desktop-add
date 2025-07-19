@@ -44,6 +44,8 @@ plasma-firewall
 
 ## Libraries for Sound/Audio/Video
 # # # phonon-qt5-vlc
+libvlc
+celluloid
 
 ## Connect Packages
 kamera
@@ -102,7 +104,7 @@ kwalletmanager
 gwenview
 gparted
 spectacle
-vlc
+#vlc
 
 ## Optional dependencies for dolphin
 kdegraphics-thumbnailers  # PDF and PS thumbnails
