@@ -104,7 +104,7 @@ gwenview
 gparted
 spectacle
 vlc
-vlc-plugins-extra
+vlc-plugins-all
 
 ## Optional dependencies for dolphin
 kdegraphics-thumbnailers  # PDF and PS thumbnails
