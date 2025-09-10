@@ -42,6 +42,9 @@ big-executable
 
 ## Network
 plasma-firewall
+networkmanager-l2tp # VPN support for NetworkManager
+networkmanager-openconnect # VPN support for NetworkManager
+networkmanager-strongswan # VPN support for NetworkManager
 
 ## Libraries for Sound/Audio/Video
 # # # phonon-qt5-vlc
@@ -105,6 +108,19 @@ gparted
 spectacle
 vlc
 vlc-plugins-extra
+vlc-plugin-x265
+vlc-plugin-x264
+vlc-plugin-smb
+vlc-plugin-kwallet
+vlc-plugin-gstreamer
+
+geoclue # Night Light automatic location mode
+gocryptfs # plasma-vault, for new vaults
+hspell # sonnet
+icoutils # kio-extras, for .exe thumbnails
+jxrlib # kimageformats
+libappimage # kio-extras, for AppImage app thumbnails
+openexr # kimageformats
 
 ## Optional dependencies for dolphin
 kdegraphics-thumbnailers  # PDF and PS thumbnails
