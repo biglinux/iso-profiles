@@ -3,6 +3,7 @@
 >multilib gcc-libs-multilib
 KERNEL-headers
 bash
+edk2-shell
 file
 filesystem
 findutils
@@ -13,6 +14,7 @@ grep
 gzip
 iproute2
 iputils
+linux-atm
 pacman
 pacman-contrib
 pciutils
@@ -24,6 +26,7 @@ tar
 util-linux
 xz
 make
+nvme-cli
 pacutils
 aspell-pt
 pulseaudio-alsa  # REMOVER ?
@@ -91,6 +94,9 @@ lib32-vulkan-radeon
 lib32-vulkan-swrast
 lib32-vulkan-mesa-layers
 lib32-vulkan-nouveau
+libva-nvidia-driver
+vpl-gpu-rt # Hardware accelerated video on newer Intel GPUs
+
 mesa-vdpau
 vulkan-mesa-layers
 vulkan-intel
@@ -190,6 +196,8 @@ libdvdcss
 gst-plugin-pipewire
 pipewire
 pipewire-alsa
+pipewire-ffado # FireWire/IEEE 1394 audio
+pipewire-libcamera
 pipewire-pulse
 pipewire-jack
 pipewire-v4l2
@@ -279,6 +287,7 @@ lib32-vkd3d
 # printers and Scanner
 bluez-cups
 cups
+cups-browsed # Pre-2012 network printer auto-discovery
 manjaro-printer
 lib32-libcups
 ipp-usb
@@ -363,6 +372,12 @@ usb-dirty-pages-udev
 game-devices-udev
 mtools
 fatresize
+
+#Hardware
+acsccid # ACS CCID smart card readers
+bmusb # Specialty video capture/playback boxes from BlackMagicDesign
+ccid # Generic USB CCID/ICCD card readers
+
 
 #AUR
 make
