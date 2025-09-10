@@ -107,6 +107,7 @@ hdparm
     extra-biglinux-wallpapers
     biglinux-base-icons
     biglinux-apps-rename
+    biglinux-hibernate-in-swapfile-btrfs
 
     biglinux-metapackage
 
