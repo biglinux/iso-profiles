@@ -3,11 +3,11 @@ libva-mesa
 KERNEL-zfs
 zfs-utils
 zfs-dkms
-KERNEL-nvidia-390xx
-nvidia-390xx-utils
-nvidia-390xx-settings
-ibxnvctrl-390xx
-lib32-nvidia-390xx-utils
+>nonfree_x86_64 KERNEL-nvidia-390xx
+>nonfree_x86_64 nvidia-390xx-utils
+>nonfree_x86_64 nvidia-390xx-settings
+>nonfree_x86_64 libxnvctrl-390xx
+>nonfree_multilib lib32-nvidia-390xx-utils
 
 
 
