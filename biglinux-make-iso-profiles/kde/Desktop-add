@@ -104,6 +104,13 @@ gparted
 spectacle
 vlc
 vlc-plugins-all
+geoclue # Night Light automatic location mode
+gocryptfs # plasma-vault, for new vaults
+hspell # sonnet
+icoutils # kio-extras, for .exe thumbnails
+jxrlib # kimageformats
+libappimage # kio-extras, for AppImage app thumbnails
+openexr # kimageformats
 
 ## Optional dependencies for dolphin
 kdegraphics-thumbnailers  # PDF and PS thumbnails
