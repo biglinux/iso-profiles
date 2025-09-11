@@ -133,6 +133,7 @@ hdparm
     uresourced
     bigsudo
     fprintd
+    biglinux-hibernate-in-swapfile-btrfs
 
 ## Games
 # BigLinux
@@ -201,6 +202,9 @@ networkmanager
 networkmanager-openvpn
 networkmanager-pptp
 networkmanager-vpnc
+networkmanager-l2tp # VPN support for NetworkManager
+networkmanager-openconnect # VPN support for NetworkManager
+networkmanager-strongswan # VPN support for NetworkManager
 nss-mdns # NSS support for mDNS (optdepend for avahi)
 ntp
 mobile-broadband-provider-info
