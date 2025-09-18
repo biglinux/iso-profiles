@@ -1,7 +1,8 @@
 #xivastudio
 plymouth-theme-xivastudio
 qpwgraph
-pipewire-config
+#pipewire-config
+pipewire-proaudio-config
 xivastudio-desktop
 xivastudio-name
 xivastudio-welcome
