@@ -358,6 +358,7 @@ sane-airscan
 ## Optional dependencies for hplip
 # BigLinux
   system-config-printer-jobs
+  python-pyqt5
 ## Optional dependencies for print-manager
 python-pysmbc          # SMB browser support
 system-config-printer
