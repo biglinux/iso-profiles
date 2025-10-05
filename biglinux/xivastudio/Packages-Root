@@ -31,6 +31,8 @@ wireless-regdb
 linux-firmware
 logrotate
 lvm2
+man-db
+man-pages
 manjaro-release
 manjaro-system
 mdadm
