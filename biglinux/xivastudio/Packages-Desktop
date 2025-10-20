@@ -30,7 +30,8 @@ biglinux-config
 feh
 kde-service-menu-reimage
 kde-servicemenus-officeconverter
-mystiq
+big-audio-converter
+big-video-converter
 rustdesk-bin
 kde-color-folder
 kdegraphics-mobipocket
@@ -109,6 +110,7 @@ kfind
 kdeconnect
 okular
 kdenetwork-filesharing
+ashyterm
 konsole
 kwalletmanager
 gwenview
