@@ -245,7 +245,7 @@ lib32-pipewire
 lib32-pipewire-jack
 lib32-lcms2
 lib32-libtiff
-lib32-libjpeg-turbo
+#lib32-libjpeg-turbo
 lib32-libxrandr
 lib32-fontconfig
 lib32-libxi
@@ -265,7 +265,7 @@ lib32-flac
 lib32-gmp
 lib32-gnutls
 lib32-libasyncns
-lib32-libjpeg6-turbo
+#lib32-libjpeg6-turbo
 lib32-libltdl
 lib32-libogg
 #lib32-libpng12
