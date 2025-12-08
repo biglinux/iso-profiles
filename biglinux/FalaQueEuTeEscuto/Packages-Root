@@ -331,7 +331,7 @@ lib32-libasyncns
 lib32-libjpeg6-turbo
 lib32-libltdl
 lib32-libogg
-lib32-libpng12
+#lib32-libpng12
 lib32-libpulse
 lib32-libsndfile
 lib32-libvorbis
