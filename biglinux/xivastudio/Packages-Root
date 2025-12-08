@@ -150,7 +150,7 @@ espeakup
   mhwd-biglinux
   biglinux-vaapi
 libxvmc
-lib32-mesa-vdpau
+#lib32-mesa-vdpau
 lib32-vulkan-intel
 lib32-vulkan-radeon
 lib32-vulkan-swrast
@@ -159,7 +159,7 @@ lib32-vulkan-nouveau
 libva-nvidia-driver
 vpl-gpu-rt # Hardware accelerated video on newer Intel GPUs
 
-mesa-vdpau
+#mesa-vdpau
 vulkan-mesa-layers
 vulkan-intel
 vulkan-nouveau
