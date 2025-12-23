@@ -105,8 +105,8 @@ kwalletmanager
 gwenview
 gparted
 spectacle
-vlc
-vlc-plugins-all
+smplayer
+mpv
 geoclue # Night Light automatic location mode
 gocryptfs # plasma-vault, for new vaults
 hspell # sonnet
