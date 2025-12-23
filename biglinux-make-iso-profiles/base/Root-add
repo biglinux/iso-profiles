@@ -65,8 +65,7 @@ hdparm
     big-mount
     biglinux-systemd-swap
     biglinux-neofetch
-    tuned
-    tuned-ppd # Replace power profiles daemon
+    power-profiles-daemon-biglinux
     auto-rules-io
     auto-unlock-pacman-git
     hunspell-pt-br
