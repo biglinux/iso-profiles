@@ -136,6 +136,7 @@ hdparm
     bigsudo
     fprintd
     biglinux-hibernate-in-swapfile-btrfs
+    libfido2 # Add support for Universal 2nd Factor (U2F) using USB device
 
 ## Games
 # BigLinux
