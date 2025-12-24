@@ -71,6 +71,7 @@ ksshaskpass
 kwallet-pam
 kwayland-integration
 qt6-virtualkeyboard  # Virtual keyboard support for kwin-wayland
+fcitx5 # To fix problem in browsers in US Intl like 'c to ç
 # # # kwrited
 plasma-desktop
 plasma-nm
