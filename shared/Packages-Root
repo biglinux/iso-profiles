@@ -216,7 +216,8 @@ openssh
 usb_modeswitch
 manjaro-settings-samba
 libdnet
-firewalld
+ufw
+gufw # Replace firewalld with more simple firewall
 
 ## Connect
 android-tools
