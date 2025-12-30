@@ -44,7 +44,7 @@ gimp #Add 30 MB to the ISO file to include GIMP.
 gufw
 
 ## Libraries for Sound/Audio/Video
-# # # phonon-qt5-vlc
+# # #phonon-qt5-vlc
 
 ## Connect Packages
 kamera
