@@ -40,9 +40,6 @@ plasma-appsmenu-biglinux
 big-executable
 gimp #Add 30 MB to the ISO file to include GIMP.
 
-## Network
-plasma-firewall
-
 ## Libraries for Sound/Audio/Video
 # # # phonon-qt5-vlc
 
