@@ -216,7 +216,7 @@ openssh
 usb_modeswitch
 manjaro-settings-samba
 libdnet
-firewalld
+ufw
 
 ## Connect
 android-tools
