@@ -96,7 +96,7 @@ bash-completion
 hunspell-en_us
 # # # qt5-translations
 ocl-icd
-lib32-ocl-icd
+#lib32-ocl-icd
 irqbalance
 x86_energy_perf_policy
 update-grub
@@ -153,11 +153,11 @@ espeakup
   biglinux-vaapi
 libxvmc
 #lib32-mesa-vdpau
-lib32-vulkan-intel
-lib32-vulkan-radeon
-lib32-vulkan-swrast
-lib32-vulkan-mesa-layers
-lib32-vulkan-nouveau
+#lib32-vulkan-intel
+#lib32-vulkan-radeon
+#lib32-vulkan-swrast
+#lib32-vulkan-mesa-layers
+#lib32-vulkan-nouveau
 libva-nvidia-driver
 vpl-gpu-rt # Hardware accelerated video on newer Intel GPUs
 
@@ -356,7 +356,7 @@ bluez-cups
 cups
 cups-browsed # Pre-2012 network printer auto-discovery
 manjaro-printer
-lib32-libcups
+#lib32-libcups
 ipp-usb
 splix
 sane-airscan
