@@ -185,7 +185,7 @@ kldap
 ## Sound/Audio/Video
 # BigLinux
   biglinux-meta-audio-config
-  pipewire-jack-dropin  # REMOVER ?
+  # pipewire-jack-dropin  # REMOVER ?
   biglinux-noise-reduction-pipewire
 alsa-firmware
 sof-firmware
