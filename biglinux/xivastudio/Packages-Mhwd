@@ -56,8 +56,4 @@ xf86-video-vesa
 xf86-video-voodoo
 #optimus-manager
 switcheroo-control
-nvidia-580xx-utils
-nvidia-580xx-settings
-KERNEL-nvidia-580xx
-KERNEL-nvidia-580xx-open
-lib32-nvidia-580xx-utils
+
