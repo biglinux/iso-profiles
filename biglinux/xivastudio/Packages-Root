@@ -228,7 +228,7 @@ gvfs-smb
 gvfs-wsdd
 gvfs-onedrive
 gvfs-dnssd
-gvfs-google
+#gvfs-google
 mtpfs
 udiskie
 udisks2
@@ -355,7 +355,7 @@ cups-browsed # Pre-2012 network printer auto-discovery
 manjaro-printer
 #lib32-libcups
 ipp-usb
-splix
+#splix
 sane-airscan
 ## Optional dependencies for hplip
 # BigLinux
