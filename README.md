@@ -39,8 +39,12 @@ Package lists start as Manjaro's: the CI takes upstream's list, drops every
 `biglinux/<edition>/`. That way a Manjaro rename or split is absorbed weekly
 without anyone editing a 460-line file.
 
-`Packages-Desktop` is the one exception — it has no Manjaro base, so
-`Desktop-add` *is* the whole desktop list.
+`Packages-Desktop` works differently: it has no Manjaro base of its own, so
+`Desktop-add` is written over it rather than appended. It is not the whole list,
+though — `editions/kde/special-commands.sh` then grafts four sections copied
+verbatim from Manjaro's own KDE profile (`## Printing`, `## Xorg Server and
+Graphics`, `## Xorg Input Drivers`, `## Misc`), which is where `xorg-server` and
+the printing stack come from. Look there before concluding a package is missing.
 
 ## What to edit
 
