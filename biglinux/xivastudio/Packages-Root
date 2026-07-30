@@ -412,7 +412,6 @@ smartmontools
 #udev
 usbasp-udev
 trezor-udev
-usbasp-udev
 numworks-udev
 apple-superdrive-udev
 nx-udev
@@ -446,7 +445,6 @@ ccid # Generic USB CCID/ICCD card readers
 
 
 #AUR
-make
 automake
 autoconf
 libtool
