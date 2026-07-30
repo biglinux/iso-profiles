@@ -1,4 +1,9 @@
 #!/bin/bash
+#
+# Runs from the repository root. The workflow invokes this with bash, so it
+# does not inherit the step's -e: without this line a failed sed is invisible
+# and a half-built profile gets committed.
+set -euo pipefail
     
 # Add some things from Packages-Desktop
 sed -n '/## Printing/,/^$/p'  manjaro-iso-profiles/manjaro/kde/Packages-Desktop  >>  biglinux/kde/Packages-Desktop
