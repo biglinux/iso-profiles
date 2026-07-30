@@ -8,28 +8,39 @@ on:
         description: 'With TMATE'
         required: false
         default: false
-        
+
   schedule:
     - cron:  '0 0 * * 5'
-  
+
   push:
     branches: [ "*" ]
 
 env:
+  # Upstream package lists this repository rebases on.
   manjaroProfiles: manjaro-iso-profiles
-  makeisoprofilesdir: biglinux-make-iso-profiles
+  # Hand-maintained inputs: the only directory a person should edit.
+  sourcesDir: sources
+  # Committed output the ISO builders read. manjaro-tools resolves a profile
+  # with `find <repo> -maxdepth 2 -name <edition>`, so editions must stay
+  # exactly one level below this directory.
+  generatedDir: biglinux
+  # Intermediate shared base. Never committed: .gitignore holds it.
+  commonBase: common-base
+  # Editions to build, in order. xivastudio must come after kde: its
+  # special-commands.sh appends the generated kde Packages-Desktop to its own.
+  editions: kde xivastudio
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       # Tmate ##
       - name: Setup TMATE Session
         uses: mxschmitt/action-tmate@v3
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-      
+
       - name: Clone ManjaroIsoProfile
         shell: bash
         run: |
@@ -41,130 +52,88 @@ jobs:
               git pull
               popd
           fi
-          
-      - name: Make Base
+
+      - name: Build common base
         shell: bash
         run: |
-          # Copy files
-          cp $makeisoprofilesdir/base/profile.conf shared/
-          cp $makeisoprofilesdir/base/pacman-default.conf  shared/
-          cp $makeisoprofilesdir/base/user-repos.conf  shared/
-          #Copy dirs
-          cp -r $makeisoprofilesdir/base/desktop-overlay/  shared/
-          cp -r $makeisoprofilesdir/base/root-overlay/  shared/
-          cp -r $makeisoprofilesdir/base/live-overlay/  shared/
-          
-          # Remove Mhwd
-          if [ -e "$makeisoprofilesdir/base/Mhwd-remove" ]; then
-              grep -v -f $makeisoprofilesdir/base/Mhwd-remove  $manjaroProfiles/shared/Packages-Mhwd  >  shared/Packages-Mhwd
-          else
-              echo "ERROR Remove Mhwd"
-              exit 1
-          fi
-          
-          # Remove Root
-          if [ -e "$makeisoprofilesdir/base/Root-remove" ]; then
-              grep -v -f $makeisoprofilesdir/base/Root-remove  $manjaroProfiles/shared/Packages-Root  >  shared/Packages-Root
-          else
-              echo "ERROR Remove Root"
-              exit 1
-          fi
-          
-          # Remove Live
-          if [ -e "$makeisoprofilesdir/base/Live-remove" ]; then
-              grep -v -f $makeisoprofilesdir/base/Live-remove  $manjaroProfiles/shared/Packages-Live  >  shared/Packages-Live
-          else
-              echo "ERROR Remove Live"
-              exit 1
-          fi
-          
-          # Add Mhwd
-          if [ -e "$makeisoprofilesdir/base/Mhwd-add" ]; then
-              cat $makeisoprofilesdir/base/Mhwd-add  >>  shared/Packages-Mhwd
-          else
-              echo "ERROR Add Mhwd"
-              exit 1
-          fi
-          
-          # Add Root
-          if [ -e "$makeisoprofilesdir/base/Root-add" ]; then
-              cat $makeisoprofilesdir/base/Root-add  >>  shared/Packages-Root
-          else
-              echo "ERROR Add Root"
-              exit 1
-          fi
-          
-          # Add Live
-          if [ -e "$makeisoprofilesdir/base/Live-add" ]; then
-          #     echo '' >> $manjaroProfiles/community/biglinux/Packages-Live
-              cat $makeisoprofilesdir/base/Live-add  >>  shared/Packages-Live
-          else
-              echo "ERROR Add Live"
-              exit 1
-          fi
-          
-      - name: Make Flavours
+          set -euo pipefail
+          common=$sourcesDir/common
+
+          rm -rf "$commonBase"
+          mkdir -p "$commonBase"
+
+          # Settings are ours outright: copied, not merged.
+          cp "$common/profile.conf" "$common/user-repos.conf" "$commonBase/"
+
+          # Overlays keep the directory names manjaro-tools expects.
+          cp -r "$common/overlays/root/"    "$commonBase/root-overlay"
+          cp -r "$common/overlays/desktop/" "$commonBase/desktop-overlay"
+          cp -r "$common/overlays/live/"    "$commonBase/live-overlay"
+
+          # Package lists are Manjaro's, minus <kind>-remove, plus <kind>-add.
+          #
+          # grep -vF matches a SUBSTRING, on purpose: "libva-mesa" in
+          # Mhwd-remove is the prefix that drops Manjaro's libva-mesa-driver.
+          # -F keeps '+' and '.' literal so a name like memtest86+ cannot behave
+          # as a regex. Write a longer prefix when a short one would take
+          # packages you want to keep.
+          for kind in Mhwd Root Live; do
+              for step in remove add; do
+                  test -e "$common/$kind-$step" || { echo "ERROR: missing $common/$kind-$step"; exit 1; }
+              done
+              grep -vF -f "$common/$kind-remove" "$manjaroProfiles/shared/Packages-$kind" > "$commonBase/Packages-$kind"
+              cat "$common/$kind-add" >> "$commonBase/Packages-$kind"
+          done
+
+      - name: Generate editions
         shell: bash
         run: |
-          ## make FLAVOURS ##
-          # for i in $(ls -d */ | cut -f1 -d'/' | sed '/base/d'); do
-          for i in $(ls $makeisoprofilesdir | sed '/base/d;/big-small/d'); do
+          set -euo pipefail
+
+          for i in $editions; do
               echo ""
               echo "MAKE $i"
               echo ""
-              
-              rsync -Cravzp --delete shared/ biglinux/$i
-              
-              # # Remove Desktop
-              # if [ -e "$makeisoprofilesdir/$i/Desktop-remove" ]; then
-              #     grep -v -f $makeisoprofilesdir/$i/Desktop-remove  $manjaroProfiles/shared/Packages-Desktop  >  biglinux/$i/Packages-Desktop
-              # else
-              #    echo "ERROR Remove Desktop $i"
-              #    exit 1
-              # fi
-              
-              # Add Desktop
-              if [ -e "$makeisoprofilesdir/$i/Desktop-add" ]; then
-                  cat  $makeisoprofilesdir/$i/Desktop-add  >  biglinux/$i/Packages-Desktop
-              else
-                  echo "ERROR Add Desktop $i"
+              src=$sourcesDir/editions/$i
+              out=$generatedDir/$i
+
+              # Every edition starts as an exact copy of the common base.
+              rsync -aCv --delete "$commonBase/" "$out"
+
+              # Packages-Desktop has no Manjaro base: Desktop-add IS the list.
+              if [ ! -e "$src/Desktop-add" ]; then
+                  echo "ERROR: missing $src/Desktop-add"
                   exit 1
               fi
-              
-              # Remove Root
-              if [ -e "$makeisoprofilesdir/$i/Root-remove" ]; then
-                  grep -v -f $makeisoprofilesdir/$i/Root-remove  shared/Packages-Root  >  biglinux/$i/Packages-Root
-              else
-                  echo "no Remove Root in $i"
+              cat "$src/Desktop-add" > "$out/Packages-Desktop"
+
+              # Optional per-edition trims and additions on top of the base.
+              if [ -e "$src/Root-remove" ]; then
+                  grep -vF -f "$src/Root-remove" "$commonBase/Packages-Root" > "$out/Packages-Root"
               fi
-              
-              # Add Live
-              if [ -e "$makeisoprofilesdir/$i/Live-add" ]; then
-                  cat $makeisoprofilesdir/$i/Live-add  >>  biglinux/$i/Packages-Live
-              else
-                  echo "no Add Live"
+              if [ -e "$src/Live-add" ]; then
+                  cat "$src/Live-add" >> "$out/Packages-Live"
               fi
-              
-              #run special commands
-              if [ -e "$makeisoprofilesdir/$i/special-commands.sh" ]; then
-                  bash -x $makeisoprofilesdir/$i/special-commands.sh
+
+              # Anything the add/remove files cannot express. Runs from the
+              # repository root and edits $generatedDir/$i in place.
+              if [ -e "$src/special-commands.sh" ]; then
+                  bash -x "$src/special-commands.sh"
               fi
           done
-          
-          #remove manjaro profiles
-          rm -rf $manjaroProfiles
-          
-          
+
+          # Neither the upstream clone nor the intermediate base is committed.
+          rm -rf "$manjaroProfiles" "$commonBase"
+
       - name: Update github
         run: |
           git add --all
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           if [ -n "$(git commit -m "new profile" -a | grep "nothing to commit")" ];then exit 0; fi
-          
+
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-          

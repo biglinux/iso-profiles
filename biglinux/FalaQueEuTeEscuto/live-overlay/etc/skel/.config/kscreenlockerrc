@@ -1,7 +1,0 @@
-[Daemon]
-Autolock=false
-Timeout=0
-
-[Greeter][Wallpaper][org.kde.image][General]
-FillMode=2
-Image=file:///usr/share/sddm/themes/biglinux/2560x1600.jpg
