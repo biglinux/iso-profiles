@@ -113,7 +113,7 @@ jobs:
 
       - name: Publish release
         if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.prepare.outputs.tag }}
           name: ${{ steps.prepare.outputs.iso }}
@@ -127,7 +127,7 @@ jobs:
 
       - name: Keep the ISO as a workflow artifact when not publishing
         if: ${{ !inputs.publish_release }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepare.outputs.iso }}
           path: output/
