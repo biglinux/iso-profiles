@@ -287,6 +287,11 @@ EOF
     # Point buildiso at the profiles checkout.
     printf 'run_dir=%s\n' "$PROFILES_ROOT" >"$HOME/.config/manjaro-tools/iso-profiles.conf"
 
+    # Git may reject a checkout mounted into this root-owned container when the
+    # host runner owns it. Trust only the profile directory passed to this build;
+    # buildiso uses Git there to validate the profiles.
+    git config --global --add safe.directory "$PROFILES_ROOT"
+
     msg "Cleaning previous build state"
     rm -rf /var/lib/manjaro-tools/buildiso/* /var/cache/manjaro-tools/iso/* 2>/dev/null || true
     mkdir -p /var/cache/manjaro-tools/iso

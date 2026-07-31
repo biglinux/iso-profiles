@@ -55,3 +55,10 @@ def test_the_build_mirror_is_configured_not_patched():
     # /usr/lib/manjaro-tools/util.sh breaks silently when upstream moves.
     assert "build_mirror=$BUILD_MIRROR" in ENGINE
     assert "manjaro-tools.conf" in ENGINE
+
+
+def test_the_build_checkout_is_trusted_for_git_inside_the_container():
+    # GitHub Actions mounts the checkout with the runner's owner, while this
+    # engine runs as root in the build container.  buildiso validates the
+    # checkout through Git, so permit this one path rather than all directories.
+    assert 'git config --global --add safe.directory "$PROFILES_ROOT"' in ENGINE
