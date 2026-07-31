@@ -164,7 +164,7 @@ release build:
 | `WORK_PATH` | `<checkout>/output` | where the ISO ends up |
 | `DISTRONAME` | detected | `biglinux` or `bigcommunity`, from the profile dirs |
 | `PROFILES_ROOT` | the checkout | build profiles living in another checkout |
-| `BUILD_MIRROR` | `mirrors2.manjaro.org` | the one mirror the whole Manjaro package set comes from |
+| `BUILD_MIRROR` | `mirrors.manjaro.org/repo` | the one mirror the whole Manjaro package set comes from |
 | `BIGLINUX_REPO_HOST` | `repo.biglinux.com.br` | host of the BigLinux repositories the **build** installs from |
 | `COMMUNITY_REPO_HOST` | `repo.communitybig.org` | same for the community repositories; bigcommunity only |
 | `MESA_TKG` | `false` | swap mesa for the TKG builds, on `latest` / `xanmod*` only (see `configure_profile`) |

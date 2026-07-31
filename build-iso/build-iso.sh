@@ -97,7 +97,7 @@ read_inputs() {
     # mkchroot replaces the mirrorlist Include with this one Server, so it decides the
     # whole Manjaro package set. Unset, manjaro-tools picks mirror.easyname.at, which
     # lags behind stable.
-    BUILD_MIRROR="${BUILD_MIRROR:-https://mirrors2.manjaro.org}"
+    BUILD_MIRROR="${BUILD_MIRROR:-https://mirrors.manjaro.org/repo}"
 
     # Overridable so a fork builds from its own repositories.
     BIGLINUX_REPO_HOST="${BIGLINUX_REPO_HOST:-repo.biglinux.com.br}"
