@@ -16,9 +16,10 @@ on:
     inputs:
       edition:
         description: "Edition (profile) to build"
-        type: string
+        type: choice
         required: true
         default: kde
+        options: [kde, xivastudio]
       kernel:
         description: "Kernel"
         type: choice
