@@ -122,12 +122,25 @@ read_inputs() {
     # iso_label must all carry this same value or the live medium will not mount.
     VOL_ID="${DISTRONAME^^}_LIVE_${EDITION^^}"
 
-    # The branch that names the ISO tier and picks the compression level is the
-    # distribution's own branch.
+    # The branch as asked for. collect_output is its only reader: it is what
+    # separates a DEVELOPMENT ISO from a TESTING one in the published name.
     case "$DISTRONAME" in
-        biglinux) DISTRO_BRANCH="$BIGLINUX_BRANCH" ;;
-        bigcommunity) DISTRO_BRANCH="$BIGCOMMUNITY_BRANCH" ;;
+        biglinux) REQUESTED_BRANCH="$BIGLINUX_BRANCH" ;;
+        bigcommunity) REQUESTED_BRANCH="$BIGCOMMUNITY_BRANCH" ;;
         *) die "unknown DISTRONAME: $DISTRONAME (biglinux or bigcommunity)" ;;
+    esac
+
+    # `development` is a name, not a repository set: BigLinux publishes no
+    # development repository, so such a build installs from testing. Normalising
+    # here means the repositories, the helper scripts, the compression level and
+    # /etc/big-release all keep seeing the two branches they already handle.
+    DISTRO_BRANCH="$REQUESTED_BRANCH"
+    if [[ "$DISTRO_BRANCH" == "development" ]]; then
+        DISTRO_BRANCH="testing"
+    fi
+    case "$DISTRONAME" in
+        biglinux) BIGLINUX_BRANCH="$DISTRO_BRANCH" ;;
+        bigcommunity) BIGCOMMUNITY_BRANCH="$DISTRO_BRANCH" ;;
     esac
 
     # The helper scripts read these. BIGLINUX_REPO_HOST is among them so that the
@@ -148,12 +161,17 @@ validate_inputs() {
         stable | testing | unstable) ;;
         *) die "unknown Manjaro branch: $MANJARO_BRANCH" ;;
     esac
+    # The distribution's own branch reaches here already normalised, so only a
+    # value read_inputs did not recognise can still be `development` -- and an
+    # unknown one is unchanged either way, which is what these reject. Both are
+    # checked, including the branch this build does not use: a typo in it is a
+    # mistake worth reporting rather than ignoring.
     case "$BIGLINUX_BRANCH" in
-        stable | testing) ;;
+        stable | testing | development) ;;
         *) die "unknown BigLinux branch: $BIGLINUX_BRANCH" ;;
     esac
     case "$BIGCOMMUNITY_BRANCH" in
-        stable | testing) ;;
+        stable | testing | development) ;;
         *) die "unknown BigCommunity branch: $BIGCOMMUNITY_BRANCH" ;;
     esac
     [[ -d "$PROFILE_PATH_EDITION" ]] || die "profile not found: $PROFILE_PATH_EDITION"
@@ -490,16 +508,33 @@ run_build() {
 }
 
 collect_output() {
-    local tier iso_path pkgs_path kernel_suffix
-    # The tier in the file name is decided by BOTH branches: an ISO built from
-    # Manjaro testing is not a release even when our own branch is stable.
-    case "$MANJARO_BRANCH/$DISTRO_BRANCH" in
-        stable/stable) tier="STABLE" ;;
-        stable/testing | testing/*) tier="BETA" ;;
-        unstable/*) tier="DEVELOPMENT" ;;
+    local product flavour tier iso_path pkgs_path kernel_suffix
+    # This is the published name, and this is the only place that decides it:
+    # every publisher -- the GitLab pipeline, the GitHub workflow, the Build ISO
+    # GUI -- ships the file under the name written here. A second opinion
+    # downstream is how an ISO built from Manjaro unstable once got published,
+    # with a torrent, under the release name.
+    #
+    # kde carries no flavour segment because it is the default edition, and
+    # xivastudio is its own product rather than a BigLinux flavour. Anything
+    # else has its edition inserted as a segment.
+    case "$EDITION" in
+        kde) product="$DISTRONAME"; flavour="" ;;
+        xivastudio) product="xivastudio"; flavour="" ;;
+        *) product="$DISTRONAME"; flavour="_${EDITION}" ;;
+    esac
+
+    # Both branches vote, and Manjaro's is asked first: a non-stable Manjaro
+    # makes the build a development one whatever our own branch says.
+    case "$MANJARO_BRANCH/$REQUESTED_BRANCH" in
+        unstable/*) tier="_DEVELOPMENT${flavour}_ManUnstable" ;;
+        testing/*) tier="_DEVELOPMENT${flavour}_ManTesting" ;;
+        stable/development) tier="_DEVELOPMENT${flavour}" ;;
+        stable/testing) tier="_TESTING${flavour}" ;;
+        stable/stable) tier="${flavour}" ;;
         # Unreachable: the branch values are validated above. Kept so a new
         # branch name cannot silently produce a nameless tier.
-        *) die "no ISO tier for $MANJARO_BRANCH/$DISTRO_BRANCH" ;;
+        *) die "no ISO tier for $MANJARO_BRANCH/$REQUESTED_BRANCH" ;;
     esac
 
     iso_path=$(find /var/cache/manjaro-tools/iso -type f -name '*.iso' | head -n1)
@@ -518,7 +553,9 @@ collect_output() {
     else
         kernel_suffix="k${KERNEL_NAME}"
     fi
-    ISO_BASENAME="${DISTRONAME}_${tier}_${EDITION}_${RELEASE_TAG%%_*}_${kernel_suffix}.iso"
+    # RELEASE_TAG may carry a time (the GUI sends %Y-%m-%d_%H-%M); the name
+    # keeps the date alone, while /etc/big-release records it in full.
+    ISO_BASENAME="${product}${tier}_${RELEASE_TAG%%_*}_${kernel_suffix}.iso"
 
     msg "Moving ISO to $WORK_PATH/$ISO_BASENAME"
     mv -f "$iso_path" "$WORK_PATH/$ISO_BASENAME"

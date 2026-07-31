@@ -112,7 +112,7 @@ Stage by stage, in the order `main()` runs them:
 | `patch_manjaro_tools` | edits `util-iso.sh` / `util-iso-image.sh`: profile path, volume label, kernel check, image cleanups, live-user fix | none of these have a configuration knob upstream |
 | `configure_profile` | rewrites the *profile* in place: branch mirrors, volume label, `KERNEL` placeholders, `/etc/big-release` | the profile in git is branch-agnostic; the build makes it concrete |
 | `run_build` | `buildiso -p <edition> -b <branch> -k <kernel>` | the actual four hours |
-| `collect_output` | names the ISO by tier and kernel, moves it and its `.pkgs` into `WORK_PATH` | the publishers expect one predictable file name |
+| `collect_output` | writes the **published** ISO name, moves it and its `.pkgs` into `WORK_PATH` | every publisher ships the file under this name; see *The published name* below |
 
 > [!IMPORTANT]
 > Because `configure_profile` edits the checkout, **always build from a
@@ -158,7 +158,7 @@ release build:
 | `EDITION` (or `$1`) | — | **required.** Profile to build (`kde`, `xivastudio`, …) |
 | `KERNEL` | `lts` | `oldlts` \| `lts` \| `latest` \| `xanmod` \| `xanmod-lts` |
 | `MANJARO_BRANCH` | `stable` | `stable` \| `testing` \| `unstable` |
-| `BIGLINUX_BRANCH` | `stable` | `stable` \| `testing` (additive: testing sits *above* stable) |
+| `BIGLINUX_BRANCH` | `stable` | `stable` \| `testing` \| `development` (additive: testing sits *above* stable) |
 | `BIGCOMMUNITY_BRANCH` | `stable` | same, bigcommunity only |
 | `RELEASE_TAG` | today | date stamped into `/etc/big-release` and the ISO name |
 | `WORK_PATH` | `<checkout>/output` | where the ISO ends up |
@@ -188,6 +188,45 @@ release build:
 Whatever comes out fills the `KERNEL` placeholders in the `Packages-*` files. So
 `KERNEL-nvidia-580xx` becomes `linux612-nvidia-580xx` without anyone editing a
 list.
+
+### The published name
+
+`collect_output` writes the name the ISO is published under, and it is the only
+place that decides it. The publishers move the file; none of them renames it.
+
+```text
+  product        tier              date         kernel id
+  ────────       ──────────────    ──────────   ─────────
+  biglinux   _DEVELOPMENT_gnome _  2026-07-31 _ k612       .iso
+  └ distro or     └ empty for a       └ from      └ k612, xanmod71
+    xivastudio      release             RELEASE_TAG
+```
+
+| Built from | Named |
+|:---|:---|
+| stable + stable | `biglinux_<date>_k612.iso` |
+| Manjaro stable + our testing | `biglinux_TESTING_<date>_k612.iso` |
+| Manjaro stable + our development | `biglinux_DEVELOPMENT_<date>_k612.iso` |
+| Manjaro testing | `biglinux_DEVELOPMENT_ManTesting_<date>_k612.iso` |
+| Manjaro unstable | `biglinux_DEVELOPMENT_ManUnstable_<date>_k612.iso` |
+
+Both branches vote, and Manjaro's is asked first: a non-stable Manjaro makes the
+build a development one whatever our own branch says. `kde` carries no flavour
+segment because it is the default edition and `xivastudio` is its own product;
+any other edition is inserted as `_<edition>`, *inside* the tier
+(`biglinux_TESTING_gnome_…`, never `biglinux_gnome_TESTING_…`).
+
+> [!NOTE]
+> `development` is a name, not a repository set — BigLinux publishes no
+> development repository, so such a build installs from testing and differs only
+> here. Everything downstream of `read_inputs` sees `testing`, including
+> `/etc/big-release`.
+
+> [!IMPORTANT]
+> A publisher that renames this file re-implements the table above, and the two
+> copies drift. That is exactly how the GitHub workflow came to publish
+> `biglinux_STABLE_xivastudio_<date>.iso` while the GitLab pipeline published the
+> same build as `xivastudio_<date>.iso`. Change the scheme here.
 
 ---
 
