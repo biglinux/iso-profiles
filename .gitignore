@@ -1,2 +1,9 @@
 # Built by .github/workflows/make-profiles.yml, never committed.
 /common-base/
+
+# ISOs built locally by build-iso/
+/output/
+
+# Left behind by `pytest build-iso/tests/`.
+__pycache__/
+.pytest_cache/

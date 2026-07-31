@@ -1,0 +1,133 @@
+# Build an ISO on GitHub and publish it as a release.
+#
+# Works on any fork: enable Actions, open the Actions tab, pick "Build ISO",
+# choose the edition/kernel/branches and run. The ISO is attached to a GitHub
+# release — as one file when it fits the 2 GiB asset limit, otherwise as 7z
+# parts (extract with `7z x file.7z.001`, Ark or 7-Zip).
+#
+# The build itself is build-iso/build-iso.sh, the same engine the official
+# GitLab pipeline and the Build ISO GUI run. Only GITHUB_TOKEN is used; no
+# secrets need to be configured.
+
+name: Build ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: "Edition (profile) to build"
+        type: string
+        required: true
+        default: kde
+      kernel:
+        description: "Kernel"
+        type: choice
+        default: lts
+        options: [lts, oldlts, latest, xanmod, xanmod-lts]
+      manjaro_branch:
+        description: "Manjaro branch"
+        type: choice
+        default: stable
+        options: [stable, testing, unstable]
+      big_branch:
+        description: "BigLinux/BigCommunity branch"
+        type: choice
+        default: stable
+        options: [stable, testing]
+      publish_release:
+        description: "Publish the ISO as a GitHub release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ inputs.edition }} ${{ inputs.kernel }} (${{ inputs.manjaro_branch }}/${{ inputs.big_branch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    container:
+      image: xivastudio/biglinux_build_package:latest
+      options: --privileged
+      volumes:
+        # The runner's large scratch disk is mounted at /mnt; the chroots and
+        # the ISO cache do not fit on the root disk.
+        - /mnt/var_lib_manjaro_tools_buildiso:/var/lib/manjaro-tools/buildiso
+        - /mnt/var_cache_manjaro_tools_iso:/var/cache/manjaro-tools/iso
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build the ISO
+        env:
+          EDITION: ${{ inputs.edition }}
+          KERNEL: ${{ inputs.kernel }}
+          MANJARO_BRANCH: ${{ inputs.manjaro_branch }}
+          BIGLINUX_BRANCH: ${{ inputs.big_branch }}
+          BIGCOMMUNITY_BRANCH: ${{ inputs.big_branch }}
+        run: |
+          export WORK_PATH="$GITHUB_WORKSPACE/output"
+          bash build-iso/build-iso.sh
+
+      - name: Checksums and release notes
+        id: prepare
+        run: |
+          cd output
+          iso=$(ls -- *.iso)
+          # Concurrently: both hashers stream the same multi-GB file, and the
+          # second one reads it from the page cache the first is filling.
+          md5sum "$iso" > "$iso.md5" &
+          sha256sum "$iso" > "$iso.sha256"
+          wait
+          echo "iso=$iso" >> "$GITHUB_OUTPUT"
+          echo "tag=${iso%.iso}-r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Split the ISO when it exceeds the 2 GiB asset limit
+        id: split
+        env:
+          ISO: ${{ steps.prepare.outputs.iso }}
+        run: |
+          pacman -S --needed --noconfirm p7zip
+          cd output
+          # -mx=0 stores instead of compressing: the ISO payload is already
+          # zstd-squashfs, so LZMA2 would spend runner minutes for a ratio of
+          # about 1.00. The split into parts is the only thing wanted here.
+          if [ -n "$(du --threshold=2000M "$ISO" 2>/dev/null)" ]; then
+            7z a -mx=0 -v2000m "$ISO.7z" "$ISO"
+            rm "$ISO"
+            {
+              echo "body<<EOF"
+              echo "The ISO is split into 7z parts to fit GitHub's 2 GiB asset limit."
+              echo "Download every \`.7z.*\` part and extract with 7-Zip, Ark or:"
+              echo
+              echo '```'
+              echo "7z x $ISO.7z.001"
+              echo '```'
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "body=Download the ISO directly." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prepare.outputs.tag }}
+          name: ${{ steps.prepare.outputs.iso }}
+          body: ${{ steps.split.outputs.body }}
+          files: |
+            output/*.iso
+            output/*.7z.*
+            output/*.md5
+            output/*.sha256
+            output/*.pkgs
+
+      - name: Keep the ISO as a workflow artifact when not publishing
+        if: ${{ !inputs.publish_release }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepare.outputs.iso }}
+          path: output/

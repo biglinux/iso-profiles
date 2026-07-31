@@ -1,0 +1,24 @@
+# Example GitLab CI job for a fork of iso-profiles.
+#
+# Copy this file to .gitlab-ci.yml in your fork and run the pipeline with the
+# variables below (Pipelines -> Run pipeline). The runner must allow
+# privileged containers. The ISO is published as a job artifact.
+#
+# It is intentionally NOT named .gitlab-ci.yml here, so mirrors of the
+# official repository do not start pipelines by surprise.
+
+build-iso:
+  image: xivastudio/biglinux_build_package:latest
+  timeout: 4h
+  variables:
+    EDITION: kde          # profile to build
+    KERNEL: lts           # oldlts | lts | latest | xanmod | xanmod-lts
+    MANJARO_BRANCH: stable
+    BIGLINUX_BRANCH: stable
+  script:
+    - export WORK_PATH="$CI_PROJECT_DIR/output"
+    - bash build-iso/build-iso.sh
+    - cd output && md5sum -- *.iso > checksum.md5
+  artifacts:
+    paths:
+      - output/
