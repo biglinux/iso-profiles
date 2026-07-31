@@ -8,6 +8,12 @@ from conftest import SCRIPTS
 ENGINE = (SCRIPTS / "build-iso.sh").read_text(encoding="utf-8")
 
 
+def test_the_profile_repository_marker_exists():
+    # manjaro-tools finds the profile repository by this marker, not by the
+    # directory layout. Without it buildiso rejects an otherwise valid profile.
+    assert (SCRIPTS.parent / "repo_info").is_file()
+
+
 def test_the_image_cleanups_keep_man_pages():
     # BigLinux ships man pages on purpose; the cleanup may drop docs and
     # wallpapers but never /usr/share/man.
