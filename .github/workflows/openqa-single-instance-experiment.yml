@@ -2,9 +2,7 @@
 name: openQA single-instance experiment
 
 # Proves that a GitHub-hosted runner can start the complete openQA stack and
-# execute its official QEMU/VNC example. This intentionally does not build or
-# publish a BigLinux ISO yet; that integration only makes sense after the
-# runtime itself is known to work on the hosted runner.
+# boot a released BigLinux ISO through QEMU/VNC.
 on:
   push:
     branches: [openqa-single-instance-experiment]
@@ -73,7 +71,10 @@ jobs:
             --volume /mnt/openqa-assets:/var/lib/openqa/share/factory/iso
           )
           if [[ -c /dev/kvm ]]; then
-            container_args+=(--device /dev/kvm)
+            container_args+=(
+              --device /dev/kvm
+              --group-add "$(stat --format '%g' /dev/kvm)"
+            )
           fi
           docker run "${container_args[@]}" \
             registry.opensuse.org/devel/openqa/containers/openqa-single-instance
@@ -97,6 +98,14 @@ jobs:
           echo "The openQA API was not ready within 10 minutes" >&2
           docker logs openqa
           exit 1
+
+      - name: Verify KVM access from the openQA worker
+        run: |
+          if [[ -c /dev/kvm ]]; then
+            docker exec --user _openqa-worker openqa test -r /dev/kvm
+          else
+            echo "KVM is unavailable on this runner"
+          fi
 
       - name: Open a tmate debug session
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
