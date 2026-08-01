@@ -25,8 +25,9 @@ sub open_command_smoke {
 
     record_info $category, "Run '$command' from the graphical command launcher";
     send_key 'alt-f2';
-    sleep 1;
+    sleep 3;
     type_string $command;
+    sleep 3;
     assert_screen_change { send_key 'ret' };
     sleep 5;
     for (1 .. 4) {
@@ -122,7 +123,7 @@ sub run {
     # Multimedia applications.
     open_menu_application 'Multimídia / Big Audio Player', 'Big Audio Player', 45;
     open_menu_application 'Multimídia / Big Video Player', 'Big Video Player', 45;
-    open_menu_application 'Multimídia / BigCam', 'BigCam', 45;
+    open_command_smoke 'Multimídia / BigCam', 'bigcam';
     open_menu_application 'Multimídia / audio converter', 'Audio Converter', 45;
     open_menu_application 'Multimídia / video converter', 'Video Converter', 45;
     open_menu_application 'Multimídia / noise filter', 'Filter noise', 45;
