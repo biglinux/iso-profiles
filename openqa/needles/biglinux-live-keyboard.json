@@ -1,0 +1,33 @@
+{
+  "area": [
+    {
+      "height": 34,
+      "type": "match",
+      "width": 310,
+      "xpos": 357,
+      "ypos": 132
+    },
+    {
+      "click_point": {
+        "xpos": 80,
+        "ypos": 46
+      },
+      "height": 93,
+      "type": "match",
+      "width": 161,
+      "xpos": 335,
+      "ypos": 218
+    },
+    {
+      "height": 282,
+      "type": "match",
+      "width": 716,
+      "xpos": 155,
+      "ypos": 347
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-live-keyboard"
+  ]
+}

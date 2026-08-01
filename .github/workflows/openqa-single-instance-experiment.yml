@@ -215,6 +215,9 @@ jobs:
             if docker exec openqa test -d /var/lib/openqa/testresults; then
               docker cp openqa:/var/lib/openqa/testresults openqa-diagnostics/testresults
             fi
+            if docker exec openqa test -d /var/lib/openqa/images; then
+              docker cp openqa:/var/lib/openqa/images openqa-diagnostics/images
+            fi
           fi
 
       - name: Upload openQA diagnostics
