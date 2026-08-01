@@ -124,6 +124,28 @@ jobs:
           detached: true
           limit-access-to-actor: true
 
+      - name: Store the restricted tmate SSH command
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        env:
+          TMATE_SSH_COMMAND: ${{ steps.tmate.outputs.ssh-command }}
+        run: |
+          if [[ "$TMATE_SSH_COMMAND" != ssh\ * || "$TMATE_SSH_COMMAND" == *$'\n'* ]]; then
+            echo "The tmate action returned an invalid SSH command" >&2
+            exit 1
+          fi
+          install --directory --mode 0700 "$RUNNER_TEMP/tmate-connection"
+          printf '%s\n' "$TMATE_SSH_COMMAND" \
+            > "$RUNNER_TEMP/tmate-connection/ssh-command"
+
+      - name: Upload the restricted tmate SSH command
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: tmate-ssh-${{ github.run_id }}
+          path: ${{ runner.temp }}/tmate-connection/ssh-command
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Wait for tmate debugging to finish
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         timeout-minutes: 30
