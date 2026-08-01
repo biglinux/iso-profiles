@@ -1,0 +1,29 @@
+{
+  "area": [
+    {
+      "height": 48,
+      "type": "match",
+      "width": 780,
+      "xpos": 191,
+      "ypos": 31
+    },
+    {
+      "height": 160,
+      "type": "match",
+      "width": 740,
+      "xpos": 193,
+      "ypos": 75
+    },
+    {
+      "height": 32,
+      "type": "match",
+      "width": 827,
+      "xpos": 194,
+      "ypos": 602
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installer-partitions"
+  ]
+}

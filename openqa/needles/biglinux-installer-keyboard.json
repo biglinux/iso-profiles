@@ -1,0 +1,33 @@
+{
+  "area": [
+    {
+      "height": 191,
+      "type": "match",
+      "width": 697,
+      "xpos": 257,
+      "ypos": 47
+    },
+    {
+      "height": 342,
+      "type": "match",
+      "width": 775,
+      "xpos": 194,
+      "ypos": 300
+    },
+    {
+      "click_point": {
+        "xpos": 48,
+        "ypos": 17
+      },
+      "height": 34,
+      "type": "match",
+      "width": 97,
+      "xpos": 807,
+      "ypos": 689
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installer-keyboard"
+  ]
+}

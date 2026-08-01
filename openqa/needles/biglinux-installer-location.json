@@ -1,0 +1,33 @@
+{
+  "area": [
+    {
+      "height": 410,
+      "type": "match",
+      "width": 640,
+      "xpos": 374,
+      "ypos": 31
+    },
+    {
+      "height": 43,
+      "type": "match",
+      "width": 640,
+      "xpos": 374,
+      "ypos": 638
+    },
+    {
+      "click_point": {
+        "xpos": 48,
+        "ypos": 17
+      },
+      "height": 34,
+      "type": "match",
+      "width": 97,
+      "xpos": 807,
+      "ypos": 689
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installer-location"
+  ]
+}
