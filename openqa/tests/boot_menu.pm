@@ -16,6 +16,9 @@ sub run {
     mouse_click;
     assert_screen 'biglinux-live-theme', 30;
     send_key 'ret';
+    # Dismiss a possible file/location dialog opened by the selected theme;
+    # on images without one Esc is harmless and keeps the path deterministic.
+    send_key 'esc';
     # Make the desktop reference independent of the rotating live-session wallpaper.
     sleep 5;
     send_key 'ctrl-alt-t';
