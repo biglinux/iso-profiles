@@ -72,7 +72,7 @@ def test_the_defaults_are_the_documented_ones(profiles):
     assert values["MANJARO_BRANCH"] == "stable"
     assert values["BIGLINUX_BRANCH"] == "stable"
     assert values["BIGCOMMUNITY_BRANCH"] == "stable"
-    assert values["BUILD_MIRROR"] == "https://mirrors2.manjaro.org"
+    assert values["BUILD_MIRROR"] == "http://mirrors.manjaro.org/repo/"
     assert values["BIGLINUX_REPO_HOST"] == "repo.biglinux.com.br"
     assert values["COMMUNITY_REPO_HOST"] == "repo.communitybig.org"
 
@@ -139,6 +139,8 @@ def test_the_tier_branch_is_the_distributions_own(profiles, distro_env, branch_e
         ({"EDITION": "kde", "BIGLINUX_BRANCH": "unstable"}, "unknown BigLinux branch"),
         ({"EDITION": "kde", "BIGCOMMUNITY_BRANCH": "nope"}, "unknown BigCommunity branch"),
         ({"EDITION": "kde", "BUILD_MIRROR": "ftp://example.org"}, "must be an http(s) URL"),
+        ({"EDITION": "kde", "BUILD_MIRROR": "https://example.org/$(id)"}, "must be an http(s) URL"),
+        ({"EDITION": "kde", "BUILD_MIRROR": "https://example.org/m\nbuild_mirror=evil"}, "must be an http(s) URL"),
         ({"EDITION": "kde", "DISTRONAME": "somethingelse"}, "unknown DISTRONAME"),
     ],
 )

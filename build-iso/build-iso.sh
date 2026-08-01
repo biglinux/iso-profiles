@@ -97,7 +97,7 @@ read_inputs() {
     # mkchroot replaces the mirrorlist Include with this one Server, so it decides the
     # whole Manjaro package set. Unset, manjaro-tools picks mirror.easyname.at, which
     # lags behind stable.
-    BUILD_MIRROR="${BUILD_MIRROR:-https://mirrors.manjaro.org/repo}"
+    BUILD_MIRROR="${BUILD_MIRROR:-http://mirrors.manjaro.org/repo/}"
 
     # Overridable so a fork builds from its own repositories.
     BIGLINUX_REPO_HOST="${BIGLINUX_REPO_HOST:-repo.biglinux.com.br}"
@@ -151,12 +151,12 @@ read_inputs() {
 # Everything that can be rejected before a single package is downloaded. The
 # order is the order the failures were reported in before this was a function.
 validate_inputs() {
+    local mirror_url_pattern='^https?://[A-Za-z0-9._~-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*/?$'
+
     [[ $EUID -eq 0 ]] || die "must run as root (inside the build container)"
 
-    case "$BUILD_MIRROR" in
-        http://* | https://*) ;;
-        *) die "BUILD_MIRROR must be an http(s) URL: $BUILD_MIRROR" ;;
-    esac
+    [[ $BUILD_MIRROR =~ $mirror_url_pattern ]] \
+        || die "BUILD_MIRROR must be an http(s) URL without shell syntax: $BUILD_MIRROR"
     case "$MANJARO_BRANCH" in
         stable | testing | unstable) ;;
         *) die "unknown Manjaro branch: $MANJARO_BRANCH" ;;
