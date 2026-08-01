@@ -28,7 +28,6 @@ sub run {
     type_string 'Big-retro.heic';
     send_key 'ret';
     sleep 8;
-    save_screenshot;
     send_key 'alt-f4';
     sleep 5;
     assert_screen 'biglinux-live-desktop', 60;
