@@ -10,9 +10,14 @@ sub discover_commands {
 
     select_console 'root-virtio-terminal';
     for my $command (@commands) {
-        my $status = script_run "command -v $command", timeout => 15, quiet => 1;
-        die "command availability probe timed out for '$command'" unless defined $status;
-        $available_commands{$command} = $status == 0;
+        # Do not use script_run here: its shell-echo marker is sensitive to
+        # bracketed/ANSI prompt output on the live console.  An explicit
+        # marker gives us a small, deterministic protocol for both outcomes.
+        type_string "if command -v '$command' >/dev/null 2>&1; then printf '__OA_PRESENT__\\n'; else printf '__OA_ABSENT__\\n'; fi\\n";
+        my $result = wait_serial qr/__OA_(?:PRESENT|ABSENT)__/, timeout => 15;
+        die "command availability probe timed out for '$command'" unless defined $result;
+        wait_serial '# ', no_regex => 1, timeout => 15;
+        $available_commands{$command} = $result =~ /__OA_PRESENT__/;
     }
     select_console 'sut';
 

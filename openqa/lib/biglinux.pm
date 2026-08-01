@@ -26,7 +26,10 @@ sub activate_console ($self, $console) {
     testapi::wait_serial 'Password:', timeout => 30;
     testapi::type_string 'biglinux';
     testapi::send_key 'ret';
-    testapi::wait_serial qr/[#\$] /, timeout => 30;
+    # The Plasma shell prompt contains ANSI colour sequences between the
+    # closing bracket, '$' and the following space.  Wait for the stable
+    # account marker instead of matching that decorated prompt.
+    testapi::wait_serial qr/\@/, timeout => 15;
     testapi::type_string "export PS1='# '\n";
     testapi::wait_serial '# ', no_regex => 1, timeout => 10;
 }
