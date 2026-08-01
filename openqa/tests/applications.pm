@@ -9,15 +9,20 @@ sub discover_commands {
     my (@commands) = @_;
 
     select_console 'root-virtio-terminal';
+    my $probe_id = 0;
     for my $command (@commands) {
+        ++$probe_id;
         # Do not use script_run here: its shell-echo marker is sensitive to
         # bracketed/ANSI prompt output on the live console.  An explicit
-        # marker gives us a small, deterministic protocol for both outcomes.
-        type_string "if command -v '$command' >/dev/null 2>&1; then printf '__OA_PRESENT__\\n'; else printf '__OA_ABSENT__\\n'; fi\\n";
-        my $result = wait_serial qr/__OA_(?:PRESENT|ABSENT)__/, timeout => 15;
+        # per-command marker gives us a deterministic protocol without
+        # matching a marker left in the serial buffer by a previous probe.
+        my $present_marker = "__OA_${probe_id}_PRESENT__";
+        my $absent_marker = "__OA_${probe_id}_ABSENT__";
+        type_string "if command -v '$command' >/dev/null 2>&1; then printf '${present_marker}\\n'; else printf '${absent_marker}\\n'; fi\\n";
+        my $result = wait_serial qr/\Q$present_marker\E|\Q$absent_marker\E/, timeout => 15;
         die "command availability probe timed out for '$command'" unless defined $result;
         wait_serial '# ', no_regex => 1, timeout => 15;
-        $available_commands{$command} = $result =~ /__OA_PRESENT__/;
+        $available_commands{$command} = $result =~ /\Q$present_marker\E/;
     }
     select_console 'sut';
 
