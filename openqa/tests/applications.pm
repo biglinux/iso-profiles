@@ -200,7 +200,9 @@ sub run {
 
     # Multimedia applications.
     open_menu_application_if_available 'Multimídia / Big Audio Player', 'Big Audio Player', 'bigaudio', 45;
-    open_menu_application_if_available 'Multimídia / Big Video Player', 'Big Video Player', 'bigvideo', 45;
+    # Launch the executable directly: free-text menu search can select a web
+    # result instead of the BigLinux desktop entry when both names overlap.
+    open_command_smoke_if_available 'Multimídia / Big Video Player', 'bigvideo';
     open_command_smoke_if_available 'Multimídia / BigCam', 'bigcam';
     open_menu_application_if_available 'Multimídia / audio converter', 'Audio Converter', 'big-audio-converter-gui', 45;
     open_menu_application_if_available 'Multimídia / video converter', 'Video Converter', 'big-video-converter-gui', 45;
