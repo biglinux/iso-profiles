@@ -12,6 +12,7 @@ machines:
     settings:
       QEMUCPUS: '2'
       QEMURAM: '4096'
+      HDDSIZEGB: '32'
 
 job_templates:
   boot_menu:

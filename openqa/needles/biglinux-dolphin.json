@@ -1,0 +1,29 @@
+{
+  "area": [
+    {
+      "height": 22,
+      "type": "match",
+      "width": 170,
+      "xpos": 430,
+      "ypos": 97
+    },
+    {
+      "height": 405,
+      "type": "match",
+      "width": 164,
+      "xpos": 176,
+      "ypos": 159
+    },
+    {
+      "height": 399,
+      "type": "match",
+      "width": 425,
+      "xpos": 414,
+      "ypos": 169
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-dolphin"
+  ]
+}

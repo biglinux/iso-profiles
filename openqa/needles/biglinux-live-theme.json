@@ -1,0 +1,29 @@
+{
+  "area": [
+    {
+      "height": 38,
+      "type": "match",
+      "width": 320,
+      "xpos": 352,
+      "ypos": 132
+    },
+    {
+      "height": 119,
+      "type": "match",
+      "width": 175,
+      "xpos": 92,
+      "ypos": 263
+    },
+    {
+      "height": 104,
+      "type": "match",
+      "width": 315,
+      "xpos": 163,
+      "ypos": 582
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-live-theme"
+  ]
+}
