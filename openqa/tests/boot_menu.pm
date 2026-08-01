@@ -17,7 +17,9 @@ sub run {
     sleep 1;
     type_string 'plasma-apply-wallpaperimage /usr/share/wallpapers/Big-retro.heic';
     send_key 'ret';
-    sleep 8;
+    sleep 2;
+    send_key 'esc';
+    sleep 6;
     assert_screen 'biglinux-live-desktop', 60;
 }
 
