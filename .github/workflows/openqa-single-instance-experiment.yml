@@ -16,7 +16,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Inspect virtualization support
@@ -31,6 +31,29 @@ jobs:
             echo "KVM is unavailable; the test will use QEMU emulation"
           fi
 
+      - name: Download and verify the released BigLinux ISO
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo install -d -o "$USER" -g "$USER" /mnt/openqa-assets
+          gh release download biglinux_2026-07-31_k71-r7 \
+            --repo biglinux/iso-profiles \
+            --dir /mnt/openqa-assets \
+            --pattern '*.7z.*' \
+            --pattern '*.sha256'
+          iso_parts=(/mnt/openqa-assets/*.7z.*)
+          if (( ${#iso_parts[@]} != 3 )); then
+            echo "Expected three ISO archive parts, found ${#iso_parts[@]}" >&2
+            exit 1
+          fi
+          7z x "${iso_parts[0]}" -o/mnt/openqa-assets
+          (
+            cd /mnt/openqa-assets
+            sha256sum --check biglinux_2026-07-31_k71.iso.sha256
+          )
+          rm -- "${iso_parts[@]}"
+
       - name: Start openQA single-instance
         run: |
           set -euo pipefail
@@ -41,6 +64,7 @@ jobs:
             --publish 1443:443
             --tmpfs /srv/www/htdocs:mode=0755
             --tmpfs /var/log/apache2:mode=0755
+            --volume /mnt/openqa-assets:/var/lib/openqa/share/factory/iso
           )
           if [[ -c /dev/kvm ]]; then
             container_args+=(--device /dev/kvm)
@@ -88,6 +112,29 @@ jobs:
             CASEDIR=https://github.com/os-autoinst/os-autoinst-distri-example.git \
             PRODUCTDIR=. \
             NEEDLES_DIR=%%CASEDIR%%/needles \
+            "${test_settings[@]}"
+
+      - name: Boot the released BigLinux ISO
+        run: |
+          set -euo pipefail
+          test_settings=()
+          if [[ ! -c /dev/kvm ]]; then
+            test_settings+=(QEMU_NO_KVM=1)
+          fi
+          docker exec openqa openqa-cli schedule --monitor \
+            async=1 \
+            SCENARIO_DEFINITIONS_YAML_FILE=https://raw.githubusercontent.com/biglinux/iso-profiles/openqa-single-instance-experiment/openqa/scenario-definitions.yaml \
+            DISTRI=biglinux \
+            VERSION=2026.07.31 \
+            FLAVOR=Live \
+            ARCH=x86_64 \
+            TEST=boot_menu \
+            _GROUP_ID=0 \
+            BUILD="github-actions-${GITHUB_RUN_ID}" \
+            ISO=biglinux_2026-07-31_k71.iso \
+            CASEDIR=https://github.com/biglinux/iso-profiles.git#openqa-single-instance-experiment \
+            PRODUCTDIR=openqa \
+            NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
             "${test_settings[@]}"
 
       - name: Collect openQA diagnostics

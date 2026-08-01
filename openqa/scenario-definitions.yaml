@@ -1,0 +1,19 @@
+---
+products:
+  biglinux:
+    distri: biglinux
+    flavor: Live
+    arch: x86_64
+    version: '2026.07.31'
+
+machines:
+  64bit:
+    backend: qemu
+    settings:
+      QEMUCPUS: '2'
+      QEMURAM: '4096'
+
+job_templates:
+  boot_menu:
+    product: biglinux
+    machine: 64bit
