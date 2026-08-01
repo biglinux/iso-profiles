@@ -48,7 +48,10 @@ sub close_exercised_application {
     for (1 .. 3) {
         send_key 'alt-f4';
         sleep 2;
-        send_key 'esc';
+        return if check_screen 'biglinux-live-desktop', 0;
+        # Brave asks for confirmation when several tabs are open.  Esc
+        # cancels that dialog, so browsers must confirm it with Enter.
+        send_key($is_browser ? 'ret' : 'esc');
         sleep 2;
         return if check_screen 'biglinux-live-desktop', 0;
     }
