@@ -155,7 +155,7 @@ sub run {
       bigaudioimprove gnome-network-displays kdenlive strawberry smplayer uxplay
       guvcview pamac-manager big-store bigterminal bigfiles bigstyle-gui
       bigcontrolcenter big-parental-controls kmenuedit big-driver-manager htop
-      resources big-optimizer-gui kate bigeditor gnome-calculator spectacle ark
+      resources big-optimizer-gui ashyterm kate bigeditor gnome-calculator spectacle ark
       krunner plasma-print-queue tts-selected-text kfind scrcpy
       plasma-emojier big-webapps-exec
     );

@@ -16,7 +16,13 @@ sub activate_console ($self, $console) {
     return unless $console eq 'root-virtio-terminal';
 
     testapi::wait_serial 'login:', timeout => 60;
-    testapi::type_string 'root';
+    # The live image exposes the unprivileged live-session account on hvc0.
+    # Keep the console user aligned with the profile instead of assuming a
+    # root login that is deliberately disabled by the live setup.
+    testapi::type_string 'biglinux';
+    testapi::send_key 'ret';
+    testapi::wait_serial 'Password:', timeout => 30;
+    testapi::type_string 'biglinux';
     testapi::send_key 'ret';
     testapi::wait_serial qr/[#\$] /, timeout => 30;
     testapi::type_string "export PS1='# '\n";
