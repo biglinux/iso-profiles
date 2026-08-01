@@ -23,6 +23,9 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Check out the test and report sources
+        uses: actions/checkout@v6
+
       - name: Inspect virtualization support
         run: |
           set -euo pipefail
@@ -190,7 +193,7 @@ jobs:
           fi
           docker exec openqa openqa-cli schedule --monitor \
             async=1 \
-            SCENARIO_DEFINITIONS_YAML_FILE=https://raw.githubusercontent.com/biglinux/iso-profiles/${GITHUB_SHA}/openqa/scenario-definitions.yaml \
+            SCENARIO_DEFINITIONS_YAML_FILE="https://raw.githubusercontent.com/biglinux/iso-profiles/${GITHUB_SHA}/openqa/scenario-definitions.yaml" \
             DISTRI=biglinux \
             VERSION=2026.07.31 \
             FLAVOR=Live \
@@ -223,6 +226,22 @@ jobs:
             if docker exec openqa test -d /var/lib/openqa/pool/1; then
               docker cp openqa:/var/lib/openqa/pool/1 openqa-diagnostics/worker-pool
             fi
+          fi
+
+      - name: Generate the human-readable validation report
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          python3 openqa/report/generate_report.py \
+            --results-root openqa-diagnostics \
+            --output openqa-diagnostics/biglinux-validation-report.html
+          browser=$(command -v google-chrome || command -v chromium || true)
+          if [[ -n "$browser" ]]; then
+            "$browser" --headless --no-sandbox --disable-gpu \
+              --print-to-pdf=openqa-diagnostics/biglinux-validation-report.pdf \
+              "file://${GITHUB_WORKSPACE}/openqa-diagnostics/biglinux-validation-report.html"
+          else
+            echo "Chrome/Chromium is unavailable; the self-contained HTML report was generated"
           fi
 
       - name: Upload openQA diagnostics

@@ -2,9 +2,17 @@
 
 use Mojo::Base 'basetest';
 use testapi;
+use JSON::PP qw(decode_json encode_json);
+use MIME::Base64 'encode_base64';
+use Time::HiRes 'time';
 
 my %available_commands;
 my %available_desktop_entries;
+my @application_metrics;
+my $metrics_uploaded = 0;
+my $kernel_version;
+my $atspi_probe = '/tmp/openqa-atspi-probe.py';
+my $atspi_state = '/tmp/openqa-atspi-baseline.json';
 
 sub discover_commands {
     my (@commands) = @_;
@@ -58,88 +66,151 @@ sub discover_desktop_entries {
     select_console 'sut';
 
     my @missing = grep { !$available_desktop_entries{$_} } @entries;
-    record_info 'WebApp inventory', @missing ?
+    record_info 'Desktop entry inventory', @missing ?
       'Skipping absent desktop entries: ' . join(', ', @missing) :
-      'All catalogued WebApp desktop entries are present';
+      'All catalogued desktop entries are present';
 }
 
 sub skip_missing_application {
     my ($category, $search, $command) = @_;
     record_info "$category / skipped", "Executable '$command' is not installed; '$search' is not tested";
+    push @application_metrics, {
+        category => $category,
+        name => $search,
+        launcher => $command,
+        status => 'skipped',
+        action => 'Executable absent from this ISO',
+    };
+}
+
+sub atspi_result {
+    my ($operation, $timeout) = @_;
+    $timeout //= 30;
+    select_console 'root-virtio-terminal';
+    type_string "python3 '$atspi_probe' '$operation' --state '$atspi_state' --timeout '$timeout'\n";
+    my $serial = wait_serial qr/__OPENQA_ATSPI__([0-9a-f]+)/, timeout => $timeout + 10;
+    select_console 'sut';
+    die "AT-SPI probe '$operation' did not return a result" unless defined $serial;
+    $serial =~ /__OPENQA_ATSPI__([0-9a-f]+)/ or die "AT-SPI probe '$operation' returned malformed data";
+    return decode_json(pack 'H*', $1);
+}
+
+sub prepare_accessibility {
+    my $probe_url = data_url('atspi_probe.py');
+    select_console 'root-virtio-terminal';
+    type_string 'export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus '
+      . "SAL_ACCESSIBILITY_ENABLED=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1; "
+      . 'gsettings set org.gnome.desktop.interface toolkit-accessibility true; '
+      . 'systemctl --user restart at-spi-dbus-bus.service; '
+      . 'systemctl --user set-environment SAL_ACCESSIBILITY_ENABLED=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1; '
+      . 'dbus-update-activation-environment --systemd SAL_ACCESSIBILITY_ENABLED QT_LINUX_ACCESSIBILITY_ALWAYS_ON; '
+      . "curl --fail --silent --show-error '$probe_url' --output '$atspi_probe'; "
+      . "chmod 700 '$atspi_probe'; "
+      . 'kquitapp6 krunner >/dev/null 2>&1 || true; '
+      . 'printf "__OA_A11Y_READY__%s\\n" "$(uname -r)"\n';
+    my $result = wait_serial qr/__OA_A11Y_READY__([^\r\n]+)/, timeout => 30;
+    die 'Unable to activate the AT-SPI accessibility stack' unless defined $result;
+    $result =~ /__OA_A11Y_READY__([^\r\n]+)/;
+    $kernel_version = $1;
+    select_console 'sut';
+
+    my $baseline = atspi_result 'baseline', 10;
+    die "AT-SPI is active but exposes no graphical applications"
+      unless ref($baseline->{windows}) eq 'ARRAY' && @{$baseline->{windows}};
+    record_info 'Accessibility', 'AT-SPI is active and exposes the KDE live session';
+}
+
+sub begin_application {
+    my ($category, $command, $timeout, $action) = @_;
+    my $baseline = atspi_result 'baseline', 10;
+    my $started = time;
+    my $launch_command = "env QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 $command";
+    if ($command =~ /(?:^|\s)(?:libreoffice|gtk-launch\s+libreoffice-)/) {
+        $launch_command = "env SAL_USE_VCLPLUGIN=gtk3 SAL_ACCESSIBILITY_ENABLED=1 $launch_command";
+    }
+
+    record_info $category, "Run '$command' and require an accessible application window";
+    send_key 'alt-f2';
+    sleep 2;
+    type_string $launch_command;
+    sleep 1;
+    send_key 'ret';
+
+    my $opened = atspi_result 'wait-open', $timeout;
+    my $open_seconds = time - $started;
+    my $metric = {
+        category => (split m{\s*/\s*}, $category, 2)[0],
+        name => (split m{\s*/\s*}, $category, 2)[1] // $category,
+        launcher => $command,
+        status => $opened->{status},
+        action => $action // 'Open and close',
+        open_seconds => sprintf('%.2f', $open_seconds) + 0,
+        mem_available_before_mib => $baseline->{mem_available_mib},
+        mem_available_after_open_mib => $opened->{mem_available_mib},
+        settled_pss_mib => $opened->{settled_pss_mib},
+        accessible_window => $opened->{accessible_window} ? JSON::PP::true : JSON::PP::false,
+        accessible_application => $opened->{application},
+        accessible_window_name => $opened->{window},
+        accessible_children => $opened->{accessible_children},
+    };
+    if ($opened->{status} ne 'passed') {
+        $metric->{error} = $opened->{error};
+        push @application_metrics, $metric;
+        die "'$command' did not expose an accessible application window within $timeout seconds";
+    }
+    return $metric;
 }
 
 sub close_exercised_application {
-    my ($command) = @_;
+    my ($metric) = @_;
+    my $command = $metric->{launcher};
     my $is_browser = defined($command) && (
         $command =~ /(?:^|\s)(?:brave|chromium|firefox|big-webapps-exec)(?:\s|$)/
           || $command =~ /(?:^|\s)gtk-launch\s+(?:brave|chromium|firefox)-/
     );
 
-    # Close only while the desktop is not visible.  This handles browser
-    # windows one at a time without cascading into unrelated applications.
-    for (1 .. 3) {
-        send_key 'alt-f4';
-        sleep 2;
-        return if check_screen 'biglinux-live-desktop', 0;
-        # Brave asks for confirmation when several tabs are open.  Esc
-        # cancels that dialog, so browsers must confirm it with Enter.
-        send_key($is_browser ? 'ret' : 'esc');
-        sleep 2;
-        return if check_screen 'biglinux-live-desktop', 0;
-    }
-
-    if ($is_browser) {
-        # Brave/Chromium can reuse one process for several desktop entries.
-        # Use a process-wide quit only after ordinary window closure failed.
+    my $started = time;
+    send_key 'alt-f4';
+    my $closed = atspi_result 'wait-close', 8;
+    if ($closed->{status} ne 'passed' && $is_browser) {
         send_key 'ctrl-q';
-        sleep 3;
-        return if check_screen 'biglinux-live-desktop', 0;
+        sleep 1;
         send_key 'ret';
-        sleep 3;
-        return if check_screen 'biglinux-live-desktop', 0;
+        $closed = atspi_result 'wait-close', 12;
     }
-
-    assert_screen 'biglinux-live-desktop', 15;
+    $metric->{close_seconds} = sprintf('%.2f', time - $started) + 0;
+    $metric->{mem_available_after_close_mib} = $closed->{mem_available_mib};
+    if ($closed->{status} ne 'passed') {
+        $metric->{status} = 'failed';
+        $metric->{error} = $closed->{error};
+        push @application_metrics, $metric;
+        die "'$command' left an accessible application window open";
+    }
+    push @application_metrics, $metric;
+    record_info "$metric->{name} / metrics",
+      sprintf('Opened in %.2f s, closed in %.2f s, PSS after opening: %s MiB',
+        $metric->{open_seconds}, $metric->{close_seconds}, $metric->{settled_pss_mib} // 'not available');
 }
 
 sub open_command_application {
-    my ($command, $needle, $timeout) = @_;
-
-    send_key 'alt-f2';
-    sleep 3;
-    type_string $command;
-    sleep 3;
-    assert_screen_change { send_key 'ret' };
-    assert_screen $needle, $timeout;
-    close_exercised_application $command;
+    my ($category, $command, $timeout) = @_;
+    my $metric = begin_application $category, $command, $timeout;
+    close_exercised_application $metric;
 }
 
 sub open_command_application_if_available {
-    my ($category, $command, $needle, $timeout) = @_;
+    my ($category, $command, $timeout) = @_;
     my ($executable) = split /\s+/, $command;
     unless (command_available($executable)) {
         skip_missing_application $category, $command, $executable;
         return;
     }
-    open_command_application $command, $needle, $timeout;
+    open_command_application $category, $command, $timeout;
 }
 
 sub open_command_smoke {
     my ($category, $command) = @_;
-
-    record_info $category, "Run '$command' from the graphical command launcher";
-    send_key 'alt-f2';
-    sleep 3;
-    type_string $command;
-    sleep 3;
-    assert_screen_change { send_key 'ret' };
-    my $deadline = time + 30;
-    while (check_screen('biglinux-live-desktop', 0)) {
-        die "'$command' did not leave a visible application window within 30 seconds"
-          if time >= $deadline;
-        sleep 1;
-    }
-    close_exercised_application $command;
+    open_command_application $category, $command, 30;
 }
 
 sub open_command_smoke_if_available {
@@ -153,26 +224,28 @@ sub open_command_smoke_if_available {
 }
 
 sub open_desktop_entry_if_available {
-    my ($category, $entry) = @_;
-    unless (command_available('gtk-launch') && command_available('big-webapps-exec')) {
-        record_info "$category / skipped", 'The WebApp desktop launcher is not installed';
+    my ($category, $entry, $required_command) = @_;
+    unless (command_available('gtk-launch')) {
+        record_info "$category / skipped", 'gtk-launch is not installed';
+        push @application_metrics, {category => $category, name => $entry, launcher => "gtk-launch $entry", status => 'skipped', action => 'gtk-launch absent'};
+        return;
+    }
+    if (defined($required_command) && !command_available($required_command)) {
+        record_info "$category / skipped", "Executable '$required_command' is not installed";
+        push @application_metrics, {category => $category, name => $entry, launcher => "gtk-launch $entry", status => 'skipped', action => "Executable '$required_command' absent"};
         return;
     }
     unless ($available_desktop_entries{$entry}) {
         record_info "$category / skipped", "Desktop entry '$entry.desktop' is not installed";
+        push @application_metrics, {category => $category, name => $entry, launcher => "gtk-launch $entry", status => 'skipped', action => 'Desktop entry absent'};
         return;
     }
     open_command_smoke $category, "gtk-launch $entry";
 }
 
 sub exercise_writer {
-    record_info 'LibreOffice Writer', 'Type text, save an ODT document and close it';
-    send_key 'alt-f2';
-    sleep 3;
-    type_string 'libreoffice --writer';
-    sleep 3;
-    assert_screen_change { send_key 'ret' };
-    sleep 12;
+    my $metric = begin_application 'Escritório / LibreOffice Writer',
+      'gtk-launch libreoffice-writer', 30, 'Type text, save an ODT document and close it';
     # LibreOffice shows a first-run welcome window on a fresh live session.
     send_key 'esc';
     sleep 2;
@@ -186,13 +259,43 @@ sub exercise_writer {
     sleep 3;
     # If saving failed, Alt+F4 leaves a confirmation dialog and the desktop
     # assertion below fails instead of silently discarding the document.
-    close_exercised_application;
+    close_exercised_application $metric;
+}
+
+sub upload_application_metrics {
+    return if $metrics_uploaded;
+    my $payload = encode_json({
+        schema_version => 1,
+        system => {
+            kernel => $kernel_version,
+            desktop => 'KDE Plasma',
+            accessibility_bus => 'Active and validated with AT-SPI',
+        },
+        applications => \@application_metrics,
+    });
+    my $encoded = encode_base64($payload, '');
+
+    select_console 'root-virtio-terminal';
+    type_string "printf '%s' '$encoded' | base64 --decode > /tmp/application-metrics.json && printf '__OA_METRICS_READY__\\n'\n";
+    wait_serial '__OA_METRICS_READY__', timeout => 15;
+    upload_logs '/tmp/application-metrics.json', log_name => 'application-metrics.json';
+    $metrics_uploaded = 1;
+    select_console 'sut';
+}
+
+sub post_run_hook {
+    upload_application_metrics;
+}
+
+sub post_fail_hook {
+    upload_application_metrics;
 }
 
 sub run {
     # Inventory the guest once over the virtio serial console.  Missing
     # optional packages are recorded and skipped; a present package still
     # has to pass the graphical launch/close check below.
+    prepare_accessibility;
     discover_commands qw(
       dolphin konsole brave chromium libreoffice bigocrpdf okular simple-scan
       bigocrimage gimp gwenview xdvi rustdesk firefox kmines lutris kpat steam
@@ -205,6 +308,12 @@ sub run {
       plasma-emojier gtk-launch big-webapps-gui big-webapps-exec
     );
     discover_desktop_entries qw(
+      libreoffice-base
+      libreoffice-calc
+      libreoffice-draw
+      libreoffice-impress
+      libreoffice-math
+      libreoffice-writer
       brave-forum.biglinux.com.br__-Default
       brave-calendar.google.com__-Default
       brave-www.deezer.com__-Default
@@ -218,21 +327,29 @@ sub run {
     );
 
     # Keep the existing focused smoke checks for the three original apps.
-    open_command_application_if_available 'Sistema / Dolphin', 'dolphin', 'biglinux-dolphin', 30;
-    open_command_application_if_available 'Sistema / Konsole', 'konsole', 'biglinux-konsole', 30;
-    open_command_application_if_available 'Internet / Brave', 'brave about:blank', 'biglinux-brave', 45;
+    open_command_application_if_available 'Sistema / Dolphin', 'dolphin', 30;
+    open_command_application_if_available 'Sistema / Konsole', 'konsole', 30;
+    open_command_application_if_available 'Internet / Brave', 'brave about:blank', 45;
 
     # Office and document viewers shown under Escritório.
-    open_command_smoke_if_available 'Escritório / LibreOffice Base', 'libreoffice --base';
-    open_command_smoke_if_available 'Escritório / LibreOffice Calc', 'libreoffice --calc';
-    open_command_smoke_if_available 'Escritório / LibreOffice Draw', 'libreoffice --draw';
-    open_command_smoke_if_available 'Escritório / LibreOffice Impress', 'libreoffice --impress';
-    open_command_smoke_if_available 'Escritório / LibreOffice Math', 'libreoffice --math';
-    if (command_available('libreoffice')) {
+    open_desktop_entry_if_available 'Escritório / LibreOffice Base', 'libreoffice-base';
+    open_desktop_entry_if_available 'Escritório / LibreOffice Calc', 'libreoffice-calc';
+    open_desktop_entry_if_available 'Escritório / LibreOffice Draw', 'libreoffice-draw';
+    open_desktop_entry_if_available 'Escritório / LibreOffice Impress', 'libreoffice-impress';
+    open_desktop_entry_if_available 'Escritório / LibreOffice Math', 'libreoffice-math';
+    if ($available_desktop_entries{'libreoffice-writer'}) {
         exercise_writer;
     }
     else {
-        skip_missing_application 'Escritório', 'LibreOffice Writer', 'libreoffice';
+        record_info 'Escritório / LibreOffice Writer / skipped',
+          "Desktop entry 'libreoffice-writer.desktop' is not installed";
+        push @application_metrics, {
+            category => 'Escritório',
+            name => 'LibreOffice Writer',
+            launcher => 'gtk-launch libreoffice-writer',
+            status => 'skipped',
+            action => 'Desktop entry absent',
+        };
     }
     open_command_smoke_if_available 'Escritório / OCR PDF', 'bigocrpdf';
     open_command_smoke_if_available 'Escritório / PDF viewer', 'okular';
@@ -306,16 +423,16 @@ sub run {
     # WebApps use exact desktop IDs because their launcher requires the full
     # Exec line generated in each desktop entry.
     open_command_smoke_if_available 'Webapps / manager', 'big-webapps-gui';
-    open_desktop_entry_if_available 'Webapps / BigLinux Forum', 'brave-forum.biglinux.com.br__-Default';
-    open_desktop_entry_if_available 'Webapps / Calendar', 'brave-calendar.google.com__-Default';
-    open_desktop_entry_if_available 'Webapps / Deezer', 'brave-www.deezer.com__-Default';
-    open_desktop_entry_if_available 'Webapps / Discord', 'brave-discord.com__-Default';
-    open_desktop_entry_if_available 'Webapps / Drive', 'brave-drive.google.com__-Default';
-    open_desktop_entry_if_available 'Webapps / Jitsi Meet', 'brave-meet.jit.si__-Default';
-    open_desktop_entry_if_available 'Webapps / Snapdrop', 'brave-snapdrop.net__-Default';
-    open_desktop_entry_if_available 'Webapps / Spotify', 'brave-open.spotify.com__browse_featured-Default';
-    open_desktop_entry_if_available 'Webapps / Telegram', 'brave-webz.telegram.org__-Default';
-    open_desktop_entry_if_available 'Webapps / WhatsApp', 'brave-web.whatsapp.com__-Default';
+    open_desktop_entry_if_available 'Webapps / BigLinux Forum', 'brave-forum.biglinux.com.br__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Calendar', 'brave-calendar.google.com__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Deezer', 'brave-www.deezer.com__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Discord', 'brave-discord.com__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Drive', 'brave-drive.google.com__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Jitsi Meet', 'brave-meet.jit.si__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Snapdrop', 'brave-snapdrop.net__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Spotify', 'brave-open.spotify.com__browse_featured-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / Telegram', 'brave-webz.telegram.org__-Default', 'big-webapps-exec';
+    open_desktop_entry_if_available 'Webapps / WhatsApp', 'brave-web.whatsapp.com__-Default', 'big-webapps-exec';
 }
 
 1;
