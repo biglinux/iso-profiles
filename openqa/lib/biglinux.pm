@@ -3,7 +3,9 @@
 package biglinux;
 
 use Mojo::Base 'distribution', -signatures;
-use testapi;
+# Import no symbols: importing testapi::script_run into this class would
+# shadow distribution::script_run and recurse when the console probes run.
+use testapi ();
 
 sub init ($self) {
     $self->SUPER::init;
