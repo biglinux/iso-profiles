@@ -7,9 +7,9 @@ sub open_command_application {
     my ($command, $needle, $timeout) = @_;
 
     send_key 'alt-f2';
-    sleep 1;
+    sleep 3;
     type_string $command;
-    sleep 1;
+    sleep 3;
     assert_screen_change { send_key 'ret' };
     assert_screen $needle, $timeout;
     send_key 'alt-f4';
