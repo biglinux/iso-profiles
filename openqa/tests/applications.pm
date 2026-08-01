@@ -39,6 +39,20 @@ sub skip_missing_application {
     record_info "$category / skipped", "Executable '$command' is not installed; '$search' is not tested";
 }
 
+sub close_exercised_application {
+    # Browser desktop entries can reuse an existing process and leave more
+    # than one window behind.  Close only while the desktop is not visible;
+    # this avoids cascading into unrelated applications from earlier checks.
+    for (1 .. 3) {
+        send_key 'alt-f4';
+        sleep 2;
+        send_key 'esc';
+        sleep 2;
+        return if check_screen 'biglinux-live-desktop', 0;
+    }
+    assert_screen 'biglinux-live-desktop', 15;
+}
+
 sub open_command_application {
     my ($command, $needle, $timeout) = @_;
 
@@ -48,13 +62,7 @@ sub open_command_application {
     sleep 3;
     assert_screen_change { send_key 'ret' };
     assert_screen $needle, $timeout;
-    # Close only the window just exercised.  Repeating Alt+F4 can tear down
-    # unrelated windows left by a previous application and makes the next
-    # desktop assertion non-local.
-    send_key 'alt-f4';
-    sleep 2;
-    send_key 'esc';
-    sleep 2;
+    close_exercised_application;
 }
 
 sub open_command_application_if_available {
@@ -77,11 +85,7 @@ sub open_command_smoke {
     sleep 3;
     assert_screen_change { send_key 'ret' };
     sleep 5;
-    send_key 'alt-f4';
-    sleep 2;
-    send_key 'esc';
-    sleep 2;
-    assert_screen 'biglinux-live-desktop', 30;
+    close_exercised_application;
 }
 
 sub open_command_smoke_if_available {
@@ -103,13 +107,7 @@ sub open_menu_application {
     sleep 1;
     assert_screen_change { send_key 'ret' };
     sleep 5;
-    # A first-run dialog is dismissed after closing the application; do not
-    # cascade Alt+F4 into windows owned by earlier application checks.
-    send_key 'alt-f4';
-    sleep 2;
-    send_key 'esc';
-    sleep 2;
-    assert_screen 'biglinux-live-desktop', 30;
+    close_exercised_application;
 }
 
 sub open_menu_application_if_available {
@@ -142,8 +140,7 @@ sub exercise_writer {
     sleep 3;
     # If saving failed, Alt+F4 leaves a confirmation dialog and the desktop
     # assertion below fails instead of silently discarding the document.
-    send_key 'alt-f4';
-    assert_screen 'biglinux-live-desktop', 30;
+    close_exercised_application;
 }
 
 sub run {

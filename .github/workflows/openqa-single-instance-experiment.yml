@@ -200,7 +200,7 @@ jobs:
             BUILD="github-actions-${GITHUB_RUN_ID}" \
             ISO=biglinux_2026-07-31_k71.iso \
             CASEDIR=https://github.com/biglinux/iso-profiles.git#openqa-single-instance-experiment \
-            TEST_GIT_HASH="${GITHUB_SHA}" \
+            TEST_GIT_REFSPEC="${GITHUB_SHA}" \
             PRODUCTDIR=openqa \
             NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
             SERIALDEV=hvc0 \
