@@ -61,6 +61,7 @@ jobs:
       - name: Start openQA single-instance
         run: |
           set -euo pipefail
+          container_command=()
           container_args=(
             --detach
             --name openqa
@@ -73,11 +74,19 @@ jobs:
           if [[ -c /dev/kvm ]]; then
             container_args+=(
               --device /dev/kvm
-              --group-add "$(stat --format '%g' /dev/kvm)"
+              --env "KVM_GID=$(stat --format '%g' /dev/kvm)"
+              --entrypoint /bin/bash
+            )
+            container_command=(
+              -c
+              "groupmod --gid \"\$KVM_GID\" --non-unique kvm &&
+               usermod --append --groups kvm _openqa-worker &&
+               exec /usr/share/openqa/script/openqa-bootstrap"
             )
           fi
           docker run "${container_args[@]}" \
-            registry.opensuse.org/devel/openqa/containers/openqa-single-instance
+            registry.opensuse.org/devel/openqa/containers/openqa-single-instance \
+            "${container_command[@]}"
 
       - name: Wait for the openQA API
         run: |
@@ -102,7 +111,7 @@ jobs:
       - name: Verify KVM access from the openQA worker
         run: |
           if [[ -c /dev/kvm ]]; then
-            docker exec --user _openqa-worker openqa test -r /dev/kvm
+            docker exec openqa su _openqa-worker -c 'test -r /dev/kvm'
           else
             echo "KVM is unavailable on this runner"
           fi
