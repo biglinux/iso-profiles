@@ -99,7 +99,6 @@ sub run {
     open_menu_application 'Gráficos / image OCR', 'Extract text from image', 45;
     open_menu_application 'Gráficos / GIMP', 'GNU Image Manipulation Program', 60;
     open_menu_application 'Gráficos / Gwenview', 'Gwenview', 45;
-    open_menu_application 'Gráficos / BigIris', 'BigIris Image Viewer', 45;
     open_command_smoke 'Gráficos / XDvi', 'xdvi';
 
     # Internet applications.
