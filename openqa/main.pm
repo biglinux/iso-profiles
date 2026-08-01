@@ -3,6 +3,6 @@
 use Mojo::Base -strict;
 use autotest;
 
-autotest::loadtest 'tests/boot_menu.pm';
+autotest::loadtest 'openqa/tests/boot_menu.pm';
 
 1;
