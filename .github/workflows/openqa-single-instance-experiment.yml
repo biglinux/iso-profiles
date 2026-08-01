@@ -217,11 +217,11 @@ jobs:
           if docker inspect openqa > /dev/null 2>&1; then
             docker logs openqa > openqa-diagnostics/container.log 2>&1
             docker inspect openqa > openqa-diagnostics/container.json
-            if docker exec openqa test -d /var/lib/openqa/share/testresults; then
-              docker cp openqa:/var/lib/openqa/share/testresults openqa-diagnostics/testresults
+            if docker exec openqa test -d /data/testresults; then
+              docker cp openqa:/data/testresults openqa-diagnostics/testresults
             fi
-            if docker exec openqa test -d /var/lib/openqa/share/images; then
-              docker cp openqa:/var/lib/openqa/share/images openqa-diagnostics/images
+            if docker exec openqa test -d /data/images; then
+              docker cp openqa:/data/images openqa-diagnostics/images
             fi
             if docker exec openqa test -d /var/lib/openqa/pool/1; then
               docker cp openqa:/var/lib/openqa/pool/1 openqa-diagnostics/worker-pool
