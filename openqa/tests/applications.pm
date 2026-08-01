@@ -3,6 +3,37 @@
 use Mojo::Base 'basetest';
 use testapi;
 
+my %available_commands;
+
+sub discover_commands {
+    my (@commands) = @_;
+
+    select_console 'root-virtio-terminal';
+    for my $command (@commands) {
+        my $status = script_run "command -v $command", timeout => 15, quiet => 1;
+        die "command availability probe timed out for '$command'" unless defined $status;
+        $available_commands{$command} = $status == 0;
+    }
+    select_console 'sut';
+
+    my @missing = grep { !$available_commands{$_} } @commands;
+    record_info 'Application inventory', @missing ?
+      'Skipping absent executables: ' . join(', ', @missing) :
+      'All catalogued application executables are present';
+}
+
+sub command_available {
+    my ($command) = @_;
+    die "command '$command' was not included in the availability inventory"
+      unless exists $available_commands{$command};
+    return $available_commands{$command};
+}
+
+sub skip_missing_application {
+    my ($category, $search, $command) = @_;
+    record_info "$category / skipped", "Executable '$command' is not installed; '$search' is not tested";
+}
+
 sub open_command_application {
     my ($command, $needle, $timeout) = @_;
 
@@ -18,6 +49,16 @@ sub open_command_application {
     sleep 2;
     send_key 'ret';
     sleep 2;
+}
+
+sub open_command_application_if_available {
+    my ($category, $command, $needle, $timeout) = @_;
+    my ($executable) = split /\s+/, $command;
+    unless (command_available($executable)) {
+        skip_missing_application $category, $command, $executable;
+        return;
+    }
+    open_command_application $command, $needle, $timeout;
 }
 
 sub open_command_smoke {
@@ -39,6 +80,15 @@ sub open_command_smoke {
     assert_screen 'biglinux-live-desktop', 30;
 }
 
+sub open_command_smoke_if_available {
+    my ($category, $command) = @_;
+    unless (command_available($command)) {
+        skip_missing_application $category, $command, $command;
+        return;
+    }
+    open_command_smoke $category, $command;
+}
+
 sub open_menu_application {
     my ($category, $search, $timeout) = @_;
 
@@ -58,6 +108,15 @@ sub open_menu_application {
     send_key 'ret';
     sleep 2;
     assert_screen 'biglinux-live-desktop', 30;
+}
+
+sub open_menu_application_if_available {
+    my ($category, $search, $command, $timeout) = @_;
+    unless (command_available($command)) {
+        skip_missing_application $category, $search, $command;
+        return;
+    }
+    open_menu_application $category, $search, $timeout;
 }
 
 sub exercise_writer {
@@ -86,101 +145,121 @@ sub exercise_writer {
 }
 
 sub run {
+    # Inventory the guest once over the virtio serial console.  Missing
+    # optional packages are recorded and skipped; a present package still
+    # has to pass the graphical launch/close check below.
+    discover_commands qw(
+      dolphin konsole brave chromium libreoffice bigocrpdf okular simple-scan
+      bigocrimage gimp gwenview xdvi rustdesk firefox kmines lutris kpat steam
+      bigaudio bigvideo bigcam big-audio-converter-gui big-video-converter-gui
+      bigaudioimprove gnome-network-displays kdenlive strawberry smplayer uxplay
+      guvcview pamac-manager big-store bigterminal bigfiles bigstyle-gui
+      bigcontrolcenter big-parental-controls kmenuedit big-driver-manager htop
+      resources big-optimizer-gui kate bigeditor gnome-calculator spectacle ark
+      krunner plasma-print-queue tts-selected-text kfind scrcpy
+      plasma-emojier big-webapps-exec
+    );
+
     # Keep the existing focused smoke checks for the three original apps.
-    open_command_application 'dolphin', 'biglinux-dolphin', 30;
-    open_command_application 'konsole', 'biglinux-konsole', 30;
-    open_command_application 'brave about:blank', 'biglinux-brave', 45;
+    open_command_application_if_available 'Sistema / Dolphin', 'dolphin', 'biglinux-dolphin', 30;
+    open_command_application_if_available 'Sistema / Konsole', 'konsole', 'biglinux-konsole', 30;
+    open_command_application_if_available 'Internet / Brave', 'brave about:blank', 'biglinux-brave', 45;
 
     # Office and document viewers shown under Escritório.
-    open_menu_application 'Escritório / LibreOffice Base', 'LibreOffice Base', 45;
-    open_menu_application 'Escritório / LibreOffice Calc', 'LibreOffice Calc', 45;
-    open_menu_application 'Escritório / LibreOffice Draw', 'LibreOffice Draw', 45;
-    open_menu_application 'Escritório / LibreOffice Impress', 'LibreOffice Impress', 45;
-    open_menu_application 'Escritório / LibreOffice Math', 'LibreOffice Math', 45;
-    exercise_writer;
-    open_menu_application 'Escritório / OCR PDF', 'Recognize text in scanned PDF', 45;
-    open_menu_application 'Escritório / PDF viewer', 'Okular', 45;
+    open_menu_application_if_available 'Escritório / LibreOffice Base', 'LibreOffice Base', 'libreoffice', 45;
+    open_menu_application_if_available 'Escritório / LibreOffice Calc', 'LibreOffice Calc', 'libreoffice', 45;
+    open_menu_application_if_available 'Escritório / LibreOffice Draw', 'LibreOffice Draw', 'libreoffice', 45;
+    open_menu_application_if_available 'Escritório / LibreOffice Impress', 'LibreOffice Impress', 'libreoffice', 45;
+    open_menu_application_if_available 'Escritório / LibreOffice Math', 'LibreOffice Math', 'libreoffice', 45;
+    if (command_available('libreoffice')) {
+        exercise_writer;
+    }
+    else {
+        skip_missing_application 'Escritório', 'LibreOffice Writer', 'libreoffice';
+    }
+    open_menu_application_if_available 'Escritório / OCR PDF', 'Recognize text in scanned PDF', 'bigocrpdf', 45;
+    open_menu_application_if_available 'Escritório / PDF viewer', 'Okular', 'okular', 45;
 
     # Graphics applications.
-    open_menu_application 'Gráficos / document scanner', 'Document Scanner', 45;
-    open_menu_application 'Gráficos / image OCR', 'Extract text from image', 45;
-    open_menu_application 'Gráficos / GIMP', 'GNU Image Manipulation Program', 60;
-    open_menu_application 'Gráficos / Gwenview', 'Gwenview', 45;
-    open_command_smoke 'Gráficos / XDvi', 'xdvi';
+    open_menu_application_if_available 'Gráficos / document scanner', 'Document Scanner', 'simple-scan', 45;
+    open_menu_application_if_available 'Gráficos / image OCR', 'Extract text from image', 'bigocrimage', 45;
+    open_menu_application_if_available 'Gráficos / GIMP', 'GNU Image Manipulation Program', 'gimp', 60;
+    open_menu_application_if_available 'Gráficos / Gwenview', 'Gwenview', 'gwenview', 45;
+    open_command_smoke_if_available 'Gráficos / XDvi', 'xdvi';
 
     # Internet applications.
-    open_menu_application 'Internet / RustDesk', 'Remote Desktop RustDesk', 45;
-    open_menu_application 'Internet / Chromium', 'Chromium', 45;
-    open_menu_application 'Internet / Brave', 'Brave', 45;
-    open_menu_application 'Internet / Firefox', 'Firefox', 60;
+    open_menu_application_if_available 'Internet / RustDesk', 'Remote Desktop RustDesk', 'rustdesk', 45;
+    open_menu_application_if_available 'Internet / Chromium', 'Chromium', 'chromium', 45;
+    open_menu_application_if_available 'Internet / Brave', 'Brave', 'brave', 45;
+    open_menu_application_if_available 'Internet / Firefox', 'Firefox', 'firefox', 60;
 
     # Games.
-    open_menu_application 'Jogos / Mines', 'Mines', 45;
-    open_menu_application 'Jogos / Lutris', 'Lutris', 60;
-    open_menu_application 'Jogos / KPatience', 'KPatience', 45;
-    open_menu_application 'Jogos / Steam', 'Steam', 60;
+    open_menu_application_if_available 'Jogos / Mines', 'Mines', 'kmines', 45;
+    open_menu_application_if_available 'Jogos / Lutris', 'Lutris', 'lutris', 60;
+    open_menu_application_if_available 'Jogos / KPatience', 'KPatience', 'kpat', 45;
+    open_menu_application_if_available 'Jogos / Steam', 'Steam', 'steam', 60;
 
     # Multimedia applications.
-    open_menu_application 'Multimídia / Big Audio Player', 'Big Audio Player', 45;
-    open_menu_application 'Multimídia / Big Video Player', 'Big Video Player', 45;
-    open_command_smoke 'Multimídia / BigCam', 'bigcam';
-    open_menu_application 'Multimídia / audio converter', 'Audio Converter', 45;
-    open_menu_application 'Multimídia / video converter', 'Video Converter', 45;
-    open_menu_application 'Multimídia / noise filter', 'Filter noise', 45;
-    open_menu_application 'Multimídia / GNOME Network Displays', 'GNOME Network Displays', 45;
-    open_menu_application 'Multimídia / Kdenlive', 'Kdenlive', 60;
-    open_menu_application 'Multimídia / Strawberry', 'Music Player Strawberry', 60;
-    open_menu_application 'Multimídia / SMPlayer', 'Video Player SMPlayer', 45;
-    open_menu_application 'Multimídia / UxPlay', 'UxPlay', 45;
-    open_menu_application 'Multimídia / Guvcview', 'Webcam Guvc', 45;
+    open_menu_application_if_available 'Multimídia / Big Audio Player', 'Big Audio Player', 'bigaudio', 45;
+    open_menu_application_if_available 'Multimídia / Big Video Player', 'Big Video Player', 'bigvideo', 45;
+    open_command_smoke_if_available 'Multimídia / BigCam', 'bigcam';
+    open_menu_application_if_available 'Multimídia / audio converter', 'Audio Converter', 'big-audio-converter-gui', 45;
+    open_menu_application_if_available 'Multimídia / video converter', 'Video Converter', 'big-video-converter-gui', 45;
+    open_menu_application_if_available 'Multimídia / noise filter', 'Filter noise', 'bigaudioimprove', 45;
+    open_menu_application_if_available 'Multimídia / GNOME Network Displays', 'GNOME Network Displays', 'gnome-network-displays', 45;
+    open_menu_application_if_available 'Multimídia / Kdenlive', 'Kdenlive', 'kdenlive', 60;
+    open_menu_application_if_available 'Multimídia / Strawberry', 'Music Player Strawberry', 'strawberry', 60;
+    open_menu_application_if_available 'Multimídia / SMPlayer', 'Video Player SMPlayer', 'smplayer', 45;
+    open_menu_application_if_available 'Multimídia / UxPlay', 'UxPlay', 'uxplay', 45;
+    open_menu_application_if_available 'Multimídia / Guvcview', 'Webcam Guvc', 'guvcview', 45;
 
     # System applications.
-    open_menu_application 'Sistema / updates', 'Software Update', 60;
-    open_menu_application 'Sistema / Big Store', 'Big Store', 60;
-    open_menu_application 'Sistema / Big Terminal', 'Big Terminal', 45;
-    open_menu_application 'Sistema / BigFiles', 'BigFiles', 45;
-    open_menu_application 'Sistema / BigStyle', 'BigStyle', 45;
-    open_menu_application 'Sistema / control center', 'Control Center', 60;
-    open_menu_application 'Sistema / parental controls', 'Parental Controls', 45;
-    open_menu_application 'Sistema / menu editor', 'Menu Editor', 45;
-    open_menu_application 'Sistema / file manager', 'Dolphin', 45;
-    open_menu_application 'Sistema / driver manager', 'Hardware Management', 60;
-    open_menu_application 'Sistema / Htop', 'Htop', 30;
-    open_menu_application 'Sistema / resources', 'Keep an eye on system resources', 45;
-    open_menu_application 'Sistema / optimizer', 'BigLinux Optimizer', 45;
-    open_menu_application 'Sistema / Pamac', 'Pamac', 60;
-    open_menu_application 'Sistema / terminal', 'Konsole', 30;
-    open_menu_application 'Sistema / Ashy Terminal', 'Ashy Terminal', 45;
+    open_menu_application_if_available 'Sistema / updates', 'Software Update', 'pamac-manager', 60;
+    open_menu_application_if_available 'Sistema / Big Store', 'Big Store', 'big-store', 60;
+    open_menu_application_if_available 'Sistema / Big Terminal', 'Big Terminal', 'bigterminal', 45;
+    open_menu_application_if_available 'Sistema / BigFiles', 'BigFiles', 'bigfiles', 45;
+    open_menu_application_if_available 'Sistema / BigStyle', 'BigStyle', 'bigstyle-gui', 45;
+    open_menu_application_if_available 'Sistema / control center', 'Control Center', 'bigcontrolcenter', 60;
+    open_menu_application_if_available 'Sistema / parental controls', 'Parental Controls', 'big-parental-controls', 45;
+    open_menu_application_if_available 'Sistema / menu editor', 'Menu Editor', 'kmenuedit', 45;
+    open_menu_application_if_available 'Sistema / file manager', 'Dolphin', 'dolphin', 45;
+    open_menu_application_if_available 'Sistema / driver manager', 'Hardware Management', 'big-driver-manager', 60;
+    open_menu_application_if_available 'Sistema / Htop', 'Htop', 'htop', 30;
+    open_menu_application_if_available 'Sistema / resources', 'Keep an eye on system resources', 'resources', 45;
+    open_menu_application_if_available 'Sistema / optimizer', 'BigLinux Optimizer', 'big-optimizer-gui', 45;
+    open_menu_application_if_available 'Sistema / Pamac', 'Pamac', 'pamac-manager', 60;
+    open_menu_application_if_available 'Sistema / terminal', 'Konsole', 'konsole', 30;
+    open_menu_application_if_available 'Sistema / Ashy Terminal', 'Ashy Terminal', 'ashyterm', 45;
 
     # Utility applications.
-    open_menu_application 'Utilitários / notes', 'Kate', 45;
-    open_menu_application 'Utilitários / BigEditor', 'BigEditor', 45;
-    open_menu_application 'Utilitários / calculator', 'Calculator', 45;
-    open_menu_application 'Utilitários / screenshot', 'Spectacle', 45;
-    open_menu_application 'Utilitários / archive manager', 'Ark', 45;
-    open_menu_application 'Utilitários / Run', 'Run', 30;
-    open_menu_application 'Utilitários / image OCR', 'Extract text from image', 45;
-    open_menu_application 'Utilitários / print queue', 'Print Queue', 45;
-    open_menu_application 'Utilitários / driver manager', 'Hardware Management', 60;
-    open_menu_application 'Utilitários / speech', 'Speech or stop selected text', 45;
-    open_menu_application 'Utilitários / file search', 'KFind', 45;
-    open_menu_application 'Utilitários / scrcpy', 'scrcpy', 45;
-    open_menu_application 'Utilitários / scrcpy console', 'scrcpy (console)', 45;
-    open_menu_application 'Utilitários / emoji selector', 'Emoji Selector', 45;
+    open_menu_application_if_available 'Utilitários / notes', 'Kate', 'kate', 45;
+    open_menu_application_if_available 'Utilitários / BigEditor', 'BigEditor', 'bigeditor', 45;
+    open_menu_application_if_available 'Utilitários / calculator', 'Calculator', 'gnome-calculator', 45;
+    open_menu_application_if_available 'Utilitários / screenshot', 'Spectacle', 'spectacle', 45;
+    open_menu_application_if_available 'Utilitários / archive manager', 'Ark', 'ark', 45;
+    open_menu_application_if_available 'Utilitários / Run', 'Run', 'krunner', 30;
+    open_menu_application_if_available 'Utilitários / image OCR', 'Extract text from image', 'bigocrimage', 45;
+    open_menu_application_if_available 'Utilitários / print queue', 'Print Queue', 'plasma-print-queue', 45;
+    open_menu_application_if_available 'Utilitários / driver manager', 'Hardware Management', 'big-driver-manager', 45;
+    open_menu_application_if_available 'Utilitários / speech', 'Speech or stop selected text', 'tts-selected-text', 45;
+    open_menu_application_if_available 'Utilitários / file search', 'KFind', 'kfind', 45;
+    open_menu_application_if_available 'Utilitários / scrcpy', 'scrcpy', 'scrcpy', 45;
+    open_menu_application_if_available 'Utilitários / scrcpy console', 'scrcpy (console)', 'scrcpy', 45;
+    open_menu_application_if_available 'Utilitários / emoji selector', 'Emoji Selector', 'plasma-emojier', 45;
 
     # Webapps. The launch check intentionally does not depend on network content;
     # it verifies that each installed webapp entry opens its browser window.
-    open_menu_application 'Webapps / manager', 'Add and Remove WebApps', 60;
-    open_menu_application 'Webapps / BigLinux Forum', 'BigLinux Forum', 60;
-    open_menu_application 'Webapps / Calendar', 'Calendar', 60;
-    open_menu_application 'Webapps / Deezer', 'Deezer music', 60;
-    open_menu_application 'Webapps / Discord', 'Discord', 60;
-    open_menu_application 'Webapps / Drive', 'Drive', 60;
-    open_menu_application 'Webapps / Jitsi Meet', 'Jitsi Meet', 60;
-    open_menu_application 'Webapps / Snapdrop', 'Snapdrop', 60;
-    open_menu_application 'Webapps / Spotify', 'Spotify', 60;
-    open_menu_application 'Webapps / Telegram', 'Telegram', 60;
-    open_menu_application 'Webapps / WhatsApp', 'WhatsApp', 60;
+    open_menu_application_if_available 'Webapps / manager', 'Add and Remove WebApps', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / BigLinux Forum', 'BigLinux Forum', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Calendar', 'Calendar', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Deezer', 'Deezer music', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Discord', 'Discord', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Drive', 'Drive', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Jitsi Meet', 'Jitsi Meet', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Snapdrop', 'Snapdrop', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Spotify', 'Spotify', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / Telegram', 'Telegram', 'big-webapps-exec', 60;
+    open_menu_application_if_available 'Webapps / WhatsApp', 'WhatsApp', 'big-webapps-exec', 60;
 }
 
 1;

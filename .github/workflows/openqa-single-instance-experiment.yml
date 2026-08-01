@@ -203,6 +203,7 @@ jobs:
             TEST_GIT_HASH="${GITHUB_SHA}" \
             PRODUCTDIR=openqa \
             NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
+            SERIALDEV=hvc0 \
             "${test_settings[@]}"
 
       - name: Collect openQA diagnostics
