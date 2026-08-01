@@ -217,11 +217,11 @@ jobs:
           if docker inspect openqa > /dev/null 2>&1; then
             docker logs openqa > openqa-diagnostics/container.log 2>&1
             docker inspect openqa > openqa-diagnostics/container.json
-            if docker exec openqa test -d /var/lib/openqa/testresults; then
-              docker cp openqa:/var/lib/openqa/testresults openqa-diagnostics/testresults
+            if docker exec openqa test -d /var/lib/openqa/share/testresults; then
+              docker cp openqa:/var/lib/openqa/share/testresults openqa-diagnostics/testresults
             fi
-            if docker exec openqa test -d /var/lib/openqa/images; then
-              docker cp openqa:/var/lib/openqa/images openqa-diagnostics/images
+            if docker exec openqa test -d /var/lib/openqa/share/images; then
+              docker cp openqa:/var/lib/openqa/share/images openqa-diagnostics/images
             fi
             if docker exec openqa test -d /var/lib/openqa/pool/1; then
               docker cp openqa:/var/lib/openqa/pool/1 openqa-diagnostics/worker-pool
@@ -235,14 +235,6 @@ jobs:
           python3 openqa/report/generate_report.py \
             --results-root openqa-diagnostics \
             --output openqa-diagnostics/biglinux-validation-report.html
-          browser=$(command -v google-chrome || command -v chromium || true)
-          if [[ -n "$browser" ]]; then
-            "$browser" --headless --no-sandbox --disable-gpu \
-              --print-to-pdf=openqa-diagnostics/biglinux-validation-report.pdf \
-              "file://${GITHUB_WORKSPACE}/openqa-diagnostics/biglinux-validation-report.html"
-          else
-            echo "Chrome/Chromium is unavailable; the self-contained HTML report was generated"
-          fi
 
       - name: Upload openQA diagnostics
         if: ${{ always() }}
