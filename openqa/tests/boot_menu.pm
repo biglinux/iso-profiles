@@ -8,7 +8,12 @@ sub run {
     send_key 'ret';
     assert_and_click 'biglinux-live-language', timeout => 300, mousehide => 1;
     assert_and_click 'biglinux-live-keyboard', timeout => 30, mousehide => 1;
-    assert_and_click 'biglinux-live-desktop-layout', timeout => 30, mousehide => 1;
+    # Match the stable title only; the cards are intentionally theme/layout
+    # artwork and are not a reliable oracle.  The first card keeps a stable
+    # position in this setup, so click its center after the semantic match.
+    assert_screen 'biglinux-live-desktop-layout', 30;
+    mouse_set 209, 349;
+    mouse_click;
     assert_screen 'biglinux-live-theme', 30;
     send_key 'ret';
     # Make the desktop reference independent of the rotating live-session wallpaper.
