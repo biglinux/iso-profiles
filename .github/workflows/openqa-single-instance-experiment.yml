@@ -1,0 +1,118 @@
+---
+name: openQA single-instance experiment
+
+# Proves that a GitHub-hosted runner can start the complete openQA stack and
+# execute its official QEMU/VNC example. This intentionally does not build or
+# publish a BigLinux ISO yet; that integration only makes sense after the
+# runtime itself is known to work on the hosted runner.
+on:
+  push:
+    branches: [openqa-single-instance-experiment]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Inspect virtualization support
+        run: |
+          set -euo pipefail
+          uname -a
+          docker version
+          if [[ -c /dev/kvm ]]; then
+            echo "KVM is available"
+            ls -l /dev/kvm
+          else
+            echo "KVM is unavailable; the test will use QEMU emulation"
+          fi
+
+      - name: Start openQA single-instance
+        run: |
+          set -euo pipefail
+          container_args=(
+            --detach
+            --name openqa
+            --publish 1080:80
+            --publish 1443:443
+          )
+          if [[ -c /dev/kvm ]]; then
+            container_args+=(--device /dev/kvm)
+          fi
+          docker run "${container_args[@]}" \
+            registry.opensuse.org/devel/openqa/containers/openqa-single-instance
+
+      - name: Wait for the openQA API
+        run: |
+          set -euo pipefail
+          for attempt in {1..120}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:1080/api/v1/jobs > /dev/null; then
+              echo "openQA became ready after $((attempt * 5)) seconds or less"
+              exit 0
+            fi
+            if [[ $(docker inspect --format '{{.State.Running}}' openqa) != true ]]; then
+              echo "The openQA container stopped before its API became ready" >&2
+              docker logs openqa
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "The openQA API was not ready within 10 minutes" >&2
+          docker logs openqa
+          exit 1
+
+      - name: Run the official QEMU and VNC smoke test
+        run: |
+          set -euo pipefail
+          test_settings=()
+          if [[ ! -c /dev/kvm ]]; then
+            test_settings+=(QEMU_NO_KVM=1)
+          fi
+          docker exec openqa openqa-cli schedule --monitor \
+            async=1 \
+            SCENARIO_DEFINITIONS_YAML_FILE=https://raw.githubusercontent.com/os-autoinst/os-autoinst-distri-example/refs/heads/main/scenario-definitions.yaml \
+            DISTRI=example \
+            VERSION=0 \
+            FLAVOR=DVD \
+            ARCH=x86_64 \
+            TEST=simple_boot \
+            _GROUP_ID=0 \
+            BUILD="github-actions-${GITHUB_RUN_ID}" \
+            CASEDIR=https://github.com/os-autoinst/os-autoinst-distri-example.git \
+            PRODUCTDIR=. \
+            NEEDLES_DIR=%%CASEDIR%%/needles \
+            "${test_settings[@]}"
+
+      - name: Collect openQA diagnostics
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          mkdir -p openqa-diagnostics
+          if docker inspect openqa > /dev/null 2>&1; then
+            docker logs openqa > openqa-diagnostics/container.log 2>&1
+            docker inspect openqa > openqa-diagnostics/container.json
+            if docker exec openqa test -d /var/lib/openqa/testresults; then
+              docker cp openqa:/var/lib/openqa/testresults openqa-diagnostics/testresults
+            fi
+          fi
+
+      - name: Upload openQA diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: openqa-single-instance-${{ github.run_id }}
+          path: openqa-diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop openQA
+        if: ${{ always() }}
+        run: |
+          if docker inspect openqa > /dev/null 2>&1; then
+            docker stop openqa
+          fi
