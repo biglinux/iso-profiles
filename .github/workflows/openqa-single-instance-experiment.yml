@@ -217,11 +217,15 @@ jobs:
           if docker inspect openqa > /dev/null 2>&1; then
             docker logs openqa > openqa-diagnostics/container.log 2>&1
             docker inspect openqa > openqa-diagnostics/container.json
-            if docker exec openqa test -d /data/testresults; then
-              docker cp openqa:/data/testresults openqa-diagnostics/testresults
-            fi
-            if docker exec openqa test -d /data/images; then
-              docker cp openqa:/data/images openqa-diagnostics/images
+            job_id=$(curl --fail --silent --show-error \
+              http://127.0.0.1:1080/api/v1/jobs \
+              | jq -r '[.jobs[] | select(.settings.DISTRI == "biglinux")] | max_by(.id).id // empty')
+            if [[ -n "$job_id" ]]; then
+              docker exec openqa openqa-cli archive \
+                --host http://localhost \
+                "$job_id" /tmp/biglinux-openqa-job
+              docker cp openqa:/tmp/biglinux-openqa-job \
+                openqa-diagnostics/testresults
             fi
             if docker exec openqa test -d /var/lib/openqa/pool/1; then
               docker cp openqa:/var/lib/openqa/pool/1 openqa-diagnostics/worker-pool
