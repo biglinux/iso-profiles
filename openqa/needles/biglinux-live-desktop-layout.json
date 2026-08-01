@@ -1,0 +1,33 @@
+{
+  "area": [
+    {
+      "height": 37,
+      "type": "match",
+      "width": 430,
+      "xpos": 297,
+      "ypos": 129
+    },
+    {
+      "click_point": {
+        "xpos": 130,
+        "ypos": 96
+      },
+      "height": 192,
+      "type": "match",
+      "width": 267,
+      "xpos": 79,
+      "ypos": 253
+    },
+    {
+      "height": 165,
+      "type": "match",
+      "width": 240,
+      "xpos": 392,
+      "ypos": 491
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-live-desktop-layout"
+  ]
+}
