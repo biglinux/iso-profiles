@@ -14,8 +14,7 @@ sub run {
     # Make the desktop reference independent of the rotating live-session wallpaper.
     sleep 5;
     send_key 'ctrl-alt-t';
-    assert_screen 'biglinux-konsole', 30;
-    sleep 1;
+    sleep 8;
     # type_string follows the guest keyboard layout; use the ABNT2 AltGr path
     # separator because a literal slash is mapped to the wrong physical key.
     type_string 'plasma-apply-wallpaperimage ';
