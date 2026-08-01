@@ -18,13 +18,13 @@ sub run {
     # type_string follows the guest keyboard layout; send the path separators
     # explicitly because '/' is otherwise produced as ';' in the live session.
     type_string 'plasma-apply-wallpaperimage ';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'usr';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'share';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'wallpapers';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'Big-retro.heic';
     send_key 'ret';
     sleep 2;
@@ -35,13 +35,13 @@ sub run {
     send_key 'ctrl-alt-t';
     sleep 3;
     type_string 'plasma-apply-wallpaperimage ';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'usr';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'share';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'wallpapers';
-    send_key 'shift-7';
+    send_key 'altgr-q';
     type_string 'Big-retro.heic';
     send_key 'ret';
     sleep 4;
