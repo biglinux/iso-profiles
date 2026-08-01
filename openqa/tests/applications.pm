@@ -59,7 +59,7 @@ sub exercise_writer {
     sleep 1;
     type_string 'LibreOffice Writer';
     sleep 1;
-    assert_screen_change { send_key 'ret' } 60;
+    assert_screen_change { send_key 'ret' };
     sleep 12;
     # LibreOffice shows a first-run welcome window on a fresh live session.
     send_key 'esc';
