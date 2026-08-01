@@ -25,20 +25,18 @@ sub run {
     assert_and_click 'biglinux-installer-launcher', timeout => 60, mousehide => 1;
 
     sleep 5;
-    capture_reference 'Installation tips';
-    click_at 512, 650;
+    assert_and_click 'biglinux-installer-tips', timeout => 30, mousehide => 1;
 
     sleep 30;
-    capture_reference 'Calamares welcome';
-    click_at 855, 738;
+    assert_and_click 'biglinux-installer-welcome', timeout => 60, mousehide => 1;
 
     sleep 5;
     capture_reference 'Calamares location';
-    click_at 855, 738;
+    click_at 855, 706;
 
     sleep 5;
     capture_reference 'Calamares keyboard';
-    click_at 855, 738;
+    click_at 855, 706;
 
     sleep 5;
     capture_reference 'Calamares partitions';

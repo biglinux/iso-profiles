@@ -7,11 +7,13 @@ sub open_application {
     my ($command, $needle, $timeout) = @_;
 
     send_key 'alt-f2';
+    sleep 1;
     type_string $command;
     sleep 1;
     send_key 'ret';
     assert_screen $needle, $timeout;
     send_key 'alt-f4';
+    sleep 2;
 }
 
 sub run {
