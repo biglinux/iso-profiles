@@ -48,11 +48,12 @@ sub open_command_application {
     sleep 3;
     assert_screen_change { send_key 'ret' };
     assert_screen $needle, $timeout;
+    # Close only the window just exercised.  Repeating Alt+F4 can tear down
+    # unrelated windows left by a previous application and makes the next
+    # desktop assertion non-local.
     send_key 'alt-f4';
     sleep 2;
-    send_key 'alt-f4';
-    sleep 2;
-    send_key 'ret';
+    send_key 'esc';
     sleep 2;
 }
 
@@ -76,11 +77,9 @@ sub open_command_smoke {
     sleep 3;
     assert_screen_change { send_key 'ret' };
     sleep 5;
-    for (1 .. 4) {
-        send_key 'alt-f4';
-        sleep 2;
-    }
-    send_key 'ret';
+    send_key 'alt-f4';
+    sleep 2;
+    send_key 'esc';
     sleep 2;
     assert_screen 'biglinux-live-desktop', 30;
 }
@@ -104,13 +103,11 @@ sub open_menu_application {
     sleep 1;
     assert_screen_change { send_key 'ret' };
     sleep 5;
-    # A first-run dialog is closed by the first key; the remaining keys close
-    # applications that open more than one top-level window.
-    for (1 .. 4) {
-        send_key 'alt-f4';
-        sleep 2;
-    }
-    send_key 'ret';
+    # A first-run dialog is dismissed after closing the application; do not
+    # cascade Alt+F4 into windows owned by earlier application checks.
+    send_key 'alt-f4';
+    sleep 2;
+    send_key 'esc';
     sleep 2;
     assert_screen 'biglinux-live-desktop', 30;
 }
