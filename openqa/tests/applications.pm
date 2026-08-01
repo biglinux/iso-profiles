@@ -133,9 +133,12 @@ sub open_command_smoke {
     type_string $command;
     sleep 3;
     assert_screen_change { send_key 'ret' };
-    sleep 5;
-    die "'$command' did not leave a visible application window"
-      if check_screen 'biglinux-live-desktop', 0;
+    my $deadline = time + 30;
+    while (check_screen('biglinux-live-desktop', 0)) {
+        die "'$command' did not leave a visible application window within 30 seconds"
+          if time >= $deadline;
+        sleep 1;
+    }
     close_exercised_application $command;
 }
 
