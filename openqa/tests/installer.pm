@@ -20,7 +20,9 @@ sub run {
     assert_and_click 'biglinux-installer-location', timeout => 30, mousehide => 1;
 
     sleep 5;
-    assert_and_click 'biglinux-installer-keyboard', timeout => 30, mousehide => 1;
+    assert_screen 'biglinux-installer-keyboard', 30, mousehide => 1;
+    mouse_set 855, 706;
+    mouse_click 'left';
 
     sleep 5;
     assert_screen 'biglinux-installer-partitions', 30, mousehide => 1;
