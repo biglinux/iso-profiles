@@ -43,10 +43,19 @@ sub close_exercised_application {
     my ($command) = @_;
     my $is_browser = defined($command) && $command =~ /(?:^|\s)(?:brave|chromium|firefox|big-webapps-exec)(?:\s|$)/;
 
+    # Close only while the desktop is not visible.  This handles browser
+    # windows one at a time without cascading into unrelated applications.
+    for (1 .. 3) {
+        send_key 'alt-f4';
+        sleep 2;
+        send_key 'esc';
+        sleep 2;
+        return if check_screen 'biglinux-live-desktop', 0;
+    }
+
     if ($is_browser) {
-        # Brave/Chromium reuse one process for several desktop entries, so
-        # Alt+F4 can leave another browser window visible.  Ctrl+Q requests a
-        # process-wide quit; confirm only when the desktop is still hidden.
+        # Brave/Chromium can reuse one process for several desktop entries.
+        # Use a process-wide quit only after ordinary window closure failed.
         send_key 'ctrl-q';
         sleep 3;
         return if check_screen 'biglinux-live-desktop', 0;
@@ -55,16 +64,6 @@ sub close_exercised_application {
         return if check_screen 'biglinux-live-desktop', 0;
     }
 
-    # Browser desktop entries can reuse an existing process and leave more
-    # than one window behind.  Close only while the desktop is not visible;
-    # this avoids cascading into unrelated applications from earlier checks.
-    for (1 .. 3) {
-        send_key 'alt-f4';
-        sleep 2;
-        send_key 'esc';
-        sleep 2;
-        return if check_screen 'biglinux-live-desktop', 0;
-    }
     assert_screen 'biglinux-live-desktop', 15;
 }
 
