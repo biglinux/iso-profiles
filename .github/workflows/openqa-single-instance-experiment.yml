@@ -190,7 +190,7 @@ jobs:
           fi
           docker exec openqa openqa-cli schedule --monitor \
             async=1 \
-            SCENARIO_DEFINITIONS_YAML_FILE=https://raw.githubusercontent.com/biglinux/iso-profiles/openqa-single-instance-experiment/openqa/scenario-definitions.yaml \
+            SCENARIO_DEFINITIONS_YAML_FILE=https://raw.githubusercontent.com/biglinux/iso-profiles/${GITHUB_SHA}/openqa/scenario-definitions.yaml \
             DISTRI=biglinux \
             VERSION=2026.07.31 \
             FLAVOR=Live \
@@ -200,6 +200,7 @@ jobs:
             BUILD="github-actions-${GITHUB_RUN_ID}" \
             ISO=biglinux_2026-07-31_k71.iso \
             CASEDIR=https://github.com/biglinux/iso-profiles.git#openqa-single-instance-experiment \
+            TEST_GIT_HASH="${GITHUB_SHA}" \
             PRODUCTDIR=openqa \
             NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
             "${test_settings[@]}"
@@ -217,6 +218,9 @@ jobs:
             fi
             if docker exec openqa test -d /var/lib/openqa/images; then
               docker cp openqa:/var/lib/openqa/images openqa-diagnostics/images
+            fi
+            if docker exec openqa test -d /var/lib/openqa/pool/1; then
+              docker cp openqa:/var/lib/openqa/pool/1 openqa-diagnostics/worker-pool
             fi
           fi
 
