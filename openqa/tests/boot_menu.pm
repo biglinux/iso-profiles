@@ -13,8 +13,8 @@ sub run {
     send_key 'ret';
     # Make the desktop reference independent of the rotating live-session wallpaper.
     sleep 5;
-    send_key 'alt-f2';
-    sleep 1;
+    send_key 'ctrl-alt-t';
+    sleep 3;
     # type_string follows the guest keyboard layout; use the ABNT2 AltGr path
     # separator because a literal slash is mapped to the wrong physical key.
     type_string 'plasma-apply-wallpaperimage ';
@@ -27,9 +27,9 @@ sub run {
     send_key 'altgr-q';
     type_string 'Big-retro.heic';
     send_key 'ret';
-    sleep 2;
-    send_key 'esc';
-    sleep 6;
+    sleep 4;
+    send_key 'alt-f4';
+    sleep 3;
     assert_screen 'biglinux-live-desktop', 60;
 }
 
