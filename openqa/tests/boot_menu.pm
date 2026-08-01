@@ -15,19 +15,21 @@ sub run {
     sleep 5;
     send_key 'alt-f2';
     sleep 1;
-    type_string 'plasma-apply-wallpaperimage /usr/share/wallpapers/Big-retro.heic';
+    # type_string follows the guest keyboard layout; send the path separators
+    # explicitly because '/' is otherwise produced as ';' in the live session.
+    type_string 'plasma-apply-wallpaperimage ';
+    send_key '/';
+    type_string 'usr';
+    send_key '/';
+    type_string 'share';
+    send_key '/';
+    type_string 'wallpapers';
+    send_key '/';
+    type_string 'Big-retro.heic';
     send_key 'ret';
     sleep 2;
     send_key 'esc';
     sleep 6;
-    send_key 'ctrl-alt-t';
-    sleep 3;
-    type_string 'plasma-apply-wallpaperimage /usr/share/wallpapers/Big-retro.heic';
-    send_key 'ret';
-    sleep 3;
-    save_screenshot;
-    send_key 'alt-f4';
-    sleep 3;
     assert_screen 'biglinux-live-desktop', 60;
 }
 
