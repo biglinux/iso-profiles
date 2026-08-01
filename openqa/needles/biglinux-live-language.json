@@ -15,6 +15,10 @@
       "ypos": 144
     },
     {
+      "click_point": {
+        "xpos": 125,
+        "ypos": 31
+      },
       "height": 62,
       "type": "match",
       "width": 251,

@@ -6,7 +6,8 @@ use testapi;
 sub run {
     assert_screen 'biglinux-boot-menu', 120;
     send_key 'ret';
-    assert_screen 'biglinux-live-language', 300;
+    assert_and_click 'biglinux-live-language', timeout => 300, mousehide => 1;
+    assert_screen 'biglinux-live-desktop', 120;
 }
 
 1;
