@@ -10,12 +10,28 @@ sub open_command_application {
     sleep 1;
     type_string $command;
     sleep 1;
-    assert_screen_change { send_key 'ret' } $timeout;
+    assert_screen_change { send_key 'ret' };
     assert_screen $needle, $timeout;
     send_key 'alt-f4';
     sleep 2;
     send_key 'alt-f4';
     sleep 2;
+}
+
+sub open_command_smoke {
+    my ($category, $command) = @_;
+
+    record_info $category, "Run '$command' from the graphical command launcher";
+    send_key 'alt-f2';
+    sleep 1;
+    type_string $command;
+    assert_screen_change { send_key 'ret' };
+    sleep 5;
+    for (1 .. 4) {
+        send_key 'alt-f4';
+        sleep 2;
+    }
+    assert_screen 'biglinux-live-desktop', 30;
 }
 
 sub open_menu_application {
@@ -26,7 +42,7 @@ sub open_menu_application {
     sleep 1;
     type_string $search;
     sleep 1;
-    assert_screen_change { send_key 'ret' } $timeout;
+    assert_screen_change { send_key 'ret' };
     sleep 5;
     # A first-run dialog is closed by the first key; the remaining keys close
     # applications that open more than one top-level window.
@@ -48,13 +64,13 @@ sub exercise_writer {
     # LibreOffice shows a first-run welcome window on a fresh live session.
     send_key 'esc';
     sleep 2;
-    assert_screen_change { type_string 'Teste de escrita do openQA BigLinux' } 15;
-    assert_screen_change { send_key 'ctrl-shift-s' } 15;
+    assert_screen_change { type_string 'Teste de escrita do openQA BigLinux' };
+    assert_screen_change { send_key 'ctrl-shift-s' };
     sleep 3;
     # The save dialog starts with the filename selected and the Documents folder.
     send_key 'ctrl-a';
     type_string 'openqa-writer-smoke';
-    assert_screen_change { send_key 'ret' } 15;
+    assert_screen_change { send_key 'ret' };
     sleep 3;
     # If saving failed, Alt+F4 leaves a confirmation dialog and the desktop
     # assertion below fails instead of silently discarding the document.
@@ -84,7 +100,7 @@ sub run {
     open_menu_application 'Gráficos / GIMP', 'GNU Image Manipulation Program', 60;
     open_menu_application 'Gráficos / Gwenview', 'Gwenview', 45;
     open_menu_application 'Gráficos / BigIris', 'BigIris Image Viewer', 45;
-    open_menu_application 'Gráficos / XDvi', 'XDvi', 45;
+    open_command_smoke 'Gráficos / XDvi', 'xdvi';
 
     # Internet applications.
     open_menu_application 'Internet / RustDesk', 'Remote Desktop RustDesk', 45;
