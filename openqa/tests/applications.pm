@@ -16,6 +16,8 @@ sub open_command_application {
     sleep 2;
     send_key 'alt-f4';
     sleep 2;
+    send_key 'ret';
+    sleep 2;
 }
 
 sub open_command_smoke {
@@ -31,6 +33,8 @@ sub open_command_smoke {
         send_key 'alt-f4';
         sleep 2;
     }
+    send_key 'ret';
+    sleep 2;
     assert_screen 'biglinux-live-desktop', 30;
 }
 
@@ -50,6 +54,8 @@ sub open_menu_application {
         send_key 'alt-f4';
         sleep 2;
     }
+    send_key 'ret';
+    sleep 2;
     assert_screen 'biglinux-live-desktop', 30;
 }
 
