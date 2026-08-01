@@ -40,6 +40,21 @@ sub skip_missing_application {
 }
 
 sub close_exercised_application {
+    my ($command) = @_;
+    my $is_browser = defined($command) && $command =~ /(?:^|\s)(?:brave|chromium|firefox|big-webapps-exec)(?:\s|$)/;
+
+    if ($is_browser) {
+        # Brave/Chromium reuse one process for several desktop entries, so
+        # Alt+F4 can leave another browser window visible.  Ctrl+Q requests a
+        # process-wide quit; confirm only when the desktop is still hidden.
+        send_key 'ctrl-q';
+        sleep 3;
+        return if check_screen 'biglinux-live-desktop', 0;
+        send_key 'ret';
+        sleep 3;
+        return if check_screen 'biglinux-live-desktop', 0;
+    }
+
     # Browser desktop entries can reuse an existing process and leave more
     # than one window behind.  Close only while the desktop is not visible;
     # this avoids cascading into unrelated applications from earlier checks.
@@ -62,7 +77,7 @@ sub open_command_application {
     sleep 3;
     assert_screen_change { send_key 'ret' };
     assert_screen $needle, $timeout;
-    close_exercised_application;
+    close_exercised_application $command;
 }
 
 sub open_command_application_if_available {
@@ -85,7 +100,7 @@ sub open_command_smoke {
     sleep 3;
     assert_screen_change { send_key 'ret' };
     sleep 5;
-    close_exercised_application;
+    close_exercised_application $command;
 }
 
 sub open_command_smoke_if_available {
@@ -98,7 +113,7 @@ sub open_command_smoke_if_available {
 }
 
 sub open_menu_application {
-    my ($category, $search, $timeout) = @_;
+    my ($category, $search, $timeout, $command) = @_;
 
     record_info $category, "Open the menu entry matching '$search'";
     send_key 'meta';
@@ -107,7 +122,7 @@ sub open_menu_application {
     sleep 1;
     assert_screen_change { send_key 'ret' };
     sleep 5;
-    close_exercised_application;
+    close_exercised_application $command;
 }
 
 sub open_menu_application_if_available {
@@ -116,7 +131,7 @@ sub open_menu_application_if_available {
         skip_missing_application $category, $search, $command;
         return;
     }
-    open_menu_application $category, $search, $timeout;
+    open_menu_application $category, $search, $timeout, $command;
 }
 
 sub exercise_writer {
