@@ -9,6 +9,12 @@ on:
   push:
     branches: [openqa-single-instance-experiment]
   workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: Open an interactive tmate session after openQA is ready
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -91,6 +97,12 @@ jobs:
           echo "The openQA API was not ready within 10 minutes" >&2
           docker logs openqa
           exit 1
+
+      - name: Open a tmate debug session
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3
+        with:
+          limit-access-to-actor: true
 
       - name: Run the official QEMU and VNC smoke test
         run: |
