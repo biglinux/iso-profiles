@@ -117,10 +117,25 @@ jobs:
           fi
 
       - name: Open a tmate debug session
+        id: tmate
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3
         with:
+          detached: true
           limit-access-to-actor: true
+
+      - name: Wait for tmate debugging to finish
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        timeout-minutes: 30
+        run: |
+          echo "Create /continue on the runner to start the automated tests"
+          while [[ ! -e /continue && ! -e "$GITHUB_WORKSPACE/continue" ]]; do
+            if [[ ! -S /tmp/tmate.sock ]]; then
+              echo "The tmate session ended without a continue file" >&2
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Run the official QEMU and VNC smoke test
         run: |
