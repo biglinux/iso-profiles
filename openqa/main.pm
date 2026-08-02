@@ -23,7 +23,7 @@ my %schedules = (
     ],
 );
 
-my $schedule = get_var('SCHEDULE', 'boot_menu');
+my $schedule = get_var('BIGLINUX_SCHEDULE', 'boot_menu');
 die "Unknown openQA schedule '$schedule'" unless exists $schedules{$schedule};
 autotest::loadtest($_) for @{$schedules{$schedule}};
 

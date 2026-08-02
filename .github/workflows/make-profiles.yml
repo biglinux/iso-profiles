@@ -13,7 +13,11 @@ on:
     - cron:  '0 0 * * 5'
 
   push:
-    branches: [ "*" ]
+    branches-ignore:
+      - openqa-single-instance-experiment
+    paths:
+      - "sources/**"
+      - ".github/workflows/make-profiles.yml"
 
 env:
   # Upstream package lists this repository rebases on.

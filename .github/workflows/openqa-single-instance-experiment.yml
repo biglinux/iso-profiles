@@ -200,7 +200,7 @@ jobs:
             FLAVOR=Live \
             ARCH=x86_64 \
             TEST=boot_menu \
-            SCHEDULE="$OPENQA_SCHEDULE" \
+            BIGLINUX_SCHEDULE="$OPENQA_SCHEDULE" \
             _GROUP_ID=0 \
             BUILD="github-actions-${GITHUB_RUN_ID}" \
             ISO="$ISO_FILENAME" \
