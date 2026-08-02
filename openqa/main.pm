@@ -28,6 +28,7 @@ my %schedules = (
         'openqa/tests/installer_install.pm',
         'openqa/tests/installed_boot.pm',
         'openqa/tests/installed_login.pm',
+        'openqa/tests/installed_health.pm',
         'openqa/tests/installed_brave.pm',
     ],
     release => [
@@ -40,6 +41,19 @@ my %schedules = (
         'openqa/tests/installer_install.pm',
         'openqa/tests/installed_boot.pm',
         'openqa/tests/installed_login.pm',
+        'openqa/tests/installed_health.pm',
+        'openqa/tests/installed_brave.pm',
+    ],
+    release_uefi => [
+        'openqa/tests/boot_menu.pm',
+        'openqa/tests/live_desktop.pm',
+        'openqa/tests/installer_launch.pm',
+        'openqa/tests/installer_partitions.pm',
+        'openqa/tests/installer_user.pm',
+        'openqa/tests/installer_install.pm',
+        'openqa/tests/installed_boot.pm',
+        'openqa/tests/installed_login.pm',
+        'openqa/tests/installed_health.pm',
         'openqa/tests/installed_brave.pm',
     ],
 );

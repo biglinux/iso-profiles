@@ -55,6 +55,7 @@ jobs:
       ISO_FILENAME: ${{ inputs.iso_filename }}
       OPENQA_VERSION: ${{ inputs.version }}
       OPENQA_BUILD: ${{ inputs.build_id }}
+      OPENQA_EXAMPLE_SHA: 274346e71b36def7decbcfd00095ccdeeb195ca8
       OPENQA_IMAGE: registry.opensuse.org/devel/openqa/containers/openqa-single-instance@sha256:2907e9f829bc0dc7c515c1e2eb17974fd8668449cc866597b67f49b1280e849f
 
     steps:
@@ -172,7 +173,7 @@ jobs:
           set -euo pipefail
           docker exec openqa openqa-cli schedule --monitor \
             async=1 \
-            SCENARIO_DEFINITIONS_YAML_FILE=https://raw.githubusercontent.com/os-autoinst/os-autoinst-distri-example/refs/heads/main/scenario-definitions.yaml \
+            SCENARIO_DEFINITIONS_YAML_FILE="https://raw.githubusercontent.com/os-autoinst/os-autoinst-distri-example/$OPENQA_EXAMPLE_SHA/scenario-definitions.yaml" \
             DISTRI=example \
             VERSION=0 \
             FLAVOR=DVD \
@@ -180,7 +181,8 @@ jobs:
             TEST=simple_boot \
             _GROUP_ID=0 \
             BUILD="smoke-${GITHUB_RUN_ID}" \
-            CASEDIR=https://github.com/os-autoinst/os-autoinst-distri-example.git \
+            CASEDIR="https://github.com/os-autoinst/os-autoinst-distri-example.git#$OPENQA_EXAMPLE_SHA" \
+            TEST_GIT_REFSPEC="$OPENQA_EXAMPLE_SHA" \
             PRODUCTDIR=. \
             NEEDLES_DIR=%%CASEDIR%%/needles
 
@@ -190,6 +192,11 @@ jobs:
           overall=0
           for test_suite in release_bios release_uefi; do
             echo "Running BigLinux openQA schedule: $test_suite"
+            case "$test_suite" in
+              release_bios) biglinux_schedule=release ;;
+              release_uefi) biglinux_schedule=release_uefi ;;
+              *) echo "Unknown BigLinux test suite: $test_suite" >&2; exit 1 ;;
+            esac
             if ! docker exec openqa openqa-cli schedule --monitor \
               async=1 \
               SCENARIO_DEFINITIONS_YAML_FILE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/openqa/scenario-definitions.yaml" \
@@ -198,7 +205,7 @@ jobs:
               FLAVOR=Live \
               ARCH=x86_64 \
               TEST="$test_suite" \
-              BIGLINUX_SCHEDULE=release \
+              BIGLINUX_SCHEDULE="$biglinux_schedule" \
               BIGLINUX_TEST_USER=openqa \
               BIGLINUX_TEST_HOSTNAME=biglinux-openqa \
               _SECRET_BIGLINUX_TEST_PASSWORD="$OPENQA_TEST_PASSWORD" \

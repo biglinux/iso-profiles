@@ -14,15 +14,25 @@ sub init ($self) {
     $self->add_console('root-virtio-terminal', 'virtio-terminal');
 }
 
-sub activate_console ($self, $console) {
+sub activate_console ($self, $console, $mode = 'live') {
     return unless $console eq 'root-virtio-terminal';
 
     testapi::wait_serial 'login:', timeout => 60;
-    # The live image exposes the unprivileged live-session account on hvc0.
-    testapi::type_string 'biglinux';
+    my ($user, $password) = ('biglinux', 'biglinux');
+    if ($mode eq 'installed') {
+        $user = testapi::get_required_var('BIGLINUX_TEST_USER');
+        $password = testapi::get_required_var('_SECRET_BIGLINUX_TEST_PASSWORD');
+    }
+
+    testapi::type_string $user;
     testapi::send_key 'ret';
     testapi::wait_serial 'Password:', timeout => 30;
-    testapi::type_string 'biglinux';
+    if ($mode eq 'installed') {
+        testapi::type_password $password;
+    }
+    else {
+        testapi::type_string $password;
+    }
     testapi::send_key 'ret';
 
     # Wait for the shell integration marker instead of matching the decorated
