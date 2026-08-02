@@ -23,17 +23,20 @@ on:
   workflow_dispatch:
     inputs:
       iso_release_tag:
-        description: Existing GitHub release tag containing the ISO to test
+        description: Existing GitHub release tag containing the last known working ISO
         required: true
         type: string
+        default: biglinux_2026-07-31_k71-r7
       iso_filename:
         description: ISO filename before release splitting
         required: true
         type: string
+        default: biglinux_2026-07-31_k71.iso
       version:
         description: openQA product version from scenario-definitions.yaml
         required: true
         type: string
+        default: '2026.07.31'
       build_id:
         description: Immutable build identifier shown in openQA
         required: true
