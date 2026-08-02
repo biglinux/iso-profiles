@@ -1,0 +1,49 @@
+{
+  "area": [
+    {
+      "height": 36,
+      "type": "match",
+      "width": 185,
+      "xpos": 194,
+      "ypos": 64
+    },
+    {
+      "height": 36,
+      "type": "match",
+      "width": 185,
+      "xpos": 194,
+      "ypos": 194
+    },
+    {
+      "height": 36,
+      "type": "match",
+      "width": 185,
+      "xpos": 194,
+      "ypos": 305
+    },
+    {
+      "height": 34,
+      "type": "match",
+      "width": 97,
+      "xpos": 807,
+      "ypos": 689
+    },
+    {
+      "click_point": {
+        "id": "install",
+        "xpos": 48,
+        "ypos": 17
+      },
+      "height": 34,
+      "type": "match",
+      "width": 97,
+      "xpos": 807,
+      "ypos": 689
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-summary-page",
+    "calamares-summary-expected"
+  ]
+}

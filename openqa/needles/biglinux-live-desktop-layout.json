@@ -6,6 +6,18 @@
       "width": 430,
       "xpos": 297,
       "ypos": 129
+    },
+    {
+      "click_point": {
+        "id": "classic",
+        "xpos": 134,
+        "ypos": 97
+      },
+      "height": 191,
+      "type": "match",
+      "width": 267,
+      "xpos": 79,
+      "ypos": 253
     }
   ],
   "properties": [],

@@ -1,13 +1,6 @@
 {
   "area": [
     {
-      "height": 48,
-      "type": "match",
-      "width": 780,
-      "xpos": 191,
-      "ypos": 31
-    },
-    {
       "height": 160,
       "type": "match",
       "width": 740,
@@ -41,7 +34,7 @@
   ],
   "properties": [],
   "tags": [
-    "biglinux-installer-partitions",
+    "biglinux-installer-partitions-uefi",
     "calamares-partitions-page",
     "calamares-erase-disk-option"
   ]

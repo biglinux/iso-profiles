@@ -1,9 +1,11 @@
-# Build an ISO on GitHub and publish it as a release.
+# Build an ISO on GitHub, validate it with openQA, and publish it only after the
+# release gate passes.
 #
 # Works on any fork: enable Actions, open the Actions tab, pick "Build ISO",
 # choose the edition/kernel/branches and run. The ISO is attached to a GitHub
 # release — as one file when it fits the 2 GiB asset limit, otherwise as 7z
-# parts (extract with `7z x file.7z.001`, Ark or 7-Zip).
+# parts (extract with `7z x file.7z.001`, Ark or 7-Zip). The candidate is kept
+# as a private workflow artifact while openQA tests it.
 #
 # The build itself is build-iso/build-iso.sh, the same engine the official
 # GitLab pipeline and the Build ISO GUI run. Only GITHUB_TOKEN is used; no
@@ -41,13 +43,17 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: ${{ inputs.edition }} ${{ inputs.kernel }} (${{ inputs.manjaro_branch }}/${{ inputs.big_branch }})
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    outputs:
+      iso: ${{ steps.prepare.outputs.iso }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      candidate_artifact: iso-candidate-${{ github.run_id }}
     container:
       image: xivastudio/biglinux_build_package:latest
       options: --privileged
@@ -72,7 +78,7 @@ jobs:
           export WORK_PATH="$GITHUB_WORKSPACE/output"
           bash build-iso/build-iso.sh
 
-      - name: Checksums and release notes
+      - name: Checksums and candidate metadata
         id: prepare
         run: |
           cd output
@@ -85,22 +91,61 @@ jobs:
           echo "iso=$iso" >> "$GITHUB_OUTPUT"
           echo "tag=${iso%.iso}-r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
+      - name: Upload private ISO candidate for openQA
+        id: candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: iso-candidate-${{ github.run_id }}
+          path: output/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+  openqa:
+    name: openQA release gate
+    needs: build
+    uses: ./.github/workflows/openqa-single-instance-experiment.yml
+    with:
+      candidate_artifact: ${{ needs.build.outputs.candidate_artifact }}
+      iso_filename: ${{ needs.build.outputs.iso }}
+      # Must match products.biglinux.version in scenario-definitions.yaml;
+      # the unique build ID below distinguishes each candidate.
+      version: candidate
+      build_id: github-${{ github.run_id }}
+
+  publish:
+    name: Publish validated ISO
+    needs: [build, openqa]
+    if: ${{ inputs.publish_release && needs.openqa.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated candidate
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.candidate_artifact }}
+          path: output
+
       - name: Split the ISO when it exceeds the 2 GiB asset limit
         id: split
         env:
-          ISO: ${{ steps.prepare.outputs.iso }}
+          ISO: ${{ needs.build.outputs.iso }}
         run: |
-          pacman -S --needed --noconfirm p7zip
+          set -euo pipefail
+          if ! command -v 7z >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes p7zip-full
+          fi
           cd output
-          # -mx=0 stores instead of compressing: the ISO payload is already
-          # zstd-squashfs, so LZMA2 would spend runner minutes for a ratio of
-          # about 1.00. The split into parts is the only thing wanted here.
           if [ -n "$(du --threshold=2000M "$ISO" 2>/dev/null)" ]; then
             7z a -mx=0 -v2000m "$ISO.7z" "$ISO"
-            rm "$ISO"
+            rm -- "$ISO"
             {
               echo "body<<EOF"
-              echo "The ISO is split into 7z parts to fit GitHub's 2 GiB asset limit."
+              echo "The ISO passed the mandatory openQA release gate."
+              echo "It is split into 7z parts to fit GitHub's 2 GiB asset limit."
               echo "Download every \`.7z.*\` part and extract with 7-Zip, Ark or:"
               echo
               echo '```'
@@ -109,15 +154,14 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
-            echo "body=Download the ISO directly." >> "$GITHUB_OUTPUT"
+            echo "body=The ISO passed the mandatory openQA release gate. Download the ISO directly." >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publish release
-        if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.prepare.outputs.tag }}
-          name: ${{ steps.prepare.outputs.iso }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.iso }}
           body: ${{ steps.split.outputs.body }}
           files: |
             output/*.iso
@@ -125,10 +169,3 @@ jobs:
             output/*.md5
             output/*.sha256
             output/*.pkgs
-
-      - name: Keep the ISO as a workflow artifact when not publishing
-        if: ${{ !inputs.publish_release }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.prepare.outputs.iso }}
-          path: output/

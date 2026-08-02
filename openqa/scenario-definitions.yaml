@@ -4,7 +4,7 @@ products:
     distri: biglinux
     flavor: Live
     arch: x86_64
-    version: '2026.07.31'
+    version: candidate
 
 machines:
   64bit:
@@ -12,9 +12,25 @@ machines:
     settings:
       QEMUCPUS: '2'
       QEMURAM: '4096'
-      HDDSIZEGB: '32'
+      HDDSIZEGB: '40'
+      XRES: '1024'
+      YRES: '768'
+
+  64bit-uefi:
+    backend: qemu
+    settings:
+      QEMUCPUS: '2'
+      QEMURAM: '4096'
+      HDDSIZEGB: '40'
+      UEFI: '1'
+      XRES: '1024'
+      YRES: '768'
 
 job_templates:
-  boot_menu:
+  release_bios:
     product: biglinux
     machine: 64bit
+
+  release_uefi:
+    product: biglinux
+    machine: 64bit-uefi

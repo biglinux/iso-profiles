@@ -16,6 +16,7 @@
     },
     {
       "click_point": {
+        "id": "continue",
         "xpos": 66,
         "ypos": 22
       },

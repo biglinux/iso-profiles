@@ -1,0 +1,22 @@
+{
+  "area": [
+    {
+      "height": 43,
+      "type": "match",
+      "width": 240,
+      "xpos": 0,
+      "ypos": 38
+    },
+    {
+      "height": 43,
+      "type": "match",
+      "width": 182,
+      "xpos": 842,
+      "ypos": 39
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installed-brave-window"
+  ]
+}

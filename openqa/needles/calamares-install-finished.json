@@ -1,0 +1,53 @@
+{
+  "area": [
+    {
+      "height": 34,
+      "type": "match",
+      "width": 190,
+      "xpos": 522,
+      "ypos": 282
+    },
+    {
+      "height": 40,
+      "type": "match",
+      "width": 600,
+      "xpos": 324,
+      "ypos": 347
+    },
+    {
+      "height": 34,
+      "type": "match",
+      "width": 105,
+      "xpos": 912,
+      "ypos": 689
+    },
+    {
+      "click_point": {
+        "id": "restart",
+        "xpos": 8,
+        "ypos": 8
+      },
+      "height": 17,
+      "type": "match",
+      "width": 17,
+      "xpos": 547,
+      "ypos": 439
+    },
+    {
+      "click_point": {
+        "id": "finish",
+        "xpos": 52,
+        "ypos": 17
+      },
+      "height": 34,
+      "type": "match",
+      "width": 105,
+      "xpos": 912,
+      "ypos": 689
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-install-finished"
+  ]
+}

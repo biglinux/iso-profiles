@@ -1,0 +1,29 @@
+{
+  "area": [
+    {
+      "height": 32,
+      "type": "match",
+      "width": 130,
+      "xpos": 12,
+      "ypos": 374
+    },
+    {
+      "height": 20,
+      "type": "match",
+      "width": 110,
+      "xpos": 451,
+      "ypos": 52
+    },
+    {
+      "height": 25,
+      "type": "match",
+      "width": 793,
+      "xpos": 193,
+      "ypos": 650
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-install-progress"
+  ]
+}

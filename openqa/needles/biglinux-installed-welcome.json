@@ -1,0 +1,22 @@
+{
+  "area": [
+    {
+      "height": 22,
+      "type": "match",
+      "width": 240,
+      "xpos": 392,
+      "ypos": 373
+    },
+    {
+      "height": 58,
+      "type": "match",
+      "width": 58,
+      "xpos": 929,
+      "ypos": 691
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installed-welcome"
+  ]
+}

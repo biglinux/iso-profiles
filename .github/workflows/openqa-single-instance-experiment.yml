@@ -1,91 +1,92 @@
 ---
-name: openQA single-instance experiment
+name: openQA candidate release gate
 
 on:
-  push:
-    branches: [openqa-single-instance-experiment]
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      suite:
-        description: BigLinux validation suite
-        type: choice
+      candidate_artifact:
+        description: Private workflow artifact containing the ISO candidate
         required: true
-        default: boot_menu
-        options:
-          - boot_menu
-          - applications
-          - installer
-      debug_enabled:
-        description: Open an interactive tmate session after openQA is ready
-        type: boolean
-        required: false
-        default: false
+        type: string
+      iso_filename:
+        description: Exact ISO filename inside the candidate artifact
+        required: true
+        type: string
+      version:
+        description: openQA product version for this candidate
+        required: true
+        type: string
+      build_id:
+        description: Immutable build identifier shown in openQA
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: openqa-single-instance-${{ github.ref }}
+  group: openqa-candidate-${{ inputs.build_id }}
   cancel-in-progress: true
 
 jobs:
-  smoke:
+  validate:
+    name: openQA BIOS + UEFI
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 360
     env:
-      ISO_RELEASE_TAG: biglinux_2026-07-31_k71-r7
-      ISO_FILENAME: biglinux_2026-07-31_k71.iso
+      ISO_FILENAME: ${{ inputs.iso_filename }}
+      OPENQA_VERSION: ${{ inputs.version }}
+      OPENQA_BUILD: ${{ inputs.build_id }}
       OPENQA_IMAGE: registry.opensuse.org/devel/openqa/containers/openqa-single-instance@sha256:2907e9f829bc0dc7c515c1e2eb17974fd8668449cc866597b67f49b1280e849f
-      OPENQA_SCHEDULE: ${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'boot_menu' }}
 
     steps:
-      - name: Check out the test and report sources
+      - name: Check out the tested sources
         uses: actions/checkout@v6
+
+      - name: Download the private ISO candidate
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.candidate_artifact }}
+          path: /mnt/openqa-assets
+
+      - name: Verify candidate checksums
+        run: |
+          set -euo pipefail
+          test -s "/mnt/openqa-assets/$ISO_FILENAME"
+          (
+            cd /mnt/openqa-assets
+            sha256sum --check "$ISO_FILENAME.sha256"
+            md5sum --check "$ISO_FILENAME.md5"
+          )
 
       - name: Validate helper sources
         run: |
           set -euo pipefail
+          git diff --check
           cmp openqa/data/atspi_probe.py data/atspi_probe.py
+          python3 -m unittest discover -s data -p 'test_*.py'
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
 
       - name: Inspect virtualization support
         run: |
           set -euo pipefail
-          uname -a
-          docker version
           if [[ ! -c /dev/kvm ]]; then
-            echo "The BigLinux graphical validation requires KVM" >&2
+            echo 'The BigLinux release gate requires KVM on the GitHub runner' >&2
             exit 1
           fi
-          echo "KVM is available"
-          ls -l /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm
+          docker version
+          stat /dev/kvm
 
-      - name: Download and verify the released BigLinux ISO
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Generate disposable openQA credentials
         run: |
           set -euo pipefail
-          sudo install -d -o "$USER" -g "$USER" /mnt/openqa-assets
-          gh release download "$ISO_RELEASE_TAG" \
-            --repo biglinux/iso-profiles \
-            --dir /mnt/openqa-assets \
-            --pattern '*.7z.*' \
-            --pattern '*.sha256'
-          mapfile -t iso_parts < <(find /mnt/openqa-assets -maxdepth 1 \
-            -type f -name '*.7z.*' -print | sort -V)
-          if (( ${#iso_parts[@]} == 0 )); then
-            echo "No ISO archive parts were downloaded" >&2
-            exit 1
-          fi
-          7z x "${iso_parts[0]}" -o/mnt/openqa-assets
-          (
-            cd /mnt/openqa-assets
-            sha256sum --check "${ISO_FILENAME}.sha256"
-          )
-          rm -- "${iso_parts[@]}"
+          test_password=$(openssl rand -hex 18)
+          echo "::add-mask::$test_password"
+          printf 'OPENQA_TEST_PASSWORD=%s\n' "$test_password" >> "$GITHUB_ENV"
 
-      - name: Start openQA single-instance
+      - name: Start pinned openQA single-instance
         run: |
           set -euo pipefail
           kvm_gid=$(stat --format '%g' /dev/kvm)
@@ -95,7 +96,7 @@ jobs:
             --publish 1443:443 \
             --tmpfs /srv/www/htdocs:mode=0755 \
             --tmpfs /var/log/apache2:mode=0755 \
-            --volume /mnt/openqa-assets:/var/lib/openqa/share/factory/iso \
+            --volume /mnt/openqa-assets:/var/lib/openqa/share/factory/iso:ro \
             --device /dev/kvm \
             --env "KVM_GID=$kvm_gid" \
             --entrypoint /bin/bash \
@@ -104,72 +105,27 @@ jobs:
                 usermod --append --groups kvm _openqa-worker &&
                 exec /usr/share/openqa/script/openqa-bootstrap'
 
-      - name: Wait for the openQA API
+      - name: Wait for the openQA API and worker
         run: |
           set -euo pipefail
           for attempt in {1..120}; do
             if curl --fail --silent --show-error \
-              http://127.0.0.1:1080/api/v1/jobs > /dev/null; then
+              http://127.0.0.1:1080/api/v1/jobs >/dev/null \
+              && docker exec openqa su _openqa-worker -c \
+                'test -r /dev/kvm -a -w /dev/kvm'; then
               echo "openQA became ready after $((attempt * 5)) seconds or less"
               exit 0
             fi
             if [[ $(docker inspect --format '{{.State.Running}}' openqa) != true ]]; then
-              echo "The openQA container stopped before its API became ready" >&2
+              echo 'The openQA container stopped before it became ready' >&2
               docker logs openqa
               exit 1
             fi
             sleep 5
           done
-          echo "The openQA API was not ready within 10 minutes" >&2
+          echo 'The openQA API/worker was not ready within 10 minutes' >&2
           docker logs openqa
           exit 1
-
-      - name: Verify KVM access from the openQA worker
-        run: docker exec openqa su _openqa-worker -c 'test -r /dev/kvm -a -w /dev/kvm'
-
-      - name: Open a tmate debug session
-        id: tmate
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113
-        with:
-          detached: true
-          limit-access-to-actor: true
-
-      - name: Store the restricted tmate SSH command
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        env:
-          TMATE_SSH_COMMAND: ${{ steps.tmate.outputs.ssh-command }}
-        run: |
-          set -euo pipefail
-          if [[ "$TMATE_SSH_COMMAND" != ssh\ * || "$TMATE_SSH_COMMAND" == *$'\n'* ]]; then
-            echo "The tmate action returned an invalid SSH command" >&2
-            exit 1
-          fi
-          install --directory --mode 0700 "$RUNNER_TEMP/tmate-connection"
-          printf '%s\n' "$TMATE_SSH_COMMAND" \
-            > "$RUNNER_TEMP/tmate-connection/ssh-command"
-
-      - name: Upload the restricted tmate SSH command
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: tmate-ssh-${{ github.run_id }}
-          path: ${{ runner.temp }}/tmate-connection/ssh-command
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Wait for tmate debugging to finish
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        timeout-minutes: 30
-        run: |
-          echo "Create /continue on the runner to start the automated tests"
-          while [[ ! -e /continue && ! -e "$GITHUB_WORKSPACE/continue" ]]; do
-            if [[ ! -S /tmp/tmate.sock ]]; then
-              echo "The tmate session ended without a continue file" >&2
-              exit 1
-            fi
-            sleep 5
-          done
 
       - name: Run the official QEMU and VNC smoke test
         run: |
@@ -183,53 +139,71 @@ jobs:
             ARCH=x86_64 \
             TEST=simple_boot \
             _GROUP_ID=0 \
-            BUILD="github-actions-${GITHUB_RUN_ID}" \
+            BUILD="smoke-${GITHUB_RUN_ID}" \
             CASEDIR=https://github.com/os-autoinst/os-autoinst-distri-example.git \
             PRODUCTDIR=. \
             NEEDLES_DIR=%%CASEDIR%%/needles
 
-      - name: Run the BigLinux validation suite
+      - name: Run mandatory BigLinux BIOS and UEFI gates
         run: |
-          set -euo pipefail
-          echo "Running BigLinux openQA schedule: $OPENQA_SCHEDULE"
-          docker exec openqa openqa-cli schedule --monitor \
-            async=1 \
-            SCENARIO_DEFINITIONS_YAML_FILE="https://raw.githubusercontent.com/biglinux/iso-profiles/${GITHUB_SHA}/openqa/scenario-definitions.yaml" \
-            DISTRI=biglinux \
-            VERSION=2026.07.31 \
-            FLAVOR=Live \
-            ARCH=x86_64 \
-            TEST=boot_menu \
-            BIGLINUX_SCHEDULE="$OPENQA_SCHEDULE" \
-            _GROUP_ID=0 \
-            BUILD="github-actions-${GITHUB_RUN_ID}" \
-            ISO="$ISO_FILENAME" \
-            CASEDIR=https://github.com/biglinux/iso-profiles.git#openqa-single-instance-experiment \
-            TEST_GIT_REFSPEC="${GITHUB_SHA}" \
-            PRODUCTDIR=openqa \
-            NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
-            SERIALDEV=hvc0
+          set -uo pipefail
+          overall=0
+          for test_suite in release_bios release_uefi; do
+            echo "Running BigLinux openQA schedule: $test_suite"
+            if ! docker exec openqa openqa-cli schedule --monitor \
+              async=1 \
+              SCENARIO_DEFINITIONS_YAML_FILE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/openqa/scenario-definitions.yaml" \
+              DISTRI=biglinux \
+              VERSION="$OPENQA_VERSION" \
+              FLAVOR=Live \
+              ARCH=x86_64 \
+              TEST="$test_suite" \
+              BIGLINUX_SCHEDULE=release \
+              BIGLINUX_TEST_USER=openqa \
+              BIGLINUX_TEST_HOSTNAME=biglinux-openqa \
+              _SECRET_BIGLINUX_TEST_PASSWORD="$OPENQA_TEST_PASSWORD" \
+              BIGLINUX_RELEASE_GATE=1 \
+              TIMEOUT_SCALE=1 \
+              _GROUP_ID=0 \
+              BUILD="$OPENQA_BUILD-$test_suite" \
+              ISO="$ISO_FILENAME" \
+              CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git" \
+              TEST_GIT_REFSPEC="$GITHUB_SHA" \
+              PRODUCTDIR=openqa \
+              NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
+              SERIALDEV=hvc0; then
+              echo "openQA failed for $test_suite" >&2
+              overall=1
+            fi
+          done
+          exit "$overall"
 
       - name: Collect openQA diagnostics
         if: ${{ always() }}
         run: |
-          set -euo pipefail
+          set +e
           mkdir -p openqa-diagnostics
-          if docker inspect openqa > /dev/null 2>&1; then
-            docker logs openqa > openqa-diagnostics/container.log 2>&1
-            docker inspect openqa > openqa-diagnostics/container.json
-            job_id=$(curl --fail --silent --show-error \
+          if docker inspect openqa >/dev/null 2>&1; then
+            docker logs openqa >openqa-diagnostics/container.log 2>&1
+            docker inspect openqa >openqa-diagnostics/container.json
+            job_ids=$(curl --fail --silent --show-error \
               http://127.0.0.1:1080/api/v1/jobs \
-              | jq -r '[.jobs[] | select(.settings.DISTRI == "biglinux")] | max_by(.id).id // empty')
-            if [[ -n "$job_id" ]]; then
-              docker exec openqa openqa-cli archive \
-                --host http://localhost \
-                "$job_id" /tmp/biglinux-openqa-job
-              docker cp openqa:/tmp/biglinux-openqa-job \
-                openqa-diagnostics/testresults
-            fi
+              | jq -r --arg build "$OPENQA_BUILD-release_bios" \
+                '.jobs[] | select(.settings.DISTRI == "biglinux" and .settings.BUILD == $build) | .id')
+            job_ids="$job_ids"$'\n'"$(curl --fail --silent --show-error \
+              http://127.0.0.1:1080/api/v1/jobs \
+              | jq -r --arg build "$OPENQA_BUILD-release_uefi" \
+                '.jobs[] | select(.settings.DISTRI == "biglinux" and .settings.BUILD == $build) | .id')"
+            while IFS= read -r job_id; do
+              [[ -n "$job_id" ]] || continue
+              docker exec openqa openqa-cli archive --host http://localhost \
+                "$job_id" "/tmp/biglinux-openqa-job-$job_id"
+              docker cp "openqa:/tmp/biglinux-openqa-job-$job_id" \
+                "openqa-diagnostics/testresults-$job_id"
+            done <<<"$job_ids"
             if docker exec openqa test -d /var/lib/openqa/pool/1; then
-              docker cp openqa:/var/lib/openqa/pool/1 openqa-diagnostics/worker-pool
+              docker cp openqa:/var/lib/openqa/pool/1 \
+                openqa-diagnostics/worker-pool
             fi
           fi
 
@@ -245,14 +219,14 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: openqa-${{ env.OPENQA_SCHEDULE }}-${{ github.run_id }}
+          name: openqa-${{ inputs.build_id }}
           path: openqa-diagnostics/
-          if-no-files-found: warn
-          retention-days: 7
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Stop openQA
         if: ${{ always() }}
         run: |
-          if docker inspect openqa > /dev/null 2>&1; then
+          if docker inspect openqa >/dev/null 2>&1; then
             docker stop openqa
           fi

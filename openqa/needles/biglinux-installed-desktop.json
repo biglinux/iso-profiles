@@ -1,0 +1,15 @@
+{
+  "area": [
+    {
+      "height": 40,
+      "type": "match",
+      "width": 160,
+      "xpos": 8,
+      "ypos": 728
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installed-desktop"
+  ]
+}

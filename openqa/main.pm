@@ -12,14 +12,35 @@ testapi::set_distribution(biglinux->new);
 my %schedules = (
     boot_menu => [
         'openqa/tests/boot_menu.pm',
+        'openqa/tests/live_desktop.pm',
     ],
     applications => [
         'openqa/tests/boot_menu.pm',
+        'openqa/tests/live_desktop.pm',
         'openqa/tests/applications.pm',
     ],
     installer => [
         'openqa/tests/boot_menu.pm',
-        'openqa/tests/installer.pm',
+        'openqa/tests/live_desktop.pm',
+        'openqa/tests/installer_launch.pm',
+        'openqa/tests/installer_partitions.pm',
+        'openqa/tests/installer_user.pm',
+        'openqa/tests/installer_install.pm',
+        'openqa/tests/installed_boot.pm',
+        'openqa/tests/installed_login.pm',
+        'openqa/tests/installed_brave.pm',
+    ],
+    release => [
+        'openqa/tests/boot_menu.pm',
+        'openqa/tests/live_desktop.pm',
+        'openqa/tests/applications.pm',
+        'openqa/tests/installer_launch.pm',
+        'openqa/tests/installer_partitions.pm',
+        'openqa/tests/installer_user.pm',
+        'openqa/tests/installer_install.pm',
+        'openqa/tests/installed_boot.pm',
+        'openqa/tests/installed_login.pm',
+        'openqa/tests/installed_brave.pm',
     ],
 );
 

@@ -1,25 +1,32 @@
 {
   "area": [
     {
-      "height": 40,
+      "height": 18,
       "type": "match",
-      "width": 675,
-      "xpos": 287,
-      "ypos": 81
+      "width": 250,
+      "xpos": 194,
+      "ypos": 45
     },
     {
-      "height": 84,
+      "height": 18,
       "type": "match",
       "width": 280,
-      "xpos": 452,
-      "ypos": 347
+      "xpos": 194,
+      "ypos": 109
     },
     {
-      "height": 31,
+      "height": 18,
       "type": "match",
-      "width": 696,
-      "xpos": 285,
-      "ypos": 605
+      "width": 280,
+      "xpos": 194,
+      "ypos": 173
+    },
+    {
+      "height": 18,
+      "type": "match",
+      "width": 430,
+      "xpos": 194,
+      "ypos": 238
     },
     {
       "click_point": {
@@ -36,6 +43,6 @@
   ],
   "properties": [],
   "tags": [
-    "biglinux-installer-welcome"
+    "calamares-users-page"
   ]
 }

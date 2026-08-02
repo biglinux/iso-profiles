@@ -1,0 +1,27 @@
+{
+  "area": [
+    {
+      "height": 136,
+      "type": "match",
+      "width": 500,
+      "xpos": 262,
+      "ypos": 297
+    },
+    {
+      "click_point": {
+        "id": "confirm",
+        "xpos": 64,
+        "ypos": 17
+      },
+      "height": 34,
+      "type": "match",
+      "width": 127,
+      "xpos": 403,
+      "ypos": 393
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-install-confirmation"
+  ]
+}

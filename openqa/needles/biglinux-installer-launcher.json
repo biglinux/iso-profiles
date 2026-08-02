@@ -16,6 +16,7 @@
     },
     {
       "click_point": {
+        "id": "install",
         "xpos": 152,
         "ypos": 275
       },

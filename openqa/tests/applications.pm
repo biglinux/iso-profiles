@@ -14,6 +14,10 @@ my $kernel_version;
 my $atspi_probe = '/tmp/openqa-atspi-probe.py';
 my $atspi_state = '/tmp/openqa-atspi-baseline.json';
 
+sub test_flags {
+    return {fatal => 1};
+}
+
 sub discover_commands {
     my (@commands) = @_;
 
