@@ -14,9 +14,8 @@ sub run {
     assert_screen 'biglinux-live-desktop-layout', 60;
     assert_and_click 'biglinux-live-desktop-layout', point_id => 'classic',
       timeout => 30, mousehide => 1;
-    assert_screen 'biglinux-live-theme', 60;
-    wait_screen_change(sub { send_key 'ret' }, 30)
-      or die 'The live desktop theme selector did not accept the default theme';
+    assert_and_click 'biglinux-live-theme', point_id => 'default',
+      timeout => 60, mousehide => 1;
 
     assert_screen 'biglinux-live-desktop', 120;
     wait_still_screen stilltime => 3, timeout => 60;
