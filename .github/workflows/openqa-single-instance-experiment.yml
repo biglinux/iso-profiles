@@ -37,7 +37,6 @@ jobs:
       ISO_FILENAME: ${{ inputs.iso_filename }}
       OPENQA_VERSION: ${{ inputs.version }}
       OPENQA_BUILD: ${{ inputs.build_id }}
-      OPENQA_ASSET_DIR: ${{ runner.temp }}/openqa-assets
       OPENQA_IMAGE: registry.opensuse.org/devel/openqa/containers/openqa-single-instance@sha256:2907e9f829bc0dc7c515c1e2eb17974fd8668449cc866597b67f49b1280e849f
 
     steps:
@@ -53,9 +52,10 @@ jobs:
       - name: Verify candidate checksums
         run: |
           set -euo pipefail
-          test -s "$OPENQA_ASSET_DIR/$ISO_FILENAME"
+          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
+          test -s "$openqa_asset_dir/$ISO_FILENAME"
           (
-            cd "$OPENQA_ASSET_DIR"
+            cd "$openqa_asset_dir"
             sha256sum --check "$ISO_FILENAME.sha256"
             md5sum --check "$ISO_FILENAME.md5"
           )
@@ -90,6 +90,7 @@ jobs:
       - name: Start pinned openQA single-instance
         run: |
           set -euo pipefail
+          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
           kvm_gid=$(stat --format '%g' /dev/kvm)
           docker run --detach \
             --name openqa \
@@ -97,7 +98,7 @@ jobs:
             --publish 1443:443 \
             --tmpfs /srv/www/htdocs:mode=0755 \
             --tmpfs /var/log/apache2:mode=0755 \
-            --volume "$OPENQA_ASSET_DIR:/var/lib/openqa/share/factory/iso:ro" \
+            --volume "$openqa_asset_dir:/var/lib/openqa/share/factory/iso:ro" \
             --device /dev/kvm \
             --env "KVM_GID=$kvm_gid" \
             --entrypoint /bin/bash \
