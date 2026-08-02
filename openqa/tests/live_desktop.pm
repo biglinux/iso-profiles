@@ -18,17 +18,31 @@ sub run {
     wait_screen_change(sub { send_key 'ret' }, 30)
       or die 'The live desktop theme selector did not accept the default theme';
 
-    assert_screen 'biglinux-live-desktop', 120;
-    wait_still_screen stilltime => 3, timeout => 60;
-
-    # A terminal is a basic live-session capability and gives the release gate
-    # an observable confirmation beyond the desktop wallpaper/taskbar.
-    wait_screen_change(sub { send_key 'ctrl-alt-t' }, 30)
-      or die 'The live session did not open a terminal';
+    # The live session briefly renders a black screen while Plasma applies the
+    # selected theme.  The previously proven flow lets the session settle by
+    # opening Konsole before asserting the wallpaper-dependent desktop state.
+    sleep 5;
+    send_key 'ctrl-alt-t';
     assert_screen 'biglinux-konsole', 60;
+
+    # Applying a fixed wallpaper makes the final desktop check independent of
+    # the rotating live-session wallpaper.
+    type_string 'plasma-apply-wallpaperimage ';
+    send_key 'altgr-q';
+    type_string 'usr';
+    send_key 'altgr-q';
+    type_string 'share';
+    send_key 'altgr-q';
+    type_string 'wallpapers';
+    send_key 'altgr-q';
+    type_string 'Big-retro.heic';
+    send_key 'ret';
+    sleep 8;
     wait_screen_change(sub { send_key 'alt-f4' }, 30)
       or die 'The live terminal did not close cleanly';
-    assert_screen 'biglinux-live-desktop', 30;
+    sleep 5;
+    assert_screen 'biglinux-live-desktop', 120;
+    wait_still_screen stilltime => 3, timeout => 60;
 }
 
 1;
