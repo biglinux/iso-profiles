@@ -37,6 +37,7 @@ jobs:
       ISO_FILENAME: ${{ inputs.iso_filename }}
       OPENQA_VERSION: ${{ inputs.version }}
       OPENQA_BUILD: ${{ inputs.build_id }}
+      OPENQA_ASSET_DIR: ${{ runner.temp }}/openqa-assets
       OPENQA_IMAGE: registry.opensuse.org/devel/openqa/containers/openqa-single-instance@sha256:2907e9f829bc0dc7c515c1e2eb17974fd8668449cc866597b67f49b1280e849f
 
     steps:
@@ -47,14 +48,14 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: ${{ inputs.candidate_artifact }}
-          path: /mnt/openqa-assets
+          path: ${{ runner.temp }}/openqa-assets
 
       - name: Verify candidate checksums
         run: |
           set -euo pipefail
-          test -s "/mnt/openqa-assets/$ISO_FILENAME"
+          test -s "$OPENQA_ASSET_DIR/$ISO_FILENAME"
           (
-            cd /mnt/openqa-assets
+            cd "$OPENQA_ASSET_DIR"
             sha256sum --check "$ISO_FILENAME.sha256"
             md5sum --check "$ISO_FILENAME.md5"
           )
@@ -96,7 +97,7 @@ jobs:
             --publish 1443:443 \
             --tmpfs /srv/www/htdocs:mode=0755 \
             --tmpfs /var/log/apache2:mode=0755 \
-            --volume /mnt/openqa-assets:/var/lib/openqa/share/factory/iso:ro \
+            --volume "$OPENQA_ASSET_DIR:/var/lib/openqa/share/factory/iso:ro" \
             --device /dev/kvm \
             --env "KVM_GID=$kvm_gid" \
             --entrypoint /bin/bash \
