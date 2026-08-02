@@ -20,6 +20,24 @@ on:
         description: Immutable build identifier shown in openQA
         required: true
         type: string
+  workflow_dispatch:
+    inputs:
+      iso_release_tag:
+        description: Existing GitHub release tag containing the ISO to test
+        required: true
+        type: string
+      iso_filename:
+        description: ISO filename before release splitting
+        required: true
+        type: string
+      version:
+        description: openQA product version from scenario-definitions.yaml
+        required: true
+        type: string
+      build_id:
+        description: Immutable build identifier shown in openQA
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -44,10 +62,31 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download the private ISO candidate
+        if: ${{ inputs.candidate_artifact != '' }}
         uses: actions/download-artifact@v7
         with:
           name: ${{ inputs.candidate_artifact }}
           path: ${{ runner.temp }}/openqa-assets
+
+      - name: Download existing release ISO
+        if: ${{ inputs.candidate_artifact == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISO_RELEASE_TAG: ${{ inputs.iso_release_tag }}
+        run: |
+          set -euo pipefail
+          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
+          mkdir -p "$openqa_asset_dir"
+          gh release download "$ISO_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$openqa_asset_dir" \
+            --pattern "$ISO_FILENAME.7z.*" \
+            --pattern "$ISO_FILENAME.md5" \
+            --pattern "$ISO_FILENAME.sha256"
+          mapfile -t iso_parts < <(find "$openqa_asset_dir" -maxdepth 1 \
+            -type f -name "$ISO_FILENAME.7z.*" -print | sort -V)
+          test "${#iso_parts[@]}" -gt 0
+          7z x "${iso_parts[0]}" -o"$openqa_asset_dir"
 
       - name: Verify candidate checksums
         run: |
