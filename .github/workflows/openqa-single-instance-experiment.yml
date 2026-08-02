@@ -207,7 +207,7 @@ jobs:
               _GROUP_ID=0 \
               BUILD="$OPENQA_BUILD-$test_suite" \
               ISO="$ISO_FILENAME" \
-              CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git" \
+              CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git#${GITHUB_REF_NAME}" \
               TEST_GIT_REFSPEC="$GITHUB_SHA" \
               PRODUCTDIR=openqa \
               NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
