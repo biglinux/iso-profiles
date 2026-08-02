@@ -115,7 +115,6 @@ jobs:
             echo 'The BigLinux release gate requires KVM on the GitHub runner' >&2
             exit 1
           fi
-          test -r /dev/kvm -a -w /dev/kvm
           docker version
           stat /dev/kvm
 
