@@ -59,11 +59,17 @@ jobs:
       OPENQA_VERSION: ${{ inputs.version }}
       OPENQA_BUILD: ${{ inputs.build_id }}
       OPENQA_EXAMPLE_SHA: 274346e71b36def7decbcfd00095ccdeeb195ca8
-      OPENQA_IMAGE: registry.opensuse.org/devel/openqa/containers/openqa-single-instance@sha256:2907e9f829bc0dc7c515c1e2eb17974fd8668449cc866597b67f49b1280e849f
 
     steps:
       - name: Check out the tested sources
         uses: actions/checkout@v6
+
+      - name: Load pinned openQA image
+        run: |
+          set -euo pipefail
+          openqa_image=$(tr -d '[:space:]' < openqa/openqa-image.txt)
+          [[ "$openqa_image" =~ ^registry\.opensuse\.org/.+@sha256:[[:xdigit:]]{64}$ ]]
+          echo "OPENQA_IMAGE=$openqa_image" >> "$GITHUB_ENV"
 
       - name: Download the private ISO candidate
         if: ${{ inputs.candidate_artifact != '' }}

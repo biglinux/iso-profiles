@@ -1,0 +1,8 @@
+ARG OPENQA_IMAGE
+FROM ${OPENQA_IMAGE}
+
+ARG OPENQA_MCP_VERSION
+RUN test -n "${OPENQA_MCP_VERSION}" \
+    && zypper -n --gpg-auto-import-keys install --no-recommends \
+        "openQA-mcp=${OPENQA_MCP_VERSION}" \
+    && zypper clean --all

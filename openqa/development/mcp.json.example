@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "openqa": {
+      "url": "http://127.0.0.1:1080/mcp",
+      "headers": {
+        "Authorization": "Bearer openqa-agent:<generated-key>:<generated-secret>"
+      }
+    }
+  }
+}
