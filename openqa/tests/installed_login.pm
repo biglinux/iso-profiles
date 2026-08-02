@@ -15,7 +15,7 @@ sub run {
     # password field.  The login needle proves which user was selected before
     # the secret is entered.
     type_password installed_system->test_password;
-    assert_screen_change(sub { send_key 'ret' }, 60)
+    wait_screen_change(sub { send_key 'ret' }, 60)
       or die 'SDDM did not accept the test credentials';
     installed_system->assert_desktop;
 }

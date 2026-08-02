@@ -9,7 +9,7 @@ sub test_flags {
 
 sub run {
     assert_screen 'biglinux-boot-menu', 120;
-    assert_screen_change(sub { send_key 'ret' }, 30)
+    wait_screen_change(sub { send_key 'ret' }, 30)
       or die 'The BigLinux live boot menu did not start the live session';
 }
 

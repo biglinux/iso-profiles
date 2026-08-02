@@ -23,6 +23,7 @@ machines:
       QEMURAM: '4096'
       HDDSIZEGB: '40'
       UEFI: '1'
+      UEFI_SECURE_BOOT: '0'
       XRES: '1024'
       YRES: '768'
 

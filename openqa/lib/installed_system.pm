@@ -12,7 +12,7 @@ sub test_password {
 sub assert_desktop {
     assert_screen ['biglinux-installed-desktop', 'biglinux-installed-welcome'], 300;
     if (match_has_tag 'biglinux-installed-welcome') {
-        assert_screen_change(sub { send_key 'alt-f4' }, 30)
+        wait_screen_change(sub { send_key 'alt-f4' }, 30)
           or die 'The installed BigLinux welcome screen did not close';
     }
     assert_screen 'biglinux-installed-desktop', 60;

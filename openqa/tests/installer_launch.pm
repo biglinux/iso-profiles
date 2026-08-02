@@ -23,11 +23,11 @@ sub run {
 
     send_key 'alt-f2';
     type_string 'calamares-biglinux_polkit --software-render';
-    assert_screen_change(sub { send_key 'ret' }, 60)
+    wait_screen_change(sub { send_key 'ret' }, 60)
       or die 'The BigLinux Calamares launcher did not open';
 
     if ($biglinux_firmware_mode =~ /UEFI/) {
-        assert_screen_change(sub { send_key 'ret' }, 60)
+        wait_screen_change(sub { send_key 'ret' }, 60)
           or die 'The UEFI installation confirmation was not accepted';
     }
 

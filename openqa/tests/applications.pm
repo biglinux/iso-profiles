@@ -254,13 +254,13 @@ sub exercise_writer {
     # LibreOffice shows a first-run welcome window on a fresh live session.
     send_key 'esc';
     sleep 2;
-    assert_screen_change { type_string 'Teste de escrita do openQA BigLinux' };
-    assert_screen_change { send_key 'ctrl-shift-s' };
+    wait_screen_change { type_string 'Teste de escrita do openQA BigLinux' };
+    wait_screen_change { send_key 'ctrl-shift-s' };
     sleep 3;
     # The save dialog starts with the filename selected and the Documents folder.
     send_key 'ctrl-a';
     type_string 'openqa-writer-smoke';
-    assert_screen_change { send_key 'ret' };
+    wait_screen_change { send_key 'ret' };
     sleep 3;
     # If saving failed, Alt+F4 leaves a confirmation dialog and the desktop
     # assertion below fails instead of silently discarding the document.
