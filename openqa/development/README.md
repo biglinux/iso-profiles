@@ -39,6 +39,39 @@ documentation describes the `/mcp` endpoint and Bearer authentication; this brid
 uses the same contract. It does not replace the repository's pinned `CASEDIR`, needle
 or workflow settings.
 
+## Canonical daily test configuration
+
+[`release-gate.yaml`](release-gate.yaml) is the single source of truth for the
+mandatory firmware matrix. It currently defines the BIOS plan with the full
+`release` schedule and the UEFI plan with `release_uefi`, so application coverage is
+not unnecessarily repeated in UEFI. The module sequence for each schedule remains
+owned by [`../main.pm`](../main.pm).
+
+The shared scheduler consumes this manifest in both environments:
+
+```bash
+BIGLINUX_OPENQA_VERSION=candidate \
+BIGLINUX_OPENQA_BUILD=dev-2026-07-31-k71 \
+BIGLINUX_ISO_FILENAME=biglinux_2026-07-31_k71.iso \
+./openqa/development/schedule-release-gate.sh --dry-run
+```
+
+The GitHub release workflow calls the same scheduler automatically. A local run can
+use the already-started development container and the existing ISO:
+
+```bash
+read -rsp 'Test password: ' BIGLINUX_TEST_PASSWORD; export BIGLINUX_TEST_PASSWORD
+BIGLINUX_OPENQA_CONTAINER=biglinux-openqa-dev \
+BIGLINUX_OPENQA_VERSION=candidate \
+BIGLINUX_OPENQA_BUILD=dev-2026-07-31-k71 \
+BIGLINUX_ISO_FILENAME=biglinux_2026-07-31_k71.iso \
+./openqa/development/schedule-release-gate.sh
+```
+
+Changing the daily matrix therefore means reviewing `release-gate.yaml`; changing
+what a plan does means reviewing the corresponding schedule in `main.pm`. No ISO
+generation or manual test-list duplication is part of this path.
+
 ## Start the development instance
 
 Use the exact ISO you want to investigate:
@@ -75,8 +108,9 @@ docker stop biglinux-openqa-dev
 ## How the agent uses it
 
 MCP is for read-only investigation: job settings, module results, screenshots and
-diagnostic context. Use `gh` or `openqa-cli` for scheduling, cloning, cancelling or
-changing jobs, and keep those actions explicit in the work log.
+diagnostic context. The shared scheduler uses `openqa-cli` for the explicit write
+operation of creating the daily jobs; use `gh` for the GitHub workflow and release
+actions.
 
 The mounted repository is available inside the container as `/workspace`. A
 development job can point `CASEDIR` at that path, or it can use a reviewed Git ref just

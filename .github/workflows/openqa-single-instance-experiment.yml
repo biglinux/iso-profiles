@@ -117,6 +117,10 @@ jobs:
           python3 -m unittest discover -s data -p 'test_*.py'
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
+          BIGLINUX_OPENQA_VERSION=candidate \
+          BIGLINUX_OPENQA_BUILD=workflow-validation \
+          BIGLINUX_ISO_FILENAME=validation.iso \
+            ./openqa/development/schedule-release-gate.sh --dry-run
 
       - name: Inspect virtualization support
         run: |
@@ -142,8 +146,7 @@ jobs:
           kvm_gid=$(stat --format '%g' /dev/kvm)
           docker run --detach \
             --name openqa \
-            --publish 1080:80 \
-            --publish 1443:443 \
+            --publish 127.0.0.1:1080:80 \
             --tmpfs /srv/www/htdocs:mode=0755 \
             --tmpfs /var/log/apache2:mode=0755 \
             --volume "$openqa_asset_dir:/var/lib/openqa/share/factory/iso:ro" \
@@ -198,41 +201,16 @@ jobs:
       - name: Run mandatory BigLinux BIOS and UEFI gates
         run: |
           set -uo pipefail
-          overall=0
-          for test_suite in release_bios release_uefi; do
-            echo "Running BigLinux openQA schedule: $test_suite"
-            case "$test_suite" in
-              release_bios) biglinux_schedule=release ;;
-              release_uefi) biglinux_schedule=release_uefi ;;
-              *) echo "Unknown BigLinux test suite: $test_suite" >&2; exit 1 ;;
-            esac
-            if ! docker exec openqa openqa-cli schedule --monitor \
-              async=1 \
-              SCENARIO_DEFINITIONS_YAML_FILE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/openqa/scenario-definitions.yaml" \
-              DISTRI=biglinux \
-              VERSION="$OPENQA_VERSION" \
-              FLAVOR=Live \
-              ARCH=x86_64 \
-              TEST="$test_suite" \
-              BIGLINUX_SCHEDULE="$biglinux_schedule" \
-              BIGLINUX_TEST_USER=openqa \
-              BIGLINUX_TEST_HOSTNAME=biglinux-openqa \
-              _SECRET_BIGLINUX_TEST_PASSWORD="$OPENQA_TEST_PASSWORD" \
-              BIGLINUX_RELEASE_GATE=1 \
-              TIMEOUT_SCALE=1 \
-              _GROUP_ID=0 \
-              BUILD="$OPENQA_BUILD-$test_suite" \
-              ISO="$ISO_FILENAME" \
-              CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git#${GITHUB_REF_NAME}" \
-              TEST_GIT_REFSPEC="$GITHUB_SHA" \
-              PRODUCTDIR=openqa \
-              NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
-              SERIALDEV=hvc0; then
-              echo "openQA failed for $test_suite" >&2
-              overall=1
-            fi
-          done
-          exit "$overall"
+          export BIGLINUX_OPENQA_CONTAINER=openqa
+          export BIGLINUX_OPENQA_VERSION="$OPENQA_VERSION"
+          export BIGLINUX_OPENQA_BUILD="$OPENQA_BUILD"
+          export BIGLINUX_ISO_FILENAME="$ISO_FILENAME"
+          export BIGLINUX_TEST_USER=openqa
+          export BIGLINUX_TEST_PASSWORD="$OPENQA_TEST_PASSWORD"
+          export BIGLINUX_OPENQA_CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git#${GITHUB_REF_NAME}"
+          export BIGLINUX_OPENQA_TEST_GIT_REFSPEC="$GITHUB_SHA"
+          export BIGLINUX_OPENQA_SCENARIO_DEFINITIONS="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/openqa/scenario-definitions.yaml"
+          ./openqa/development/schedule-release-gate.sh
 
       - name: Collect openQA diagnostics
         if: ${{ always() }}
@@ -244,12 +222,8 @@ jobs:
             docker inspect openqa >openqa-diagnostics/container.json
             job_ids=$(curl --fail --silent --show-error \
               http://127.0.0.1:1080/api/v1/jobs \
-              | jq -r --arg build "$OPENQA_BUILD-release_bios" \
-                '.jobs[] | select(.settings.DISTRI == "biglinux" and .settings.BUILD == $build) | .id')
-            job_ids="$job_ids"$'\n'"$(curl --fail --silent --show-error \
-              http://127.0.0.1:1080/api/v1/jobs \
-              | jq -r --arg build "$OPENQA_BUILD-release_uefi" \
-                '.jobs[] | select(.settings.DISTRI == "biglinux" and .settings.BUILD == $build) | .id')"
+              | jq -r --arg build_prefix "$OPENQA_BUILD-" \
+                '.jobs[] | select(.settings.DISTRI == "biglinux" and ((.settings.BUILD // "") | startswith($build_prefix))) | .id')
             while IFS= read -r job_id; do
               [[ -n "$job_id" ]] || continue
               docker exec openqa openqa-cli archive --host http://localhost \

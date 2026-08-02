@@ -1,0 +1,12 @@
+version: 1
+
+# The module sequence for each schedule remains owned by openqa/main.pm.
+# This file owns the mandatory daily firmware matrix consumed by the local
+# development bridge and by the GitHub release workflow.
+plans:
+  - test: release_bios
+    schedule: release
+    firmware: bios
+  - test: release_uefi
+    schedule: release_uefi
+    firmware: uefi
