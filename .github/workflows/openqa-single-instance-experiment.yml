@@ -36,7 +36,7 @@ on:
         description: openQA product version from scenario-definitions.yaml
         required: true
         type: string
-        default: '2026.07.31'
+        default: candidate
       build_id:
         description: Immutable build identifier shown in openQA
         required: true
