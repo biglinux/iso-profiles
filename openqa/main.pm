@@ -9,8 +9,22 @@ use testapi;
 
 testapi::set_distribution(biglinux->new);
 
-autotest::loadtest 'openqa/tests/boot_menu.pm';
-autotest::loadtest 'openqa/tests/applications.pm';
-autotest::loadtest 'openqa/tests/installer.pm';
+my %schedules = (
+    boot_menu => [
+        'openqa/tests/boot_menu.pm',
+    ],
+    applications => [
+        'openqa/tests/boot_menu.pm',
+        'openqa/tests/applications.pm',
+    ],
+    installer => [
+        'openqa/tests/boot_menu.pm',
+        'openqa/tests/installer.pm',
+    ],
+);
+
+my $schedule = get_var('SCHEDULE', 'boot_menu');
+die "Unknown openQA schedule '$schedule'" unless exists $schedules{$schedule};
+autotest::loadtest($_) for @{$schedules{$schedule}};
 
 1;

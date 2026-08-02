@@ -1,13 +1,20 @@
 ---
 name: openQA single-instance experiment
 
-# Proves that a GitHub-hosted runner can start the complete openQA stack and
-# boot a released BigLinux ISO through QEMU/VNC.
 on:
   push:
     branches: [openqa-single-instance-experiment]
   workflow_dispatch:
     inputs:
+      suite:
+        description: BigLinux validation suite
+        type: choice
+        required: true
+        default: boot_menu
+        options:
+          - boot_menu
+          - applications
+          - installer
       debug_enabled:
         description: Open an interactive tmate session after openQA is ready
         type: boolean
@@ -17,26 +24,42 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: openqa-single-instance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      ISO_RELEASE_TAG: biglinux_2026-07-31_k71-r7
+      ISO_FILENAME: biglinux_2026-07-31_k71.iso
+      OPENQA_IMAGE: registry.opensuse.org/devel/openqa/containers/openqa-single-instance@sha256:2907e9f829bc0dc7c515c1e2eb17974fd8668449cc866597b67f49b1280e849f
+      OPENQA_SCHEDULE: ${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'boot_menu' }}
 
     steps:
       - name: Check out the test and report sources
         uses: actions/checkout@v6
+
+      - name: Validate helper sources
+        run: |
+          set -euo pipefail
+          cmp openqa/data/atspi_probe.py data/atspi_probe.py
+          python3 -m unittest discover -s openqa/data -p 'test_*.py'
+          python3 -m unittest discover -s openqa/report -p 'test_*.py'
 
       - name: Inspect virtualization support
         run: |
           set -euo pipefail
           uname -a
           docker version
-          if [[ -c /dev/kvm ]]; then
-            echo "KVM is available"
-            ls -l /dev/kvm
-          else
-            echo "KVM is unavailable; the test will use QEMU emulation"
+          if [[ ! -c /dev/kvm ]]; then
+            echo "The BigLinux graphical validation requires KVM" >&2
+            exit 1
           fi
+          echo "KVM is available"
+          ls -l /dev/kvm
 
       - name: Download and verify the released BigLinux ISO
         env:
@@ -44,52 +67,42 @@ jobs:
         run: |
           set -euo pipefail
           sudo install -d -o "$USER" -g "$USER" /mnt/openqa-assets
-          gh release download biglinux_2026-07-31_k71-r7 \
+          gh release download "$ISO_RELEASE_TAG" \
             --repo biglinux/iso-profiles \
             --dir /mnt/openqa-assets \
             --pattern '*.7z.*' \
             --pattern '*.sha256'
-          iso_parts=(/mnt/openqa-assets/*.7z.*)
-          if (( ${#iso_parts[@]} != 3 )); then
-            echo "Expected three ISO archive parts, found ${#iso_parts[@]}" >&2
+          mapfile -t iso_parts < <(find /mnt/openqa-assets -maxdepth 1 \
+            -type f -name '*.7z.*' -print | sort -V)
+          if (( ${#iso_parts[@]} == 0 )); then
+            echo "No ISO archive parts were downloaded" >&2
             exit 1
           fi
           7z x "${iso_parts[0]}" -o/mnt/openqa-assets
           (
             cd /mnt/openqa-assets
-            sha256sum --check biglinux_2026-07-31_k71.iso.sha256
+            sha256sum --check "${ISO_FILENAME}.sha256"
           )
           rm -- "${iso_parts[@]}"
 
       - name: Start openQA single-instance
         run: |
           set -euo pipefail
-          container_command=()
-          container_args=(
-            --detach
-            --name openqa
-            --publish 1080:80
-            --publish 1443:443
-            --tmpfs /srv/www/htdocs:mode=0755
-            --tmpfs /var/log/apache2:mode=0755
-            --volume /mnt/openqa-assets:/var/lib/openqa/share/factory/iso
-          )
-          if [[ -c /dev/kvm ]]; then
-            container_args+=(
-              --device /dev/kvm
-              --env "KVM_GID=$(stat --format '%g' /dev/kvm)"
-              --entrypoint /bin/bash
-            )
-            container_command=(
-              -c
-              "groupmod --gid \"\$KVM_GID\" --non-unique kvm &&
-               usermod --append --groups kvm _openqa-worker &&
-               exec /usr/share/openqa/script/openqa-bootstrap"
-            )
-          fi
-          docker run "${container_args[@]}" \
-            registry.opensuse.org/devel/openqa/containers/openqa-single-instance \
-            "${container_command[@]}"
+          kvm_gid=$(stat --format '%g' /dev/kvm)
+          docker run --detach \
+            --name openqa \
+            --publish 1080:80 \
+            --publish 1443:443 \
+            --tmpfs /srv/www/htdocs:mode=0755 \
+            --tmpfs /var/log/apache2:mode=0755 \
+            --volume /mnt/openqa-assets:/var/lib/openqa/share/factory/iso \
+            --device /dev/kvm \
+            --env "KVM_GID=$kvm_gid" \
+            --entrypoint /bin/bash \
+            "$OPENQA_IMAGE" \
+            -c 'groupmod --gid "$KVM_GID" --non-unique kvm &&
+                usermod --append --groups kvm _openqa-worker &&
+                exec /usr/share/openqa/script/openqa-bootstrap'
 
       - name: Wait for the openQA API
         run: |
@@ -112,17 +125,12 @@ jobs:
           exit 1
 
       - name: Verify KVM access from the openQA worker
-        run: |
-          if [[ -c /dev/kvm ]]; then
-            docker exec openqa su _openqa-worker -c 'test -r /dev/kvm'
-          else
-            echo "KVM is unavailable on this runner"
-          fi
+        run: docker exec openqa su _openqa-worker -c 'test -r /dev/kvm -a -w /dev/kvm'
 
       - name: Open a tmate debug session
         id: tmate
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113
         with:
           detached: true
           limit-access-to-actor: true
@@ -132,6 +140,7 @@ jobs:
         env:
           TMATE_SSH_COMMAND: ${{ steps.tmate.outputs.ssh-command }}
         run: |
+          set -euo pipefail
           if [[ "$TMATE_SSH_COMMAND" != ssh\ * || "$TMATE_SSH_COMMAND" == *$'\n'* ]]; then
             echo "The tmate action returned an invalid SSH command" >&2
             exit 1
@@ -165,10 +174,6 @@ jobs:
       - name: Run the official QEMU and VNC smoke test
         run: |
           set -euo pipefail
-          test_settings=()
-          if [[ ! -c /dev/kvm ]]; then
-            test_settings+=(QEMU_NO_KVM=1)
-          fi
           docker exec openqa openqa-cli schedule --monitor \
             async=1 \
             SCENARIO_DEFINITIONS_YAML_FILE=https://raw.githubusercontent.com/os-autoinst/os-autoinst-distri-example/refs/heads/main/scenario-definitions.yaml \
@@ -181,16 +186,12 @@ jobs:
             BUILD="github-actions-${GITHUB_RUN_ID}" \
             CASEDIR=https://github.com/os-autoinst/os-autoinst-distri-example.git \
             PRODUCTDIR=. \
-            NEEDLES_DIR=%%CASEDIR%%/needles \
-            "${test_settings[@]}"
+            NEEDLES_DIR=%%CASEDIR%%/needles
 
-      - name: Boot the released BigLinux ISO
+      - name: Run the BigLinux validation suite
         run: |
           set -euo pipefail
-          test_settings=()
-          if [[ ! -c /dev/kvm ]]; then
-            test_settings+=(QEMU_NO_KVM=1)
-          fi
+          echo "Running BigLinux openQA schedule: $OPENQA_SCHEDULE"
           docker exec openqa openqa-cli schedule --monitor \
             async=1 \
             SCENARIO_DEFINITIONS_YAML_FILE="https://raw.githubusercontent.com/biglinux/iso-profiles/${GITHUB_SHA}/openqa/scenario-definitions.yaml" \
@@ -199,15 +200,15 @@ jobs:
             FLAVOR=Live \
             ARCH=x86_64 \
             TEST=boot_menu \
+            SCHEDULE="$OPENQA_SCHEDULE" \
             _GROUP_ID=0 \
             BUILD="github-actions-${GITHUB_RUN_ID}" \
-            ISO=biglinux_2026-07-31_k71.iso \
+            ISO="$ISO_FILENAME" \
             CASEDIR=https://github.com/biglinux/iso-profiles.git#openqa-single-instance-experiment \
             TEST_GIT_REFSPEC="${GITHUB_SHA}" \
             PRODUCTDIR=openqa \
             NEEDLES_DIR=%%CASEDIR%%/openqa/needles \
-            SERIALDEV=hvc0 \
-            "${test_settings[@]}"
+            SERIALDEV=hvc0
 
       - name: Collect openQA diagnostics
         if: ${{ always() }}
@@ -244,7 +245,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: openqa-single-instance-${{ github.run_id }}
+          name: openqa-${{ env.OPENQA_SCHEDULE }}-${{ github.run_id }}
           path: openqa-diagnostics/
           if-no-files-found: warn
           retention-days: 7

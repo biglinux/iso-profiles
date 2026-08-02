@@ -27,7 +27,7 @@ sub discover_commands {
         # matching a marker left in the serial buffer by a previous probe.
         my $present_marker = "__OA_${probe_id}_PRESENT__";
         my $absent_marker = "__OA_${probe_id}_ABSENT__";
-        type_string "if command -v '$command' >/dev/null 2>&1; then printf '${present_marker}\\n'; else printf '${absent_marker}\\n'; fi\\n";
+        type_string "if command -v '$command' >/dev/null 2>&1; then printf '__OA_%s_PRESENT__\\n' '$probe_id'; else printf '__OA_%s_ABSENT__\\n' '$probe_id'; fi\\n";
         my $result = wait_serial qr/\Q$present_marker\E|\Q$absent_marker\E/, timeout => 15;
         die "command availability probe timed out for '$command'" unless defined $result;
         $available_commands{$command} = $result =~ /\Q$present_marker\E/;
@@ -57,8 +57,9 @@ sub discover_desktop_entries {
         my $present_marker = "__OA_DESKTOP_${probe_id}_PRESENT__";
         my $absent_marker = "__OA_DESKTOP_${probe_id}_ABSENT__";
         type_string 'home=$(getent passwd 1000 | cut -d: -f6); if [ -r "$home/.local/share/applications/'
-          . $entry . '.desktop" ] || [ -r "/usr/share/applications/' . $entry . '.desktop" ]; then printf "'
-          . $present_marker . '\n"; else printf "' . $absent_marker . '\n"; fi\n';
+          . $entry . '.desktop" ] || [ -r "/usr/share/applications/' . $entry
+          . '.desktop" ]; then printf "__OA_DESKTOP_%s_PRESENT__\n" "' . $probe_id
+          . '"; else printf "__OA_DESKTOP_%s_ABSENT__\n" "' . $probe_id . '"; fi\n';
         my $result = wait_serial qr/\Q$present_marker\E|\Q$absent_marker\E/, timeout => 15;
         die "desktop entry availability probe timed out for '$entry'" unless defined $result;
         $available_desktop_entries{$entry} = $result =~ /\Q$present_marker\E/;
@@ -107,8 +108,8 @@ sub prepare_accessibility {
       . "curl --fail --silent --show-error '$probe_url' --output '$atspi_probe'; "
       . "chmod 700 '$atspi_probe'; "
       . 'kquitapp6 krunner >/dev/null 2>&1 || true; '
-      . 'printf "__OA_A11Y_READY__%s\\n" "$(uname -r)"\n';
-    my $result = wait_serial qr/__OA_A11Y_READY__([^\r\n]+)/, timeout => 30;
+      . 'printf "%s%s%s\\n" "__OA_A11Y_" "READY__" "$(uname -r)"\n';
+    my $result = wait_serial qr/__OA_A11Y_READY__([^\r\n]+)/, timeout => 45;
     die 'Unable to activate the AT-SPI accessibility stack' unless defined $result;
     $result =~ /__OA_A11Y_READY__([^\r\n]+)/;
     $kernel_version = $1;
@@ -122,8 +123,6 @@ sub prepare_accessibility {
 
 sub begin_application {
     my ($category, $command, $timeout, $action) = @_;
-    my $baseline = atspi_result 'baseline', 10;
-    my $started = time;
     my $launch_command = "env QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 $command";
     if ($command =~ /(?:^|\s)(?:libreoffice|gtk-launch\s+libreoffice-)/) {
         $launch_command = "env SAL_USE_VCLPLUGIN=gtk3 SAL_ACCESSIBILITY_ENABLED=1 $launch_command";
@@ -134,6 +133,8 @@ sub begin_application {
     sleep 2;
     type_string $launch_command;
     sleep 1;
+    my $baseline = atspi_result 'baseline', 10;
+    my $started = time;
     send_key 'ret';
 
     my $opened = atspi_result 'wait-open', $timeout;
@@ -276,7 +277,7 @@ sub upload_application_metrics {
     my $encoded = encode_base64($payload, '');
 
     select_console 'root-virtio-terminal';
-    type_string "printf '%s' '$encoded' | base64 --decode > /tmp/application-metrics.json && printf '__OA_METRICS_READY__\\n'\n";
+    type_string "printf '%s' '$encoded' | base64 --decode > /tmp/application-metrics.json && printf '%s%s\\n' '__OA_METRICS_' 'READY__'\n";
     wait_serial '__OA_METRICS_READY__', timeout => 15;
     upload_logs '/tmp/application-metrics.json', log_name => 'application-metrics.json';
     $metrics_uploaded = 1;
