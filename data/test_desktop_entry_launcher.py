@@ -186,6 +186,23 @@ class DesktopEntryLauncherTest(unittest.TestCase):
         self.assertEqual(libreoffice_environment["QT_ACCESSIBILITY"], "1")
         self.assertEqual(libreoffice_environment["GDK_BACKEND"], "x11")
 
+    def test_supplies_layout_to_keyboard_display(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry_path = Path(directory, "gkbd-keyboard-display.desktop")
+            entry_path.write_text(
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=Keyboard Layout\n"
+                "Exec=gkbd-keyboard-display\n",
+                encoding="utf-8",
+            )
+            entry = parse_desktop_entry(entry_path)
+            command = command_for_entry(entry)
+
+            _prepare_environment(entry, command)
+
+        self.assertEqual(command, ["gkbd-keyboard-display", "-l", "us"])
+
     def test_forces_software_rendering_for_mpv_before_file_separator(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry_path = Path(directory, "mpv.desktop")

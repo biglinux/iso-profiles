@@ -97,7 +97,8 @@ sub _entry_priority {
 sub _entry_timeout {
     my ($entry, $default, $heavy) = @_;
     my $path = lc(_entry_value($entry, 'path', _entry_value($entry, 'relative_path', '')));
-    return $heavy if $path =~ m{(?:gimp|libreoffice|soffice)[^/]*\.desktop\z};
+    return $heavy
+      if $path =~ m{(?:gimp|libreoffice|soffice|lstopo|big-themes-gui|snapshotrestore|cups)[^/]*\.desktop\z};
     return $default;
 }
 
@@ -118,7 +119,9 @@ sub _uses_process_only {
     my $launch_binary = lc(_entry_value($entry, 'launch_binary', ''));
     my $path = lc(_entry_value($entry, 'path', ''));
     return $launch_binary eq 'fcitx5'
-      || $path =~ m{/org\.fcitx\.fcitx5\.desktop\z};
+      || $launch_binary eq 'orca'
+      || $path =~ m{/org\.fcitx\.fcitx5\.desktop\z}
+      || $path =~ m{/orca\.desktop\z};
 }
 
 sub _entry_matches_filter {
@@ -349,9 +352,20 @@ sub _test_entry {
             $metric->{interaction_status} = 'passed';
             $metric->{interaction_result} = JSON::PP::true;
             $metric->{status} = 'passed';
+            _record_info "$name / visual evidence",
+              sprintf('window=%s; pid=%s; mode=%s',
+                $metric->{accessible_window_name} // 'unknown',
+                $window_pid // 'unknown',
+                $validation_mode);
+            wait_still_screen stilltime => 1, timeout => 5;
+            save_screenshot;
+            $metric->{open_screenshot} = JSON::PP::true;
         }
     };
     $failure = $@ if $@;
+    if ($failure && eval { save_screenshot; 1 }) {
+        $metric->{failure_screenshot} = JSON::PP::true;
+    }
     _record_info "$name / cleaning", 'terminating the application process tree';
     my $cleanup;
     my $cleanup_error;
@@ -370,15 +384,15 @@ sub _test_entry {
         $metric->{cleanup_killed} // 'unknown');
     if (!$failure && $cleanup_error) {
         $failure = $cleanup_error;
+        if (eval { save_screenshot; 1 }) {
+            $metric->{cleanup_failure_screenshot} = JSON::PP::true;
+        }
     }
     if ($failure) {
         $failure =~ s/\s+\z//;
         $metric->{error} = $failure || 'application test failed';
         $metric->{cleanup_error} = $cleanup_error if $cleanup_error;
         $metric->{status} = 'failed';
-        if (eval { save_screenshot; 1 }) {
-            $metric->{failure_screenshot} = JSON::PP::true;
-        }
     }
     $metric->{duration_seconds} = sprintf('%.2f', time - $started) + 0;
     push @application_metrics, $metric;

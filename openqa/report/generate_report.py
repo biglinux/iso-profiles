@@ -111,7 +111,14 @@ def find_biglinux_jobs(results_root: Path) -> list[tuple[Path, dict[str, Any]]]:
         variables = load_json(vars_path)
         if variables.get("DISTRI") == "biglinux":
             candidates.append((vars_path.parent, variables))
-    return sorted(candidates, key=lambda item: item[0].stat().st_mtime)
+    return sorted(
+        candidates,
+        key=lambda item: (
+            1 if item[1].get("UEFI") else 0,
+            str(item[1].get("BUILD") or item[1].get("TEST") or item[0].name),
+            str(item[0]),
+        ),
+    )
 
 
 def load_application_metrics(

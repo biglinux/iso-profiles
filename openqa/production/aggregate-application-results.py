@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 CLASSIFICATIONS = {"launchable", "excluded", "duplicate-alias", "invalid"}
 
 
@@ -45,7 +44,9 @@ def require_string(mapping: dict[str, Any], key: str) -> str:
     return value
 
 
-def validate_inventory(coverage: dict[str, Any], expected_count: int) -> dict[str, dict[str, Any]]:
+def validate_inventory(
+    coverage: dict[str, Any], expected_count: int
+) -> dict[str, dict[str, Any]]:
     if coverage.get("shard_count") != expected_count:
         raise ValueError(
             f"all application shards must use APPLICATION_SHARD_COUNT={expected_count}"
@@ -69,8 +70,7 @@ def validate_inventory(coverage: dict[str, Any], expected_count: int) -> dict[st
         classification = item.get("classification")
         if classification not in CLASSIFICATIONS:
             raise ValueError(f"invalid classification for {desktop_id}: {classification!r}")
-        assigned_shard = item.get("assigned_shard")
-        if assigned_shard != shard_for(desktop_id, expected_count):
+        if item.get("assigned_shard") != shard_for(desktop_id, expected_count):
             raise ValueError(f"incorrect shard assignment for {desktop_id}")
         if classification == "excluded" and not item.get("exclusion_reason"):
             raise ValueError(f"excluded entry has no reason: {desktop_id}")
@@ -103,17 +103,18 @@ def validate_inventory(coverage: dict[str, Any], expected_count: int) -> dict[st
     return desktop_ids
 
 
-def validate_policy(policy: dict[str, Any], inventory: dict[str, dict[str, Any]]) -> list[str]:
+def validate_policy(
+    policy: dict[str, Any], inventory: dict[str, dict[str, Any]]
+) -> list[str]:
     if policy.get("version") != 1:
         raise ValueError("application policy version must be 1")
-    critical = policy.get("critical", [])
-    if not isinstance(critical, list):
-        raise ValueError("application policy critical section is invalid")
-    critical_ids: list[str] = []
     excluded = policy.get("exclude", [])
     aliases = policy.get("aliases", [])
-    if not isinstance(excluded, list) or not isinstance(aliases, list):
-        raise ValueError("application policy exclusion or alias section is invalid")
+    critical = policy.get("critical", [])
+    if not all(isinstance(section, list) for section in (excluded, aliases, critical)):
+        raise ValueError("application policy sections must be lists")
+
+    seen_excluded: set[str] = set()
     for item in excluded:
         if (
             not isinstance(item, dict)
@@ -123,14 +124,14 @@ def validate_policy(policy: dict[str, Any], inventory: dict[str, dict[str, Any]]
         ):
             raise ValueError("application policy has an invalid exclusion entry")
         desktop_id = item["desktop_id"]
-        if sum(
-            isinstance(candidate, dict) and candidate.get("desktop_id") == desktop_id
-            for candidate in excluded
-        ) != 1:
+        if desktop_id in seen_excluded:
             raise ValueError(f"excluded application is duplicated: {desktop_id}")
+        seen_excluded.add(desktop_id)
         current = inventory.get(desktop_id)
         if current is None or current["classification"] != "excluded":
             raise ValueError(f"excluded application is absent or not excluded: {desktop_id}")
+
+    seen_aliases: set[str] = set()
     for item in aliases:
         if (
             not isinstance(item, dict)
@@ -140,12 +141,10 @@ def validate_policy(policy: dict[str, Any], inventory: dict[str, dict[str, Any]]
         ):
             raise ValueError("application policy has an invalid alias entry")
         desktop_id = item["desktop_id"]
-        canonical = item.get("canonical")
-        if sum(
-            isinstance(candidate, dict) and candidate.get("desktop_id") == desktop_id
-            for candidate in aliases
-        ) != 1:
+        canonical = item["canonical"]
+        if desktop_id in seen_aliases:
             raise ValueError(f"alias application is duplicated: {desktop_id}")
+        seen_aliases.add(desktop_id)
         current = inventory.get(desktop_id)
         if current is None or current["classification"] != "duplicate-alias":
             raise ValueError(f"alias application is absent or not an alias: {desktop_id}")
@@ -155,6 +154,8 @@ def validate_policy(policy: dict[str, Any], inventory: dict[str, dict[str, Any]]
             or inventory[canonical]["classification"] != "launchable"
         ):
             raise ValueError(f"alias canonical target is invalid: {desktop_id}")
+
+    critical_ids: list[str] = []
     for item in critical:
         if (
             not isinstance(item, dict)
@@ -176,9 +177,7 @@ def validate_policy(policy: dict[str, Any], inventory: dict[str, dict[str, Any]]
 
 
 def validate_shards(
-    metrics_files: list[Path],
-    expected_count: int,
-    policy: dict[str, Any],
+    metrics_files: list[Path], expected_count: int, policy: dict[str, Any]
 ) -> dict[str, Any]:
     if len(metrics_files) != expected_count:
         raise ValueError(
@@ -239,8 +238,16 @@ def validate_shards(
             raise ValueError(f"shard payload is missing applications or summary: {path}")
         if summary.get("tested") != len(applications):
             raise ValueError(f"shard tested count is inconsistent: {path}")
-        passed = sum(item.get("status") == "passed" for item in applications if isinstance(item, dict))
-        failed = sum(item.get("status") == "failed" for item in applications if isinstance(item, dict))
+        passed = sum(
+            item.get("status") == "passed"
+            for item in applications
+            if isinstance(item, dict)
+        )
+        failed = sum(
+            item.get("status") == "failed"
+            for item in applications
+            if isinstance(item, dict)
+        )
         if summary.get("passed") != passed or summary.get("failed") != failed:
             raise ValueError(f"shard result counts are inconsistent: {path}")
         for item in applications:
@@ -259,7 +266,9 @@ def validate_shards(
             if item.get("status") not in {"passed", "failed"}:
                 raise ValueError(f"application result has invalid status: {desktop_id}")
             if desktop_id in seen_launchables:
-                raise ValueError(f"launchable desktop ID appears in multiple shards: {desktop_id}")
+                raise ValueError(
+                    f"launchable desktop ID appears in multiple shards: {desktop_id}"
+                )
             seen_launchables[desktop_id] = item
         shard_summaries.append(
             {
@@ -282,28 +291,47 @@ def validate_shards(
         missing = sorted(launchable_ids - set(seen_launchables))
         extra = sorted(set(seen_launchables) - launchable_ids)
         raise ValueError(f"application coverage mismatch: missing={missing} extra={extra}")
-    failed_ids = sorted(
-        desktop_id for desktop_id, item in seen_launchables.items() if item["status"] == "failed"
-    )
-    if failed_ids:
-        raise ValueError(f"mandatory applications failed: {', '.join(failed_ids)}")
 
-    return {
-        "status": "passed",
+    failed_ids = sorted(
+        desktop_id
+        for desktop_id, item in seen_launchables.items()
+        if item["status"] == "failed"
+    )
+    passed_total = len(seen_launchables) - len(failed_ids)
+    critical_tested = sorted(set(critical_ids) & set(seen_launchables))
+    critical_failed = sorted(set(critical_ids) & set(failed_ids))
+    summary: dict[str, Any] = {
+        "status": "failed" if failed_ids else "passed",
         "metadata": {key: first.get(key) for key in metadata_keys},
         "coverage": {
             "inventory_total": len(inventory),
             "launchable_total": len(launchable_ids),
-            "excluded_total": sum(item["classification"] == "excluded" for item in inventory.values()),
-            "duplicate_total": sum(item["classification"] == "duplicate-alias" for item in inventory.values()),
-            "invalid_total": sum(item["classification"] == "invalid" for item in inventory.values()),
+            "excluded_total": sum(
+                item["classification"] == "excluded" for item in inventory.values()
+            ),
+            "duplicate_total": sum(
+                item["classification"] == "duplicate-alias"
+                for item in inventory.values()
+            ),
+            "invalid_total": sum(
+                item["classification"] == "invalid" for item in inventory.values()
+            ),
             "tested_total": len(seen_launchables),
-            "passed_total": len(seen_launchables),
-            "failed_total": 0,
+            "passed_total": passed_total,
+            "failed_total": len(failed_ids),
         },
-        "critical": {"expected": critical_ids, "tested": critical_ids},
+        "critical": {
+            "expected": critical_ids,
+            "tested": critical_tested,
+            "failed": critical_failed,
+        },
+        "failed_desktop_ids": failed_ids,
+        "failed_applications": [seen_launchables[desktop_id] for desktop_id in failed_ids],
         "shards": sorted(shard_summaries, key=lambda item: item["shard_index"]),
     }
+    if failed_ids:
+        summary["error"] = f"mandatory applications failed: {', '.join(failed_ids)}"
+    return summary
 
 
 def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
@@ -334,25 +362,43 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
     ]
     for shard in summary.get("shards", []):
         lines.append(
-            f"| {shard['shard_index']} | {shard['tested']} | {shard['passed']} | {shard['failed']} |"
+            f"| {shard['shard_index']} | {shard['tested']} | "
+            f"{shard['passed']} | {shard['failed']} |"
         )
+    failed_ids = summary.get("failed_desktop_ids", [])
+    if failed_ids:
+        lines.extend(["", "## Failed applications", ""])
+        lines.extend(f"- `{desktop_id}`" for desktop_id in failed_ids)
     if summary.get("error"):
         lines.extend(["", "## Error", "", f"`{summary['error']}`"])
-    (output_dir / "application-summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (output_dir / "application-summary.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
     rows = "".join(
         f"<tr><td>{shard['shard_index']}</td><td>{shard['tested']}</td>"
         f"<td>{shard['passed']}</td><td>{shard['failed']}</td></tr>"
         for shard in summary.get("shards", [])
     )
-    error = f"<p><code>{html.escape(summary['error'])}</code></p>" if summary.get("error") else ""
+    failures = "".join(
+        f"<li><code>{html.escape(desktop_id)}</code></li>" for desktop_id in failed_ids
+    )
+    failure_section = f"<h2>Failed applications</h2><ul>{failures}</ul>" if failures else ""
+    error = (
+        f"<p><code>{html.escape(str(summary['error']))}</code></p>"
+        if summary.get("error")
+        else ""
+    )
     document = (
         "<!doctype html><meta charset='utf-8'><title>BigLinux application coverage</title>"
         f"<h1>Application coverage: {html.escape(str(summary.get('status', 'failed')))}</h1>"
         f"{error}<p>Inventory: {coverage.get('inventory_total', 0)}; "
-        f"launchable: {coverage.get('launchable_total', 0)}; tested: {coverage.get('tested_total', 0)}; "
-        f"passed: {coverage.get('passed_total', 0)}; failed: {coverage.get('failed_total', 0)}</p>"
-        f"<table><thead><tr><th>Shard</th><th>Tested</th><th>Passed</th><th>Failed</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
+        f"launchable: {coverage.get('launchable_total', 0)}; "
+        f"tested: {coverage.get('tested_total', 0)}; "
+        f"passed: {coverage.get('passed_total', 0)}; "
+        f"failed: {coverage.get('failed_total', 0)}</p>"
+        "<table><thead><tr><th>Shard</th><th>Tested</th><th>Passed</th>"
+        f"<th>Failed</th></tr></thead><tbody>{rows}</tbody></table>{failure_section}"
     )
     (output_dir / "application-summary.html").write_text(document, encoding="utf-8")
 
@@ -364,7 +410,6 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-shards", type=int, default=4)
     args = parser.parse_args()
-    summary: dict[str, Any]
     try:
         if args.expected_shards <= 0:
             raise ValueError("expected shard count must be positive")
@@ -374,12 +419,18 @@ def main() -> int:
         metric_files = sorted(args.artifacts_root.rglob("application-metrics.json.gz"))
         summary = validate_shards(metric_files, args.expected_shards, policy)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
-        summary = {"status": "failed", "error": str(error), "shards": [], "coverage": {}}
-        write_reports(args.output_dir, summary)
-        print(f"Application coverage failed: {error}", file=sys.stderr)
-        return 1
+        summary = {
+            "status": "failed",
+            "error": str(error),
+            "shards": [],
+            "coverage": {},
+            "failed_desktop_ids": [],
+        }
     write_reports(args.output_dir, summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if summary.get("status") != "passed":
+        print(f"Application coverage failed: {summary.get('error', 'unknown error')}", file=sys.stderr)
+        return 1
     return 0
 
 

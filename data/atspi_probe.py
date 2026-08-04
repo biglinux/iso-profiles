@@ -149,25 +149,33 @@ def _window_records() -> Iterable[tuple[Any, dict[str, Any]]]:
     Atspi, GLib = _atspi_import()
     try:
         desktop = Atspi.get_desktop(0)
+        if desktop is None:
+            raise ProbeError("AT-SPI desktop is unavailable: null desktop root")
         application_count = desktop.get_child_count()
-    except (GLib.Error, RuntimeError) as error:
+    except ProbeError:
+        raise
+    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
         raise ProbeError(f"AT-SPI desktop is unavailable: {error}") from error
 
     for app_index in range(application_count):
         try:
             app = desktop.get_child_at_index(app_index)
+            if app is None:
+                continue
             app_name = app.get_name() or ""
             app_pid = app.get_process_id()
             window_count = app.get_child_count()
-        except (GLib.Error, RuntimeError):
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
             continue
         for window_index in range(window_count):
             try:
                 window = app.get_child_at_index(window_index)
+                if window is None:
+                    continue
                 name = window.get_name() or ""
                 role = window.get_role_name() or ""
                 children = window.get_child_count()
-            except (GLib.Error, RuntimeError):
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
                 continue
             yield (
                 window,
@@ -458,17 +466,20 @@ def wait_for_window_change(
 
 def _walk(accessible: Any, limit: int = 600) -> Iterable[Any]:
     _atspi, GLib = _atspi_import()
-    queue = [accessible]
+    queue = [accessible] if accessible is not None else []
     visited = 0
     while queue and visited < limit:
         current = queue.pop(0)
+        if current is None:
+            continue
         visited += 1
         yield current
         try:
-            queue.extend(
+            children = (
                 current.get_child_at_index(index)
                 for index in range(current.get_child_count())
             )
+            queue.extend(child for child in children if child is not None)
         except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
             continue
 

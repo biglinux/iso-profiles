@@ -202,6 +202,10 @@ def _prepare_environment(entry: DesktopEntry, command: list[str]) -> dict[str, s
     ) and "--no-splash" not in command:
         command.append("--no-splash")
 
+    if executable == "gkbd-keyboard-display" and len(command) == 1:
+        # The desktop entry omits the required layout argument.
+        command.extend(["-l", "us"])
+
     if (
         "brave" in executable or "brave" in entry_identity
     ) and "--force-renderer-accessibility" not in command:

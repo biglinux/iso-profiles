@@ -3,6 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import atspi_probe
 
 from atspi_probe import (
     _is_transient_window,
@@ -111,6 +114,83 @@ class AtspiProbeTest(unittest.TestCase):
         )
         self.assertEqual(window["pid"], 5822)
         self.assertEqual(window["name"], "No file - mpv")
+
+
+class FakeError(Exception):
+    pass
+
+
+class FakeGLib:
+    Error = FakeError
+
+
+class FakeAccessible:
+    def __init__(
+        self, name: str, pid: int, children=None, role: str = "frame"
+    ) -> None:
+        self.name = name
+        self.pid = pid
+        self.children = list(children or [])
+        self.role = role
+
+    def get_name(self):
+        return self.name
+
+    def get_process_id(self):
+        return self.pid
+
+    def get_child_count(self):
+        return len(self.children)
+
+    def get_child_at_index(self, index: int):
+        return self.children[index]
+
+    def get_role_name(self):
+        return self.role
+
+
+class FakeAtspi:
+    desktop = None
+
+    @classmethod
+    def get_desktop(cls, _index: int):
+        return cls.desktop
+
+
+class AtspiNullChildrenTest(unittest.TestCase):
+    def records(self):
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            return list(atspi_probe._window_records())
+
+    def test_null_desktop_is_reported_cleanly(self) -> None:
+        FakeAtspi.desktop = None
+        with self.assertRaisesRegex(atspi_probe.ProbeError, "desktop is unavailable"):
+            self.records()
+
+    def test_null_application_and_window_are_ignored(self) -> None:
+        window = FakeAccessible("Settings", 42, role="frame")
+        application = FakeAccessible(
+            "systemsettings", 42, [None, window], "application"
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [None, application])
+
+        records = self.records()
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][1]["name"], "Settings")
+        self.assertEqual(records[0][1]["pid"], 42)
+
+    def test_walk_does_not_yield_null_children(self) -> None:
+        child = FakeAccessible("child", 42)
+        root = FakeAccessible("root", 42, [None, child])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            walked = list(atspi_probe._walk(root))
+
+        self.assertEqual(walked, [root, child])
 
 
 if __name__ == "__main__":

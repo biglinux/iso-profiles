@@ -108,14 +108,21 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             self.assertEqual(summary["status"], "passed")
             self.assertEqual(summary["coverage"]["tested_total"], 2)
 
-    def test_failed_application_blocks_matrix(self):
+    def test_failed_application_blocks_matrix_and_keeps_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._write_metrics(root, {"other.desktop": "failed"})
-            with self.assertRaisesRegex(ValueError, "mandatory applications failed"):
-                AGGREGATOR.validate_shards(
-                    sorted(root.rglob("application-metrics.json.gz")), 4, self.policy
-                )
+
+            summary = AGGREGATOR.validate_shards(
+                sorted(root.rglob("application-metrics.json.gz")), 4, self.policy
+            )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["coverage"]["tested_total"], 2)
+        self.assertEqual(summary["coverage"]["passed_total"], 1)
+        self.assertEqual(summary["coverage"]["failed_total"], 1)
+        self.assertEqual(summary["failed_desktop_ids"], ["other.desktop"])
+        self.assertEqual(len(summary["shards"]), 4)
 
     def test_missing_shard_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

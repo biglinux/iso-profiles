@@ -1,21 +1,118 @@
 version: 1
 
-# Entries with no executable command or a service type are classified explicitly
-# so a new non-launchable entry becomes an invalid coverage change instead of a
-# silent omission.
+# Every installed Desktop Entry remains in the inventory. Entries below are
+# classified explicitly because they are services, helpers, protocol handlers,
+# or commands that require an external input and cannot be launched as a
+# standalone graphical application.
 exclude:
+  - desktop_id: ail-cli.desktop
+    reason: Command-line AppImageLauncher helper; it has no standalone graphical window
+  - desktop_id: appimagelauncher.desktop
+    reason: AppImage handler requires an AppImage file argument
+  - desktop_id: big-executable.desktop
+    reason: File handler requires an executable file argument
+  - desktop_id: bigcontrolcenter/qvidcap.desktop
+    reason: Video capture utility requires physical V4L2 capture hardware unavailable in CI
+  - desktop_id: bigtts.desktop
+    reason: Selected-text handler requires text supplied by the desktop selection
+  - desktop_id: com.github.maliit.keyboard.desktop
+    reason: Input-method component is managed by the desktop session, not launched standalone
+  - desktop_id: fcitx5-wayland-launcher.desktop
+    reason: Fcitx Wayland session component is managed by the login session
+  - desktop_id: gcr-prompter.desktop
+    reason: Authentication prompter requires a request from another application
+  - desktop_id: geoclue-demo-agent.desktop
+    reason: Geolocation agent is a background service without a standalone window
+  - desktop_id: google-maps-geo-handler.desktop
+    reason: Geographic URI handler requires a geo URI argument
+  - desktop_id: io.snapcraft.SessionAgent.desktop
+    reason: Snap session agent is managed by the desktop session and has no standalone window
+  - desktop_id: java-open.desktop
+    reason: Java archive handler requires a JAR file argument
+  - desktop_id: kaccess.desktop
+    reason: Accessibility session service is managed by the desktop session
+  - desktop_id: ktelnetservice5.desktop
+    reason: Telnet URI handler requires a URI argument
+  - desktop_id: ktelnetservice6.desktop
+    reason: Telnet URI handler requires a URI argument
+  - desktop_id: net.lutris.Lutris1.desktop
+    reason: Lutris installer handler requires an installer file argument
+  - desktop_id: open-in-lutris.desktop
+    reason: Lutris installer helper requires installer metadata
+  - desktop_id: openstreetmap-geo-handler.desktop
+    reason: Geographic URI handler requires a geo URI argument
+  - desktop_id: org.fcitx.fcitx5-qt5-gui-wrapper.desktop
+    reason: Fcitx Qt 5 wrapper is an input-method session component
+  - desktop_id: org.fcitx.fcitx5-qt6-gui-wrapper.desktop
+    reason: Fcitx Qt 6 wrapper is an input-method session component
+  - desktop_id: org.freedesktop.Xwayland.desktop
+    reason: Xwayland is a display-server component managed by the desktop session
+  - desktop_id: org.freedesktop.impl.portal.desktop.kde.desktop
+    reason: KDE desktop portal is a D-Bus service without a standalone window
+  - desktop_id: org.gnome.Zenity.desktop
+    reason: Dialog helper requires dialog options or input from a caller
+  - desktop_id: org.gnupg.pinentry-qt.desktop
+    reason: Pinentry requires the Assuan protocol from a requesting process
+  - desktop_id: org.kde.ConfigurePrinter.desktop
+    reason: Printer configuration helper requires an existing printer context
   - desktop_id: org.kde.baloorunner.desktop
     reason: KDE service entry has no executable command
+  - desktop_id: org.kde.bluedevilsendfile.desktop
+    reason: Bluetooth file-transfer handler requires a file or device context
+  - desktop_id: org.kde.gwenview_importer.desktop
+    reason: Gwenview importer requires removable-media or file input
   - desktop_id: org.kde.kded5.desktop
     reason: KDE service entry is not a graphical application
   - desktop_id: org.kde.kded6.desktop
     reason: KDE service entry is not a graphical application
+  - desktop_id: org.kde.kdeconnect.daemon.desktop
+    reason: KDE Connect daemon is a background session service
+  - desktop_id: org.kde.kdeconnect.nonplasma.desktop
+    reason: Non-Plasma KDE Connect indicator is a session component, not a standalone application in Plasma
+  - desktop_id: org.kde.kdialog.desktop
+    reason: Dialog helper requires options or input from a caller
+  - desktop_id: org.kde.keditfiletype.desktop
+    reason: MIME type editor requires a MIME type or file context
+  - desktop_id: org.kde.kfontinst.desktop
+    reason: Font installer requires a font file or URL argument
+  - desktop_id: org.kde.kiod6.desktop
+    reason: KIO daemon is a background service without a standalone window
+  - desktop_id: org.kde.klipper.desktop
+    reason: Plasma clipboard service entry intentionally uses an inactive command
+  - desktop_id: org.kde.knighttimed.desktop
+    reason: Night Time helper is a background service without a standalone window
+  - desktop_id: org.kde.ksecretd.desktop
+    reason: KDE secret service is a background session service
   - desktop_id: org.kde.kwin.dialoghelper.desktop
     reason: KDE helper entry has no executable command
+  - desktop_id: org.kde.kwin.killer.desktop
+    reason: KWin crash helper requires a window-manager failure context
+  - desktop_id: org.kde.kwin_x11.killer.desktop
+    reason: KWin X11 crash helper requires a window-manager failure context
+  - desktop_id: org.kde.plasma-fallback-session-save.desktop
+    reason: Plasma session helper is invoked only during session shutdown
   - desktop_id: org.kde.plasma-interactiveconsole.desktop
     reason: Plasma service entry has no executable command
+  - desktop_id: org.kde.plasmashell.desktop
+    reason: Plasma shell is already running and managed by the desktop session
+  - desktop_id: org.kde.plasmawindowed.desktop
+    reason: Plasma widget host requires a widget package argument
+  - desktop_id: org.kde.polkit-kde-authentication-agent-1.desktop
+    reason: PolicyKit agent is managed by the session and only shows windows for authentication requests
   - desktop_id: org.kde.secretprompter.desktop
     reason: KDE helper entry has no executable command
+  - desktop_id: pamac-installer.desktop
+    reason: Package installer handler requires a package file argument
+  - desktop_id: signon-ui.desktop
+    reason: Account authentication UI requires a request from another process
+  - desktop_id: snap-handle-link.desktop
+    reason: Snap URI handler requires a snap URI argument
+  - desktop_id: urxvtc.desktop
+    reason: urxvt client requires an already-running urxvtd daemon
+  - desktop_id: wheelmap-geo-handler.desktop
+    reason: Geographic URI handler requires a geo URI argument
+  - desktop_id: xdg-desktop-portal-gtk.desktop
+    reason: GTK desktop portal is a D-Bus service without a standalone window
 
 aliases: []
 
