@@ -117,7 +117,9 @@ jobs:
           python3 -m unittest discover -s data -p 'test_*.py'
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
-          bash -n data/gui_supervisor.sh openqa/development/schedule-release-gate.sh
+          bash -n data/gui_supervisor.sh \
+            openqa/development/follow-openqa-progress.sh \
+            openqa/development/schedule-release-gate.sh
           if rg -n "alt-f2|x11_start_program" openqa/tests openqa/lib; then
             echo 'GUI launchers must not depend on Alt+F2 or x11_start_program' >&2
             exit 1
@@ -231,7 +233,15 @@ jobs:
           export BIGLINUX_OPENQA_CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git#${GITHUB_SHA}"
           export BIGLINUX_OPENQA_TEST_GIT_REFSPEC="$GITHUB_SHA"
           export BIGLINUX_OPENQA_SCENARIO_DEFINITIONS="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/openqa/scenario-definitions.yaml"
-          ./openqa/development/schedule-release-gate.sh
+          ./openqa/development/schedule-release-gate.sh &
+          gate_pid=$!
+          ./openqa/development/follow-openqa-progress.sh openqa "$gate_pid" &
+          monitor_pid=$!
+          gate_status=0
+          wait "$gate_pid" || gate_status=$?
+          kill "$monitor_pid" 2>/dev/null || true
+          wait "$monitor_pid" 2>/dev/null || true
+          exit "$gate_status"
 
       - name: Collect openQA diagnostics
         if: ${{ always() }}

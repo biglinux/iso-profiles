@@ -128,16 +128,21 @@ sub _entry_matches_filter {
 sub _test_entry {
     my ($entry, $timeout) = @_;
     my $metric = _entry_metric($entry);
+    my $name = $metric->{name};
     my ($status_path, $window_pid, $launch_pid);
     my $failure;
     my $process_started = 0;
     my $started = time;
 
+    _record_info "$name / starting",
+      'desktop_entry=' . _entry_value($entry, 'relative_path', _entry_value($entry, 'path', 'unknown'));
     eval {
         my ($baseline, $opened, $launch_method, $open_seconds, $path, $child_pid, $launch_memory) =
           atspi->launch_desktop_entry($entry, $timeout);
         $status_path = $path;
         $launch_pid = $child_pid;
+        _record_info "$name / launched",
+          sprintf('pid=%s; method=%s', $launch_pid // 'unknown', $launch_method // 'unknown');
         my $validation_mode = 'atspi-open';
         if ($opened->{status} ne 'passed' && _uses_x11_fallback($entry)) {
             my $x11_opened = _x11_fallback_open($launch_pid, $timeout);
@@ -172,6 +177,11 @@ sub _test_entry {
           || defined $metric->{pss_mib_peak}
           ? 'collected'
           : 'process exited before memory sampling';
+        _record_info "$name / " . ($opened->{status} eq 'passed' ? 'opened' : 'started'),
+          sprintf('%s; peak RSS=%s MiB; peak PSS=%s MiB',
+            $opened->{status} eq 'passed' ? 'AT-SPI window detected' : 'process started without accessible window',
+            $metric->{rss_mib_peak} // 'not collected',
+            $metric->{pss_mib_peak} // 'not collected');
 
         if ($opened->{status} ne 'passed') {
             # Terminal and daemon-style entries have no window to observe. A
@@ -197,6 +207,7 @@ sub _test_entry {
         }
     };
     $failure = $@ if $@;
+    _record_info "$name / cleaning", 'terminating the application process tree';
     my $cleanup;
     my $cleanup_error;
     eval { $cleanup = atspi->cleanup; 1 } or $cleanup_error = $@ || 'application cleanup failed';
@@ -207,6 +218,11 @@ sub _test_entry {
     $metric->{cleanup_status} = ref $cleanup ? $cleanup->{status} : 'failed';
     $metric->{cleanup_closed} = $cleanup->{closed} if ref $cleanup;
     $metric->{cleanup_killed} = $cleanup->{killed} if ref $cleanup;
+    _record_info "$name / cleanup",
+      sprintf('status=%s; closed=%s; killed=%s',
+        $metric->{cleanup_status},
+        $metric->{cleanup_closed} // 'unknown',
+        $metric->{cleanup_killed} // 'unknown');
     if (!$failure && $cleanup_error) {
         $failure = $cleanup_error;
     }
@@ -219,7 +235,6 @@ sub _test_entry {
     $metric->{duration_seconds} = sprintf('%.2f', time - $started) + 0;
     push @application_metrics, $metric;
 
-    my $name = $metric->{name};
     if ($metric->{status} eq 'passed') {
         my $mode = $metric->{validation_mode} // 'unknown';
         _record_info "$name / passed",
