@@ -5,11 +5,12 @@ publication decision.
 
 Hard invariants:
 
-- BIOS and UEFI run in independent `ubuntu-24.04` jobs.
+- BIOS, UEFI, and four application shards run in independent `ubuntu-24.04` jobs.
 - Each job starts one local openQA single-instance container and one local KVM worker.
 - `/dev/kvm` and the archived QEMU command must prove KVM; TCG is never accepted.
 - The ISO is verified from the build artifact or an existing release before use.
-- A failed, cancelled, incomplete, or unverifiable mandatory job blocks publication.
+- A failed, cancelled, incomplete, or unverifiable firmware job or application
+  shard blocks publication.
 - The build job receives no openQA credentials because this architecture has none.
 
 Run a new candidate with `publish_release=false`:
@@ -36,9 +37,10 @@ actionlint
 
 The release decision must prove that the exact ISO built by GitHub Actions can
 boot, install, reboot, log in, and pass health checks in both supported firmware
-modes. The gate also runs the selected critical applications only in BIOS. The
-recursive `.desktop` audit remains the separate `applications` schedule and is
-not a release prerequisite.
+modes. It also runs the complete recursive `.desktop` audit in four application
+shards and runs selected critical applications after installation. The
+aggregator is mandatory: it rejects missing entries, incomplete shards,
+provenance mismatches, and any failed launch.
 
 ```text
 Build ISO
@@ -54,8 +56,12 @@ Build ISO
           local web UI + scheduler + database
           local worker --device=/dev/kvm + OVMF
           one release_uefi job
+   +-- four application runners (ubuntu-24.04)
+          one local openQA instance and one KVM worker per shard
    |
-   +-- publish only when build, BIOS, and UEFI are successful
+   +-- aggregate application metrics
+   |
+   +-- publish only when build, BIOS, UEFI, and application coverage are successful
 ```
 
 The container image is the digest-pinned value in
@@ -72,9 +78,10 @@ the direct release ISO or every numbered `.7z.*` part, verifies the complete
 sequence, extracts the ISO, and checks both checksum files.
 
 The build publishes no public asset before the gate. The same artifact is
-downloaded by both firmware jobs, so BIOS and UEFI test the same bytes.
+downloaded by every runner, so all firmware and application jobs test the same
+bytes.
 
-Every firmware job uploads a uniquely named diagnostic artifact containing the
+Every runner job uploads a uniquely named diagnostic artifact containing the
 ISO identity, resource measurements, container logs and metadata, job IDs,
 openQA archives, module details, screenshots, video when generated, KVM
 evidence, and the HTML report. Collection runs after failures and never changes
@@ -94,7 +101,8 @@ observable conditions before scheduling:
 
 The scheduler helper is
 [`schedule-release-gate.sh`](../development/schedule-release-gate.sh). A
-non-dry invocation requires `--firmware bios` or `--firmware uefi`, submits
+non-dry invocation requires `--firmware bios`, `--firmware uefi`, or
+`--applications-shard INDEX 4`, submits
 `SCENARIO_DEFINITIONS_YAML` through the official local `openqa-cli` API, and
 polls the returned product and job JSON. It never uses SSH, a remote API key,
 or a server URL.
@@ -103,8 +111,15 @@ The checked-out sources are mounted read-only at `/workspace-source`; the
 container entrypoint copies them to writable `/workspace` before openQA checks
 out the pinned `TEST_GIT_REFSPEC`. The job records the full `GITHUB_SHA`, uses
 the copied scenario file and needles, and sets `QEMU_NO_KVM=0`. BIOS uses the
-`release` schedule with the explicit critical application filter. UEFI uses
-`release_uefi`, which does not load the broad application audit.
+`release` schedule, UEFI uses `release_uefi`, and application runners use the
+`applications` schedule with the matching deterministic shard.
+
+The four application payloads are checked by
+[`aggregate-application-results.py`](aggregate-application-results.py). The
+aggregator recomputes the SHA-256 shard assignment, verifies the inventory hash,
+checks explicit policy classifications, requires every launchable entry exactly
+once, and fails on any application result other than `passed`. Per-entry metrics
+include RSS, PSS, process count, AT-SPI state, launch method, and cleanup state.
 
 ## KVM and UEFI evidence
 
@@ -125,8 +140,11 @@ logs without positive KVM evidence.
 The `applications` schedule recursively inspects application desktop entries.
 It starts programs through the existing safe desktop-entry launcher, prefers
 AT-SPI semantics, records process memory, continues after individual failures,
-and keeps its report separate from the release gate. Screenshots are not
+and uploads one compressed metrics payload per shard. The policy file explicitly
+classifies services, helpers, aliases, and invalid entries. Screenshots are not
 application assertions; the normal openQA video remains the visual evidence.
+Critical installed applications additionally receive an AT-SPI action, close
+request, process-exit, and exit-code check.
 
 ## Manual local investigation
 

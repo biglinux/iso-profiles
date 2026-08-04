@@ -44,13 +44,10 @@ or workflow settings.
 
 ## Canonical daily test configuration
 
-[`release-gate.yaml`](release-gate.yaml) is the single source of truth for the
-mandatory firmware matrix. It currently defines the BIOS plan with the full
-`release` schedule and the UEFI plan with `release_uefi`, so application coverage is
-not unnecessarily repeated in UEFI. The production gate supplies a critical
-application filter to the BIOS plan; an unfiltered `applications` run remains the
-separate broad audit. The module sequence for each schedule remains owned by
-[`../main.pm`](../main.pm).
+[`release-gate.yaml`](release-gate.yaml) is the source of truth for the mandatory
+firmware plans and four application shards. The module sequence for each schedule
+remains owned by [`../main.pm`](../main.pm), and the application policy is owned by
+[`../application-policy.yaml`](../application-policy.yaml).
 
 The development scheduler consumes this manifest locally:
 
@@ -59,6 +56,11 @@ BIGLINUX_OPENQA_VERSION=candidate \
 BIGLINUX_OPENQA_BUILD=dev-2026-07-31-k71 \
 BIGLINUX_ISO_FILENAME=biglinux_2026-07-31_k71.iso \
 ./openqa/development/schedule-release-gate.sh --dry-run
+
+BIGLINUX_OPENQA_VERSION=candidate \
+BIGLINUX_OPENQA_BUILD=dev-2026-07-31-k71 \
+BIGLINUX_ISO_FILENAME=biglinux_2026-07-31_k71.iso \
+./openqa/development/schedule-release-gate.sh --dry-run --applications-shard 0 4
 ```
 
 The GitHub workflow uses the same manifest through an ephemeral local instance, while
@@ -81,7 +83,7 @@ generation or manual test-list duplication is part of this path.
 
 ## Application validation
 
-The BIOS `applications` module discovers every `Type=Application` desktop entry below
+Each `applications` shard discovers every `Type=Application` desktop entry below
 `/usr/share/applications/`, recursively. It launches each entry through
 `data/desktop_entry_launcher.py`, so the Desktop Entry is parsed without concatenating
 its `Exec` value into a shell command. Hidden, non-application, and otherwise
@@ -105,7 +107,9 @@ the whole suite. The module fails only after the inventory is exhausted. The opt
 defaults to 8 seconds.
 
 The per-entry JSON records peak RSS, peak PSS, and peak process count for the process
-tree. The HTML report renders those values alongside the open result.
+tree. Four jobs use `sha256(relative_desktop_id) modulo 4`; the aggregator requires
+their union to equal the launchable inventory exactly. The HTML report renders
+those values alongside the open result.
 Screenshots are not application assertions. The normal openQA video remains the video
 artifact for the job and is collected with the other openQA diagnostics.
 
