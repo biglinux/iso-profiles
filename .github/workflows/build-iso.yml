@@ -112,10 +112,6 @@ jobs:
       # the unique build ID below distinguishes each candidate.
       version: candidate
       build_id: github-${{ github.run_id }}
-    secrets:
-      OPENQA_SSH_PRIVATE_KEY: ${{ secrets.OPENQA_SSH_PRIVATE_KEY }}
-      OPENQA_KNOWN_HOSTS: ${{ secrets.OPENQA_KNOWN_HOSTS }}
-      OPENQA_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
 
   publish:
     name: Publish validated ISO

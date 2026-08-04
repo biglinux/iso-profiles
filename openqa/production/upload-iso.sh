@@ -27,4 +27,4 @@ printf 'Uploading %s (%s bytes, SHA-256 %s)\n' "$iso_file" "$iso_size" "$iso_sha
 {
     printf '%s\t%s\t%s\n' "$iso_file" "$iso_size" "$iso_sha"
     cat -- "$iso_file"
-} | openqa_production_ssh_command iso-upload
+} | openqa_production_ssh_upload

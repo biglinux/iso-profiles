@@ -6,7 +6,7 @@ die() {
     exit 1
 }
 
-[[ "${SSH_ORIGINAL_COMMAND:-iso-upload}" == iso-upload ]] || die 'command is not allowed'
+[[ "${SSH_ORIGINAL_COMMAND-}" == iso-upload ]] || die 'command is not allowed'
 
 iso_dir=${BIGLINUX_RECEIVER_ISO_DIR:-/var/lib/openqa/share/factory/iso}
 max_bytes=${BIGLINUX_RECEIVER_MAX_BYTES:-17179869184}

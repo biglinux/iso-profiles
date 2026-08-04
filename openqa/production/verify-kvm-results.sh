@@ -8,15 +8,22 @@ mapfile -t job_ids <"$BIGLINUX_OPENQA_JOB_IDS_FILE"
 
 for job_id in "${job_ids[@]}"; do
     [[ "$job_id" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid job ID: $job_id" >&2; exit 2; }
-    log_file="$BIGLINUX_OPENQA_RESULTS_DIR/$job_id/autoinst-log.txt"
+    log_file="$BIGLINUX_OPENQA_RESULTS_DIR/$job_id/testresults/autoinst-log.txt"
     [[ -s "$log_file" ]] || { echo "Missing log for job $job_id" >&2; exit 1; }
-    rg -q -- '-enable-kvm' "$log_file" || {
-        echo "Job $job_id has no QEMU -enable-kvm evidence" >&2
+
+    kvm_pattern='(^|[[:space:]"=])-enable-kvm($|[[:space:]"=])|(^|[[:space:]"=])-accel[=[:space:]]+kvm($|[[:space:]"=])|(^|[[:space:]"=])accel=kvm($|[[:space:]"=])'
+    tcg_pattern='QEMU_NO_KVM=1|-accel[=[:space:]]+tcg|(^|[[:space:]"=])accel=tcg($|[[:space:]"=])|falling back to TCG|TCG fallback'
+    kvm_evidence=$(grep -En -- "$kvm_pattern" "$log_file" || true)
+    tcg_evidence=$(grep -En -- "$tcg_pattern" "$log_file" || true)
+    [[ -n "$kvm_evidence" ]] || {
+        echo "Job $job_id has no supported QEMU KVM evidence" >&2
         exit 1
     }
-    if rg -n -- 'QEMU_NO_KVM=1|-accel[= ]tcg|accel=tcg|falling back to TCG' "$log_file"; then
+    if [[ -n "$tcg_evidence" ]]; then
+        printf '%s\n' "$tcg_evidence" >&2
         echo "Job $job_id contains evidence of QEMU TCG" >&2
         exit 1
     fi
-    printf 'KVM evidence: job %s contains -enable-kvm and no TCG fallback\n' "$job_id"
+    printf '%s\n' "$kvm_evidence" >"$BIGLINUX_OPENQA_RESULTS_DIR/$job_id/kvm-evidence.txt"
+    printf 'KVM evidence for job %s:\n%s\n' "$job_id" "$kvm_evidence"
 done

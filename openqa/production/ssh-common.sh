@@ -46,24 +46,6 @@ openqa_production_setup_ssh() {
     )
 }
 
-openqa_production_ssh_command() {
-    local command arg quoted
-    command=''
-    for arg in "$@"; do
-        printf -v quoted '%q' "$arg"
-        command+="${command:+ }$quoted"
-    done
-    "${OPENQA_PRODUCTION_SSH[@]}" "$command"
-}
-
-openqa_production_ssh_stdin() {
-    local input=$1
-    shift
-    local command arg quoted
-    command=''
-    for arg in "$@"; do
-        printf -v quoted '%q' "$arg"
-        command+="${command:+ }$quoted"
-    done
-    printf '%s' "$input" | "${OPENQA_PRODUCTION_SSH[@]}" "$command"
+openqa_production_ssh_upload() {
+    "${OPENQA_PRODUCTION_SSH[@]}" iso-upload
 }

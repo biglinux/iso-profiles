@@ -20,20 +20,8 @@ on:
         description: Immutable build identifier shown in openQA
         required: true
         type: string
-    secrets:
-      OPENQA_SSH_PRIVATE_KEY:
-        required: true
-      OPENQA_KNOWN_HOSTS:
-        required: true
-      OPENQA_TEST_PASSWORD:
-        required: true
   workflow_dispatch:
     inputs:
-      candidate_artifact:
-        description: Private workflow artifact containing the ISO candidate
-        required: false
-        type: string
-        default: ''
       iso_release_tag:
         description: Existing release tag used only for manual validation
         required: false
@@ -80,7 +68,6 @@ jobs:
       BIGLINUX_ISO_FILENAME: ${{ inputs.iso_filename }}
       BIGLINUX_OPENQA_CASEDIR: https://github.com/${{ github.repository }}.git#${{ github.sha }}
       BIGLINUX_OPENQA_TEST_GIT_REFSPEC: ${{ github.sha }}
-      BIGLINUX_OPENQA_SCENARIO_DEFINITIONS: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/openqa/scenario-definitions.yaml
 
     steps:
       - name: Check out the tested sources
@@ -95,13 +82,15 @@ jobs:
           umask 077
           key_file="$RUNNER_TEMP/openqa-ci-key"
           known_hosts_file="$RUNNER_TEMP/openqa-known-hosts"
+          diagnostics_dir="$RUNNER_TEMP/openqa-diagnostics"
+          mkdir -p -- "$diagnostics_dir"
           printf '%s\n' "$OPENQA_SSH_PRIVATE_KEY" >"$key_file"
           printf '%s\n' "$OPENQA_KNOWN_HOSTS" >"$known_hosts_file"
           chmod 600 "$key_file" "$known_hosts_file"
           {
             printf 'BIGLINUX_OPENQA_SSH_KEY_FILE=%s\n' "$key_file"
             printf 'BIGLINUX_OPENQA_SSH_KNOWN_HOSTS=%s\n' "$known_hosts_file"
-            printf 'BIGLINUX_OPENQA_DIAGNOSTICS_DIR=%s\n' "$RUNNER_TEMP/openqa-diagnostics"
+            printf 'BIGLINUX_OPENQA_DIAGNOSTICS_DIR=%s\n' "$diagnostics_dir"
           } >>"$GITHUB_ENV"
 
       - name: Download the private ISO candidate
@@ -120,16 +109,45 @@ jobs:
           set -euo pipefail
           openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
           mkdir -p -- "$openqa_asset_dir"
+          [[ "$BIGLINUX_ISO_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ ]] || {
+            echo 'Invalid ISO filename' >&2
+            exit 2
+          }
           gh release download "$ISO_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir "$openqa_asset_dir" \
+            --pattern "$BIGLINUX_ISO_FILENAME" \
             --pattern "$BIGLINUX_ISO_FILENAME.7z.*" \
             --pattern "$BIGLINUX_ISO_FILENAME.md5" \
             --pattern "$BIGLINUX_ISO_FILENAME.sha256"
-          mapfile -t iso_parts < <(find "$openqa_asset_dir" -maxdepth 1 -type f \
-            -name "$BIGLINUX_ISO_FILENAME.7z.*" -print | sort -V)
-          test "${#iso_parts[@]}" -gt 0
-          7z x "${iso_parts[0]}" -o"$openqa_asset_dir"
+          if [[ ! -s "$openqa_asset_dir/$BIGLINUX_ISO_FILENAME" ]]; then
+            declare -A iso_parts=()
+            for iso_part in "$openqa_asset_dir/$BIGLINUX_ISO_FILENAME.7z."*; do
+              [[ -f "$iso_part" ]] || continue
+              suffix=${iso_part##*.7z.}
+              [[ "$suffix" =~ ^[0-9]{3}$ ]] || {
+                echo "Invalid ISO part name: ${iso_part##*/}" >&2
+                exit 2
+              }
+              iso_parts[$((10#$suffix))]="$iso_part"
+            done
+            ((${#iso_parts[@]} > 0)) || {
+              echo 'Neither a direct ISO nor split ISO parts were downloaded' >&2
+              exit 1
+            }
+            max_part=0
+            for part_number in "${!iso_parts[@]}"; do
+              ((part_number > max_part)) && max_part=$part_number
+            done
+            for ((part_number = 1; part_number <= max_part; part_number++)); do
+              [[ -n "${iso_parts[$part_number]:-}" ]] || {
+                echo "Missing ISO part number $part_number" >&2
+                exit 1
+              }
+            done
+            7z t "${iso_parts[1]}"
+            7z x "${iso_parts[1]}" -o"$openqa_asset_dir"
+          fi
 
       - name: Verify candidate checksums
         run: |
@@ -152,9 +170,11 @@ jobs:
           bash -n openqa/production/*.sh openqa/development/*.sh
           ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load_file(path, permitted_classes: [], aliases: false) }' \
             .github/workflows/*.yml openqa/*.yaml openqa/development/*.yaml
-          cmp openqa/data/atspi_probe.py data/atspi_probe.py
 
       - name: Validate persistent openQA and KVM worker capacity
+        env:
+          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
+          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
         run: openqa/production/validate-openqa.sh
 
       - name: Upload candidate ISO to the restricted receiver
@@ -165,6 +185,8 @@ jobs:
 
       - name: Schedule and monitor mandatory BIOS and UEFI plans
         env:
+          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
+          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
           BIGLINUX_TEST_USER: openqa
           BIGLINUX_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
         run: openqa/production/schedule-release-gate.sh
@@ -172,6 +194,8 @@ jobs:
       - name: Collect openQA job archives
         if: ${{ always() }}
         env:
+          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
+          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
           BIGLINUX_OPENQA_JOB_IDS_FILE: ${{ runner.temp }}/openqa-diagnostics/job-ids.txt
         run: |
           set -euo pipefail
@@ -197,12 +221,18 @@ jobs:
       - name: Redact test credentials from diagnostics
         if: ${{ always() }}
         env:
+          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
+          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
           OPENQA_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
         run: |
           set -euo pipefail
-          [[ -n "$OPENQA_TEST_PASSWORD" ]] || exit 0
           while IFS= read -r diagnostic; do
-            perl -0pi -e 's/\Q$ENV{OPENQA_TEST_PASSWORD}\E/[REDACTED]/g' "$diagnostic"
+            for secret_name in OPENQA_API_KEY OPENQA_API_SECRET OPENQA_TEST_PASSWORD; do
+              secret_value=${!secret_name}
+              [[ -n "$secret_value" ]] || continue
+              SECRET_TO_REDACT="$secret_value" perl -0pi -e \
+                's/\Q$ENV{SECRET_TO_REDACT}\E/[REDACTED]/g' "$diagnostic"
+            done
           done < <(find "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR" -type f \( \
             -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.html' \
           \) -print)

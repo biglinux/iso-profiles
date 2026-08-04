@@ -2,8 +2,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-# shellcheck source=./openqa/production/ssh-common.sh
-source "$script_dir/ssh-common.sh"
+openqa_cli="$script_dir/openqa-cli.sh"
 
 : "${BIGLINUX_OPENQA_URL:?BIGLINUX_OPENQA_URL is required}"
 : "${BIGLINUX_OPENQA_GROUP:?BIGLINUX_OPENQA_GROUP is required}"
@@ -25,46 +24,63 @@ source "$script_dir/ssh-common.sh"
     echo 'Invalid BIGLINUX_OPENQA_REMOTE_ISO_DIR' >&2
     exit 2
 }
+command -v jq >/dev/null 2>&1 || {
+    echo 'jq is required on the GitHub runner for openQA API validation' >&2
+    exit 127
+}
 
-openqa_production_setup_ssh
-remote_check=$(cat <<'REMOTE'
-set -euo pipefail
-url=$1
-group=$2
-worker_class=$3
-iso_dir=$4
+printf 'openQA client: '
+"$openqa_cli" --version
 
-command -v openqa-cli >/dev/null || { echo 'openqa-cli is missing on the persistent server' >&2; exit 1; }
-command -v jq >/dev/null || { echo 'jq is missing on the persistent server' >&2; exit 1; }
-systemctl is-active --quiet openqa-webui || { echo 'openqa-webui is not active' >&2; exit 1; }
-systemctl is-active --quiet openqa-scheduler || { echo 'openqa-scheduler is not active' >&2; exit 1; }
-timedatectl show --property=NTPSynchronized --value | grep -qx yes \
-    || { echo 'NTP is not synchronized on the persistent server' >&2; exit 1; }
-test -d "$iso_dir" -a -w "$iso_dir" \
-    || { echo 'openQA ISO asset directory is not writable' >&2; exit 1; }
-df -h "$iso_dir"
+workers_json=$( "$openqa_cli" api --host "$BIGLINUX_OPENQA_URL" workers )
+jq -e 'type == "object" and (.workers | type == "array")' <<<"$workers_json" >/dev/null || {
+    echo 'openQA workers response is not valid JSON' >&2
+    exit 1
+}
 
-workers=$(openqa-cli --host "$url" api workers)
-jq -e --arg worker_class "$worker_class" '
-    ([.workers[] | select(.status == "idle" or .status == "running")
-      | select((.properties.WORKER_CLASS // "") | split(",") | index($worker_class))] | length) >= 2
-' <<<"$workers" >/dev/null \
-    || { echo "fewer than two healthy workers in class $worker_class" >&2; exit 1; }
-
-groups=$(openqa-cli --host "$url" api groups)
-jq -e --arg group "$group" '[.groups[] | select(.name == $group)] | length == 1' <<<"$groups" >/dev/null \
-    || { echo "openQA group does not exist: $group" >&2; exit 1; }
-
-if [[ -r /dev/kvm && -w /dev/kvm ]]; then
-    echo 'KVM device is readable and writable on the openQA server host'
-else
-    echo 'KVM is provided by separate worker hosts; final job archives must prove -enable-kvm' >&2
-fi
-echo 'Persistent openQA web, scheduler, time sync, group and worker class are ready'
-REMOTE
+healthy_workers=$(
+    jq -r --arg worker_class "$BIGLINUX_OPENQA_WORKER_CLASS" '
+        [.workers[]?
+         | select(.status == "idle" or .status == "running")
+         | select(
+             ((.properties.WORKER_CLASS // "")
+              | tostring
+              | split(",")
+              | map(gsub("^\\s+|\\s+$"; ""))
+              | index($worker_class)) != null
+           )]
+        | length
+    ' <<<"$workers_json"
 )
-openqa_production_ssh_stdin "$remote_check" bash -s -- \
-    "$BIGLINUX_OPENQA_URL" \
-    "$BIGLINUX_OPENQA_GROUP" \
-    "$BIGLINUX_OPENQA_WORKER_CLASS" \
-    "$BIGLINUX_OPENQA_REMOTE_ISO_DIR"
+((healthy_workers >= 2)) || {
+    echo "fewer than two healthy workers in class $BIGLINUX_OPENQA_WORKER_CLASS" >&2
+    jq -r '.workers[]? | [.id, .host, .status, (.properties.WORKER_CLASS // "unknown")] | @tsv' \
+        <<<"$workers_json" >&2
+    exit 1
+}
+
+printf 'Healthy workers in class %s: %s\n' "$BIGLINUX_OPENQA_WORKER_CLASS" "$healthy_workers"
+jq -r --arg worker_class "$BIGLINUX_OPENQA_WORKER_CLASS" '
+    .workers[]?
+    | select(.status == "idle" or .status == "running")
+    | select(
+        ((.properties.WORKER_CLASS // "")
+         | tostring
+         | split(",")
+         | map(gsub("^\\s+|\\s+$"; ""))
+         | index($worker_class)) != null
+      )
+    | ["worker=" + (.id | tostring), "host=" + (.host // "unknown"), "status=" + .status]
+    | join(" ")
+' <<<"$workers_json"
+
+groups_json=$( "$openqa_cli" api --host "$BIGLINUX_OPENQA_URL" groups )
+jq -e --arg group "$BIGLINUX_OPENQA_GROUP" '
+    type == "object"
+    and ([.groups[]? | select(.name == $group)] | length == 1)
+' <<<"$groups_json" >/dev/null || {
+    echo "openQA group does not exist: $BIGLINUX_OPENQA_GROUP" >&2
+    exit 1
+}
+
+printf 'openQA API, group, and worker capacity are ready\n'
