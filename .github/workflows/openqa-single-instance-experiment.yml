@@ -273,6 +273,7 @@ jobs:
           echo "::add-mask::$test_password"
           printf '[global]\nHOST = http://localhost\nBACKEND = qemu\nWORKER_CLASS = biglinux-kvm\n' \
             >"$OPENQA_WORKER_CONFIG"
+          chmod 0644 "$OPENQA_WORKER_CONFIG"
 
       - name: Start ephemeral local openQA and worker
         run: |
