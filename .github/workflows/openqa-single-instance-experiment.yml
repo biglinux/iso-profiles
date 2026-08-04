@@ -1,5 +1,5 @@
 ---
-name: BigLinux openQA production release gate
+name: BigLinux openQA release gate
 
 on:
   workflow_call:
@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       build_id:
-        description: Immutable build identifier shown in openQA
+        description: Immutable build identifier for this candidate
         required: true
         type: string
   workflow_dispatch:
@@ -38,7 +38,7 @@ on:
         type: string
         default: candidate
       build_id:
-        description: Immutable build identifier shown in openQA
+        description: Immutable build identifier for this candidate
         required: true
         type: string
 
@@ -46,52 +46,82 @@ permissions:
   contents: read
 
 concurrency:
-  group: openqa-candidate-${{ inputs.build_id }}
-  cancel-in-progress: true
+  group: openqa-${{ github.repository }}-${{ github.ref }}-${{ github.run_id }}-${{ inputs.build_id }}
+  cancel-in-progress: false
 
 jobs:
   validate:
-    name: Persistent openQA BIOS + UEFI
-    environment: openqa-production
+    name: openQA ${{ matrix.firmware }} (local KVM)
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware: [bios, uefi]
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      BIGLINUX_OPENQA_URL: ${{ vars.OPENQA_URL }}
-      BIGLINUX_OPENQA_SSH_HOST: ${{ vars.OPENQA_SSH_HOST }}
-      BIGLINUX_OPENQA_SSH_USER: ${{ vars.OPENQA_SSH_USER }}
-      BIGLINUX_OPENQA_SSH_PORT: ${{ vars.OPENQA_SSH_PORT || '22' }}
-      BIGLINUX_OPENQA_GROUP: ${{ vars.OPENQA_GROUP }}
-      BIGLINUX_OPENQA_WORKER_CLASS: ${{ vars.OPENQA_WORKER_CLASS }}
-      BIGLINUX_OPENQA_REMOTE_ISO_DIR: ${{ vars.OPENQA_REMOTE_ISO_DIR }}
-      BIGLINUX_OPENQA_VERSION: ${{ inputs.version }}
-      BIGLINUX_OPENQA_BUILD: ${{ inputs.build_id }}
-      BIGLINUX_ISO_FILENAME: ${{ inputs.iso_filename }}
-      BIGLINUX_OPENQA_CASEDIR: https://github.com/${{ github.repository }}.git#${{ github.sha }}
-      BIGLINUX_OPENQA_TEST_GIT_REFSPEC: ${{ github.sha }}
+      FIRMWARE: ${{ matrix.firmware }}
+      ISO_FILENAME: ${{ inputs.iso_filename }}
+      OPENQA_VERSION: ${{ inputs.version }}
+      OPENQA_BUILD: ${{ inputs.build_id }}
+      OPENQA_CONTAINER: biglinux-openqa-${{ matrix.firmware }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Check out the tested sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Prepare restricted SSH files
-        env:
-          OPENQA_SSH_PRIVATE_KEY: ${{ secrets.OPENQA_SSH_PRIVATE_KEY }}
-          OPENQA_KNOWN_HOSTS: ${{ secrets.OPENQA_KNOWN_HOSTS }}
+      - name: Initialize diagnostics and validate inputs
         run: |
           set -euo pipefail
-          umask 077
-          key_file="$RUNNER_TEMP/openqa-ci-key"
-          known_hosts_file="$RUNNER_TEMP/openqa-known-hosts"
-          diagnostics_dir="$RUNNER_TEMP/openqa-diagnostics"
-          mkdir -p -- "$diagnostics_dir"
-          printf '%s\n' "$OPENQA_SSH_PRIVATE_KEY" >"$key_file"
-          printf '%s\n' "$OPENQA_KNOWN_HOSTS" >"$known_hosts_file"
-          chmod 600 "$key_file" "$known_hosts_file"
+          OPENQA_DIAGNOSTICS_DIR="$RUNNER_TEMP/openqa-diagnostics/$FIRMWARE"
+          OPENQA_PASSWORD_FILE="$RUNNER_TEMP/openqa-test-password"
+          OPENQA_WORKER_CONFIG="$RUNNER_TEMP/openqa-worker.ini"
+          OPENQA_OVMF_RUNTIME="$RUNNER_TEMP/openqa-ovmf"
           {
-            printf 'BIGLINUX_OPENQA_SSH_KEY_FILE=%s\n' "$key_file"
-            printf 'BIGLINUX_OPENQA_SSH_KNOWN_HOSTS=%s\n' "$known_hosts_file"
-            printf 'BIGLINUX_OPENQA_DIAGNOSTICS_DIR=%s\n' "$diagnostics_dir"
+            printf 'OPENQA_DIAGNOSTICS_DIR=%s\n' "$OPENQA_DIAGNOSTICS_DIR"
+            printf 'OPENQA_PASSWORD_FILE=%s\n' "$OPENQA_PASSWORD_FILE"
+            printf 'OPENQA_WORKER_CONFIG=%s\n' "$OPENQA_WORKER_CONFIG"
+            printf 'OPENQA_OVMF_RUNTIME=%s\n' "$OPENQA_OVMF_RUNTIME"
           } >>"$GITHUB_ENV"
+          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results"
+          [[ "$ISO_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ ]] || {
+            echo 'Invalid ISO filename' >&2
+            exit 2
+          }
+          [[ "$OPENQA_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo 'Invalid openQA version' >&2
+            exit 2
+          }
+          [[ "$OPENQA_BUILD" =~ ^[A-Za-z0-9_.:-]+$ ]] || {
+            echo 'Invalid openQA build identifier' >&2
+            exit 2
+          }
+          printf 'firmware=%s\nrun_id=%s\nrun_attempt=%s\ncommit=%s\n' \
+            "$FIRMWARE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+            >"$OPENQA_DIAGNOSTICS_DIR/run-metadata.txt"
+
+      - name: Validate pinned openQA image
+        run: |
+          set -euo pipefail
+          openqa_image=$(tr -d '[:space:]' < openqa/openqa-image.txt)
+          [[ "$openqa_image" =~ ^registry\.opensuse\.org/.+:[^@[:space:]]+@sha256:[[:xdigit:]]{64}$ ]] || {
+            echo 'openQA image must contain a version tag and digest' >&2
+            exit 2
+          }
+          [[ "$openqa_image" != *:latest@sha256:* ]] || {
+            echo 'openQA image must not use the mutable latest tag' >&2
+            exit 2
+          }
+          echo "OPENQA_IMAGE=$openqa_image" >>"$GITHUB_ENV"
+          docker pull "$openqa_image"
+          docker image inspect "$openqa_image" \
+            --format 'image={{index .RepoDigests 0}} id={{.Id}}' \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-image.txt"
+          docker run --rm --entrypoint /bin/bash "$openqa_image" -c \
+            'rpm -q openQA os-autoinst openQA-client' \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-packages.txt"
+          docker run --rm --entrypoint /bin/bash "$openqa_image" -c \
+            'rpm -q --qf "openQA-client %{VERSION}-%{RELEASE}\\n" openQA-client' \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-cli-version.txt"
 
       - name: Download the private ISO candidate
         if: ${{ inputs.candidate_artifact != '' }}
@@ -109,20 +139,16 @@ jobs:
           set -euo pipefail
           openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
           mkdir -p -- "$openqa_asset_dir"
-          [[ "$BIGLINUX_ISO_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ ]] || {
-            echo 'Invalid ISO filename' >&2
-            exit 2
-          }
           gh release download "$ISO_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir "$openqa_asset_dir" \
-            --pattern "$BIGLINUX_ISO_FILENAME" \
-            --pattern "$BIGLINUX_ISO_FILENAME.7z.*" \
-            --pattern "$BIGLINUX_ISO_FILENAME.md5" \
-            --pattern "$BIGLINUX_ISO_FILENAME.sha256"
-          if [[ ! -s "$openqa_asset_dir/$BIGLINUX_ISO_FILENAME" ]]; then
+            --pattern "$ISO_FILENAME" \
+            --pattern "$ISO_FILENAME.7z.*" \
+            --pattern "$ISO_FILENAME.md5" \
+            --pattern "$ISO_FILENAME.sha256"
+          if [[ ! -s "$openqa_asset_dir/$ISO_FILENAME" ]]; then
             declare -A iso_parts=()
-            for iso_part in "$openqa_asset_dir/$BIGLINUX_ISO_FILENAME.7z."*; do
+            for iso_part in "$openqa_asset_dir/$ISO_FILENAME.7z."*; do
               [[ -f "$iso_part" ]] || continue
               suffix=${iso_part##*.7z.}
               [[ "$suffix" =~ ^[0-9]{3}$ ]] || {
@@ -153,129 +179,304 @@ jobs:
         run: |
           set -euo pipefail
           openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
-          test -s "$openqa_asset_dir/$BIGLINUX_ISO_FILENAME"
+          test -s "$openqa_asset_dir/$ISO_FILENAME"
           (
             cd "$openqa_asset_dir"
-            sha256sum --check "$BIGLINUX_ISO_FILENAME.sha256"
-            md5sum --check "$BIGLINUX_ISO_FILENAME.md5"
-          )
+            sha256sum --check "$ISO_FILENAME.sha256"
+            md5sum --check "$ISO_FILENAME.md5"
+          ) | tee "$OPENQA_DIAGNOSTICS_DIR/checksums.txt"
+          printf '%s\n' "$ISO_FILENAME" >"$OPENQA_DIAGNOSTICS_DIR/iso-name.txt"
+          stat --printf='iso_bytes=%s\n' "$openqa_asset_dir/$ISO_FILENAME" \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/iso-size.txt"
 
-      - name: Validate production sources
+      - name: Validate repository sources
         run: |
           set -euo pipefail
           git diff --check
+          bash -n openqa/production/*.sh openqa/development/*.sh data/*.sh
+          shellcheck -x openqa/production/*.sh openqa/development/*.sh data/*.sh
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load_file(path, permitted_classes: [], aliases: false) }' \
+            .github/workflows/*.yml openqa/*.yaml openqa/development/*.yaml
           python3 -m unittest discover -s data -p 'test_*.py'
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
-          bash -n openqa/production/*.sh openqa/development/*.sh
-          ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load_file(path, permitted_classes: [], aliases: false) }' \
-            .github/workflows/*.yml openqa/*.yaml openqa/development/*.yaml
+          python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py
 
-      - name: Validate persistent openQA and KVM worker capacity
-        env:
-          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
-          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
-        run: openqa/production/validate-openqa.sh
-
-      - name: Upload candidate ISO to the restricted receiver
-        working-directory: ${{ runner.temp }}/openqa-assets
+      - name: Install KVM and UEFI prerequisites
         run: |
           set -euo pipefail
-          "$GITHUB_WORKSPACE/openqa/production/upload-iso.sh" "$BIGLINUX_ISO_FILENAME"
+          if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || \
+             ! command -v kvm-ok >/dev/null 2>&1 || \
+             ! dpkg-query -W -f='${Status}' ovmf 2>/dev/null | grep -q 'install ok installed'; then
+            sudo apt-get update
+            sudo apt-get install --yes cpu-checker jq ovmf qemu-system-x86
+          fi
+          command -v qemu-system-x86_64
+          command -v kvm-ok
+          dpkg-query -W -f='${Package} ${Version}\n' ovmf qemu-system-x86 cpu-checker \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/host-packages.txt"
+          ovmf_code=$(find /usr/share -type f -iname 'OVMF_CODE*.fd' -print -quit)
+          ovmf_vars=$(find /usr/share -type f -iname 'OVMF_VARS*.fd' -print -quit)
+          [[ -n "$ovmf_code" && -n "$ovmf_vars" ]] || {
+            echo 'OVMF firmware files were not found on the runner' >&2
+            exit 1
+          }
+          mkdir -p -- "$OPENQA_OVMF_RUNTIME"
+          cp -- "$ovmf_code" "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd"
+          cp -- "$ovmf_vars" "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
+          chmod 0666 -- "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd" "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
+          printf 'host_code=%s\nhost_vars=%s\n' "$ovmf_code" "$ovmf_vars" \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/ovmf.txt"
 
-      - name: Schedule and monitor mandatory BIOS and UEFI plans
-        env:
-          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
-          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
-          BIGLINUX_TEST_USER: openqa
-          BIGLINUX_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
-        run: openqa/production/schedule-release-gate.sh
+      - name: Validate KVM access before openQA
+        run: |
+          set -euo pipefail
+          if [[ ! -c /dev/kvm ]]; then
+            echo '::error::/dev/kvm is not available on this GitHub-hosted runner'
+            exit 1
+          fi
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm
+          stat --printf='path=%n mode=%a uid=%u gid=%g\n' /dev/kvm \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-device.txt"
+          kvm-ok | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-ok.txt"
+          free -h | tee "$OPENQA_DIAGNOSTICS_DIR/resources-before.txt"
+          df -h | tee "$OPENQA_DIAGNOSTICS_DIR/disk-before.txt"
+          nproc | tee "$OPENQA_DIAGNOSTICS_DIR/cpu-count.txt"
+          qemu_pidfile="$OPENQA_DIAGNOSTICS_DIR/qemu-kvm-smoke.pid"
+          qemu_log="$OPENQA_DIAGNOSTICS_DIR/qemu-kvm-smoke.log"
+          rm -f -- "$qemu_pidfile"
+          qemu-system-x86_64 \
+            -accel kvm \
+            -machine q35 \
+            -nodefaults \
+            -display none \
+            -monitor none \
+            -S \
+            -daemonize \
+            -pidfile "$qemu_pidfile" \
+            >"$qemu_log" 2>&1
+          test -s "$qemu_pidfile"
+          qemu_pid=$(<"$qemu_pidfile")
+          kill "$qemu_pid"
+          printf 'QEMU KVM smoke test passed with PID %s\n' "$qemu_pid" | tee -a "$qemu_log"
 
-      - name: Collect openQA job archives
+      - name: Prepare local worker and test password
+        run: |
+          set -euo pipefail
+          umask 077
+          openssl rand -hex 18 | tr -d '\n' >"$OPENQA_PASSWORD_FILE"
+          test_password=$(<"$OPENQA_PASSWORD_FILE")
+          echo "::add-mask::$test_password"
+          printf '[global]\nHOST = http://localhost\nBACKEND = qemu\nWORKER_CLASS = biglinux-kvm\n' \
+            >"$OPENQA_WORKER_CONFIG"
+
+      - name: Start ephemeral local openQA and worker
+        run: |
+          set -euo pipefail
+          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
+          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results"
+          docker_args=(
+            --detach
+            --name "$OPENQA_CONTAINER"
+            --publish 127.0.0.1:1080:80
+            --tmpfs /srv/www/htdocs:mode=0755
+            --tmpfs /var/log/apache2:mode=0755
+            --volume "$GITHUB_WORKSPACE:/workspace:ro"
+            --volume "$openqa_asset_dir:/var/lib/openqa/share/factory/iso:ro"
+            --volume "$OPENQA_DIAGNOSTICS_DIR/results:/var/lib/openqa/biglinux-results:rw"
+            --volume "$OPENQA_PASSWORD_FILE:/run/secrets/biglinux-test-password:ro"
+            --volume "$OPENQA_WORKER_CONFIG:/etc/openqa/workers.ini.d/99-biglinux.ini:ro"
+            --volume "$OPENQA_OVMF_RUNTIME:/run/ovmf:rw"
+            --device /dev/kvm
+            --env "KVM_GID=$(stat --format '%g' /dev/kvm)"
+            --env OPENQA_MCP_ENABLED=0
+            --entrypoint /bin/bash
+          )
+          docker run "${docker_args[@]}" "$OPENQA_IMAGE" \
+            /workspace/openqa/development/start-container.sh
+          docker inspect "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container-start.json"
+
+      - name: Wait for local API scheduler and worker
+        run: |
+          set -euo pipefail
+          for attempt in {1..180}; do
+            api_ready=0
+            worker_ready=0
+            scheduler_ready=0
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:1080/api/v1/jobs >"$OPENQA_DIAGNOSTICS_DIR/jobs-ready.json"; then
+              api_ready=1
+            fi
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:1080/api/v1/workers >"$OPENQA_DIAGNOSTICS_DIR/workers.json" && \
+              jq -e '[.workers[]? | select(.status == "idle" or .status == "running") | select((.properties.WORKER_CLASS // "") | contains("biglinux-kvm"))] | length == 1' \
+                "$OPENQA_DIAGNOSTICS_DIR/workers.json" >/dev/null && \
+              docker exec "$OPENQA_CONTAINER" su _openqa-worker -c \
+                'test -r /dev/kvm -a -w /dev/kvm'; then
+              worker_ready=1
+            fi
+            if docker exec "$OPENQA_CONTAINER" pgrep -f openqa-scheduler-daemon >/dev/null 2>&1; then
+              scheduler_ready=1
+            fi
+            if ((api_ready && worker_ready && scheduler_ready)); then
+              echo "Local openQA became ready after $((attempt * 5)) seconds or less"
+              docker exec "$OPENQA_CONTAINER" qemu-system-x86_64 --version \
+                | tee "$OPENQA_DIAGNOSTICS_DIR/container-qemu-version.txt"
+              docker exec "$OPENQA_CONTAINER" find /usr/share -type f \( \
+                -iname 'OVMF_CODE*.fd' -o -iname 'OVMF_VARS*.fd' \) \
+                | tee "$OPENQA_DIAGNOSTICS_DIR/container-ovmf.txt"
+              exit 0
+            fi
+            if container_state=$(docker inspect --format '{{.State.Running}}' "$OPENQA_CONTAINER" 2>/dev/null); then
+              :
+            else
+              container_state=missing
+            fi
+            if [[ "$container_state" != true ]]; then
+              echo 'The local openQA container stopped before becoming ready' >&2
+              if ! docker logs "$OPENQA_CONTAINER" >&2; then
+                echo 'Container logs were unavailable' >&2
+              fi
+              exit 1
+            fi
+            if ((attempt == 180)); then
+              echo 'The local openQA API, scheduler, and worker were not ready within 15 minutes' >&2
+              if ! docker logs "$OPENQA_CONTAINER" >&2; then
+                echo 'Container logs were unavailable' >&2
+              fi
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Schedule and monitor one mandatory firmware plan
+        run: |
+          set -euo pipefail
+          export BIGLINUX_OPENQA_CONTAINER="$OPENQA_CONTAINER"
+          export BIGLINUX_OPENQA_FIRMWARE="$FIRMWARE"
+          export BIGLINUX_OPENQA_VERSION="$OPENQA_VERSION"
+          export BIGLINUX_OPENQA_BUILD="$OPENQA_BUILD"
+          export BIGLINUX_ISO_FILENAME="$ISO_FILENAME"
+          export BIGLINUX_TEST_USER=openqa
+          export BIGLINUX_TEST_PASSWORD_FILE="$OPENQA_PASSWORD_FILE"
+          export BIGLINUX_TEST_PASSWORD_CONTAINER_FILE=/run/secrets/biglinux-test-password
+          export BIGLINUX_OPENQA_CASEDIR=/workspace
+          export BIGLINUX_OPENQA_SCENARIO_DEFINITIONS=/workspace/openqa/scenario-definitions.yaml
+          export BIGLINUX_OPENQA_TEST_GIT_REFSPEC="$GITHUB_SHA"
+          export BIGLINUX_OPENQA_UEFI_PFLASH_CODE=/run/ovmf/OVMF_CODE.fd
+          export BIGLINUX_OPENQA_UEFI_PFLASH_VARS=/run/ovmf/OVMF_VARS.fd
+          export BIGLINUX_OPENQA_PRODUCTDIR=openqa
+          export BIGLINUX_OPENQA_DIAGNOSTICS_DIR="$OPENQA_DIAGNOSTICS_DIR"
+          ./openqa/development/schedule-release-gate.sh --firmware "$FIRMWARE"
+
+      - name: Collect openQA diagnostics
         if: ${{ always() }}
-        env:
-          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
-          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
-          BIGLINUX_OPENQA_JOB_IDS_FILE: ${{ runner.temp }}/openqa-diagnostics/job-ids.txt
+        run: |
+          set +e
+          collection_status=0
+          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results"
+          if docker inspect "$OPENQA_CONTAINER" >/dev/null 2>&1; then
+            docker logs "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container.log" 2>&1 || collection_status=1
+            docker inspect "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container.json" || collection_status=1
+            job_ids_file="$OPENQA_DIAGNOSTICS_DIR/job-ids.txt"
+            if [[ -s "$job_ids_file" ]]; then
+              while IFS= read -r job_id; do
+                [[ "$job_id" =~ ^[1-9][0-9]*$ ]] || { collection_status=1; continue; }
+                docker exec "$OPENQA_CONTAINER" mkdir -p \
+                  "/var/lib/openqa/biglinux-results/$job_id"
+                if ! docker exec "$OPENQA_CONTAINER" openqa-cli archive --host http://localhost \
+                  "$job_id" "/var/lib/openqa/biglinux-results/$job_id" \
+                  >"$OPENQA_DIAGNOSTICS_DIR/archive-$job_id.log" 2>&1; then
+                  echo "Failed to archive openQA job $job_id" >&2
+                  collection_status=1
+                fi
+                docker exec "$OPENQA_CONTAINER" openqa-cli api --host http://localhost \
+                  "jobs/$job_id" >"$OPENQA_DIAGNOSTICS_DIR/job-$job_id-api.json" 2>&1 \
+                  || collection_status=1
+              done <"$job_ids_file"
+            fi
+            if docker exec "$OPENQA_CONTAINER" test -d /var/log/openqa; then
+              docker cp "$OPENQA_CONTAINER:/var/log/openqa" \
+                "$OPENQA_DIAGNOSTICS_DIR/worker-logs" || collection_status=1
+            fi
+          else
+            echo 'openQA container was never created' >"$OPENQA_DIAGNOSTICS_DIR/container.log"
+          fi
+          free -h >"$OPENQA_DIAGNOSTICS_DIR/resources-after.txt"
+          df -h >"$OPENQA_DIAGNOSTICS_DIR/disk-after.txt"
+          docker system df >"$OPENQA_DIAGNOSTICS_DIR/docker-disk-after.txt" 2>&1 || collection_status=1
+          exit "$collection_status"
+
+      - name: Verify archived QEMU KVM evidence
+        if: ${{ always() }}
         run: |
           set -euo pipefail
-          if [[ -s "$BIGLINUX_OPENQA_JOB_IDS_FILE" ]]; then
-            openqa/production/collect-results.sh
+          if [[ -s "$OPENQA_DIAGNOSTICS_DIR/job-ids.txt" ]]; then
+            BIGLINUX_OPENQA_RESULTS_DIR="$OPENQA_DIAGNOSTICS_DIR/results" \
+              BIGLINUX_OPENQA_JOB_IDS_FILE="$OPENQA_DIAGNOSTICS_DIR/job-ids.txt" \
+              openqa/production/verify-kvm-results.sh
           else
-            echo 'No scheduled job IDs; preserving scheduler diagnostics only.'
+            echo 'No job ID was available; the scheduling step already failed.' \
+              | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-verification-skipped.txt"
           fi
 
-      - name: Verify real KVM execution
+      - name: Redact generated test password from text diagnostics
         if: ${{ always() }}
-        env:
-          BIGLINUX_OPENQA_RESULTS_DIR: ${{ runner.temp }}/openqa-diagnostics/results
-          BIGLINUX_OPENQA_JOB_IDS_FILE: ${{ runner.temp }}/openqa-diagnostics/job-ids.txt
         run: |
           set -euo pipefail
-          if [[ -s "$BIGLINUX_OPENQA_JOB_IDS_FILE" ]]; then
-            openqa/production/verify-kvm-results.sh
-          else
-            echo 'KVM verification skipped because no job was scheduled.'
-          fi
-
-      - name: Redact test credentials from diagnostics
-        if: ${{ always() }}
-        env:
-          OPENQA_API_KEY: ${{ secrets.OPENQA_API_KEY }}
-          OPENQA_API_SECRET: ${{ secrets.OPENQA_API_SECRET }}
-          OPENQA_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
-        run: |
-          set -euo pipefail
-          while IFS= read -r diagnostic; do
-            for secret_name in OPENQA_API_KEY OPENQA_API_SECRET OPENQA_TEST_PASSWORD; do
-              secret_value=${!secret_name}
-              [[ -n "$secret_value" ]] || continue
-              SECRET_TO_REDACT="$secret_value" perl -0pi -e \
+          test_password=$(<"$OPENQA_PASSWORD_FILE")
+          if [[ -n "$test_password" ]]; then
+            while IFS= read -r diagnostic; do
+              SECRET_TO_REDACT="$test_password" perl -0pi -e \
                 's/\Q$ENV{SECRET_TO_REDACT}\E/[REDACTED]/g' "$diagnostic"
-            done
-          done < <(find "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR" -type f \( \
-            -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.html' \
-          \) -print)
+            done < <(find "$OPENQA_DIAGNOSTICS_DIR" -type f \( \
+              -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.html' \
+            \) -print)
+          fi
 
       - name: Generate human-readable validation report
         if: ${{ always() }}
         run: |
           set -euo pipefail
-          mkdir -p -- "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR"
           python3 openqa/report/generate_report.py \
-            --results-root "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR" \
-            --output "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR/biglinux-validation-report.html"
+            --results-root "$OPENQA_DIAGNOSTICS_DIR" \
+            --output "$OPENQA_DIAGNOSTICS_DIR/biglinux-validation-report.html"
 
-      - name: Publish job links in the Actions summary
+      - name: Publish local job information in the Actions summary
         if: ${{ always() }}
         run: |
           set -euo pipefail
           {
-            echo '## openQA production gate'
+            echo "## openQA $FIRMWARE"
             echo
-            echo "openQA: $BIGLINUX_OPENQA_URL"
-            for firmware in bios uefi; do
-              ids_file="$BIGLINUX_OPENQA_DIAGNOSTICS_DIR/job-ids-$firmware.txt"
-              [[ -f "$ids_file" ]] || continue
+            echo 'Instance: local ephemeral openQA on this runner'
+            echo "Commit: $GITHUB_SHA"
+            echo "ISO: $ISO_FILENAME"
+            ids_file="$OPENQA_DIAGNOSTICS_DIR/job-ids.txt"
+            if [[ -s "$ids_file" ]]; then
               while IFS= read -r job_id; do
-                [[ -n "$job_id" ]] || continue
-                echo "- $firmware: $BIGLINUX_OPENQA_URL/tests/$job_id"
+                echo "- local job ID: $job_id"
               done <"$ids_file"
-            done
+            else
+              echo '- no openQA job ID was created'
+            fi
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Upload openQA diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: openqa-${{ inputs.build_id }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/openqa-diagnostics/
+          name: openqa-${{ matrix.firmware }}-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.firmware }}/
           if-no-files-found: error
           retention-days: 14
 
-      - name: Remove restricted SSH files
+      - name: Stop ephemeral openQA
         if: ${{ always() }}
         run: |
-          set +e
-          [[ -f "$BIGLINUX_OPENQA_SSH_KEY_FILE" ]] && unlink -- "$BIGLINUX_OPENQA_SSH_KEY_FILE"
-          [[ -f "$BIGLINUX_OPENQA_SSH_KNOWN_HOSTS" ]] && unlink -- "$BIGLINUX_OPENQA_SSH_KNOWN_HOSTS"
+          set -euo pipefail
+          if docker inspect "$OPENQA_CONTAINER" >/dev/null 2>&1; then
+            docker stop --time 30 "$OPENQA_CONTAINER"
+            docker rm "$OPENQA_CONTAINER"
+          fi

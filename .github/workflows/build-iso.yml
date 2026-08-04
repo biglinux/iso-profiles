@@ -82,7 +82,12 @@ jobs:
         id: prepare
         run: |
           cd output
-          iso=$(ls -- *.iso)
+          mapfile -t iso_files < <(find . -maxdepth 1 -type f -name '*.iso' -printf '%f\n')
+          ((${#iso_files[@]} == 1)) || {
+            echo "Expected exactly one ISO, found ${#iso_files[@]}" >&2
+            exit 1
+          }
+          iso=${iso_files[0]}
           # Concurrently: both hashers stream the same multi-GB file, and the
           # second one reads it from the page cache the first is filling.
           md5sum "$iso" > "$iso.md5" &

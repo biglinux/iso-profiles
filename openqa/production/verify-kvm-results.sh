@@ -13,8 +13,16 @@ for job_id in "${job_ids[@]}"; do
 
     kvm_pattern='(^|[[:space:]"=])-enable-kvm($|[[:space:]"=])|(^|[[:space:]"=])-accel[=[:space:]]+kvm($|[[:space:]"=])|(^|[[:space:]"=])accel=kvm($|[[:space:]"=])'
     tcg_pattern='QEMU_NO_KVM=1|-accel[=[:space:]]+tcg|(^|[[:space:]"=])accel=tcg($|[[:space:]"=])|falling back to TCG|TCG fallback'
-    kvm_evidence=$(grep -En -- "$kvm_pattern" "$log_file" || true)
-    tcg_evidence=$(grep -En -- "$tcg_pattern" "$log_file" || true)
+    if kvm_evidence=$(grep -En -- "$kvm_pattern" "$log_file"); then
+        :
+    else
+        kvm_evidence=''
+    fi
+    if tcg_evidence=$(grep -En -- "$tcg_pattern" "$log_file"); then
+        :
+    else
+        tcg_evidence=''
+    fi
     [[ -n "$kvm_evidence" ]] || {
         echo "Job $job_id has no supported QEMU KVM evidence" >&2
         exit 1

@@ -133,6 +133,7 @@ docker run --detach \
     --volume "$script_dir/mcp-forwarded-proto.conf:/etc/apache2/vhosts.d/openqa-mcp-forwarded-proto.conf:ro" \
     --device /dev/kvm \
     --env "KVM_GID=$kvm_gid" \
+    --env OPENQA_MCP_ENABLED=1 \
     --env "OPENQA_MCP_USER=$mcp_user" \
     --entrypoint /bin/bash \
     "$mcp_image" \
