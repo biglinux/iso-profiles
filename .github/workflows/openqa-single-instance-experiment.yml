@@ -425,6 +425,10 @@ jobs:
         if: ${{ always() }}
         run: |
           set -euo pipefail
+          if [[ ! -r "$OPENQA_PASSWORD_FILE" ]]; then
+            echo 'Test password was not created because an earlier step failed.'
+            exit 0
+          fi
           test_password=$(<"$OPENQA_PASSWORD_FILE")
           if [[ -n "$test_password" ]]; then
             while IFS= read -r diagnostic; do
