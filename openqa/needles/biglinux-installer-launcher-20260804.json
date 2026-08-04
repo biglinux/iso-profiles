@@ -1,0 +1,41 @@
+{
+  "area": [
+    {
+      "height": 20,
+      "type": "match",
+      "width": 145,
+      "xpos": 440,
+      "ypos": 56
+    },
+    {
+      "height": 56,
+      "type": "match",
+      "width": 58,
+      "xpos": 483,
+      "ypos": 206
+    },
+    {
+      "height": 24,
+      "type": "match",
+      "width": 120,
+      "xpos": 452,
+      "ypos": 284
+    },
+    {
+      "click_point": {
+        "id": "install",
+        "xpos": 53,
+        "ypos": 22
+      },
+      "height": 44,
+      "type": "match",
+      "width": 107,
+      "xpos": 458,
+      "ypos": 432
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installer-launcher"
+  ]
+}
