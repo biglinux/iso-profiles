@@ -467,7 +467,7 @@ jobs:
           export BIGLINUX_ISO_SHA256
           export BIGLINUX_APPLICATION_SHARD_COUNT
           if [[ "$SUITE" == applications-* ]]; then
-            ./openqa/development/schedule-release-gate.sh \
+            BIGLINUX_OPENQA_FIRMWARE='' ./openqa/development/schedule-release-gate.sh \
               --applications-shard "$APPLICATION_SHARD_INDEX" "$APPLICATION_SHARD_COUNT"
           else
             ./openqa/development/schedule-release-gate.sh --firmware "$FIRMWARE"
