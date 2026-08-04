@@ -173,6 +173,9 @@ jobs:
             done
             7z t "${iso_parts[1]}"
             7z x "${iso_parts[1]}" -o"$openqa_asset_dir"
+            for iso_part in "${iso_parts[@]}"; do
+              unlink -- "$iso_part"
+            done
           fi
 
       - name: Verify candidate checksums
