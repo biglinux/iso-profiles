@@ -391,7 +391,7 @@ jobs:
                   "/var/lib/openqa/biglinux-results/$job_id"
                 if ! docker exec "$OPENQA_CONTAINER" openqa-cli archive \
                   --host http://localhost \
-                  --asset-size-limit 1 \
+                  --asset-size-limit 200000000 \
                   "$job_id" "/var/lib/openqa/biglinux-results/$job_id" \
                   >"$OPENQA_DIAGNOSTICS_DIR/archive-$job_id.log" 2>&1; then
                   echo "Failed to archive openQA job $job_id" >&2

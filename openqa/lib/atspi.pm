@@ -222,7 +222,7 @@ sub _launch_argv {
     die "GUI supervisor did not expose a child PID for '$expected_name'"
       . ': ' . $class->_read_launch_debug($status_path)
       unless defined $launch_pid;
-    my $window_pid = $expected_pid && $expected_pid eq 'pending' ? $launch_pid : $expected_pid;
+    my $window_pid = $expected_pid && $expected_pid eq 'pending' ? undef : $expected_pid;
     my $launch_memory = eval { $class->result('memory', 1, '--pid', $launch_pid) };
     my @wait_arguments = ('--name', $expected_name);
     push @wait_arguments, ('--pid', $window_pid) if defined $window_pid;
