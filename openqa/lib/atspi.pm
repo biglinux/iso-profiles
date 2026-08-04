@@ -250,12 +250,14 @@ sub interact {
 }
 
 sub cleanup {
-    my ($class) = @_;
+    my ($class, $timeout) = @_;
+    die 'AT-SPI cleanup requires a positive timeout'
+      unless defined $timeout && $timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/;
     select_console 'root-virtio-terminal';
     _kill_process_groups(keys %session_launch_pids);
     %session_launch_pids = ();
     select_console 'sut';
-    return $class->result('cleanup', 4);
+    return $class->result('cleanup', $timeout);
 }
 
 sub terminate_window {

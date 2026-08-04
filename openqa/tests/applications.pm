@@ -210,7 +210,7 @@ sub _test_entry {
     _record_info "$name / cleaning", 'terminating the application process tree';
     my $cleanup;
     my $cleanup_error;
-    eval { $cleanup = atspi->cleanup; 1 } or $cleanup_error = $@ || 'application cleanup failed';
+    eval { $cleanup = atspi->cleanup($timeout); 1 } or $cleanup_error = $@ || 'application cleanup failed';
     if (!$cleanup_error && (!ref $cleanup || $cleanup->{status} ne 'passed')) {
         $cleanup_error = ref $cleanup && $cleanup->{error}
           ? $cleanup->{error} : 'application cleanup failed';

@@ -10,8 +10,9 @@ Hard invariants:
 - The development image is derived from the same digest-pinned openQA image used by
   the release workflow and adds the matching `openQA-mcp` package locally.
 - The ISO is supplied by the caller; this bridge never builds one.
-- The GitHub release gate runs on `ubuntu-24.04`, uses KVM when the hosted runner
-  exposes `/dev/kvm`, and falls back to QEMU TCG when it does not.
+- The production GitHub gate uses a persistent openQA host and rejects a run whose
+  job archive does not prove QEMU `-enable-kvm`. This development bridge is not the
+  production gate.
 
 Run: `./openqa/development/start-mcp.sh /absolute/path/to/biglinux.iso`
 
@@ -49,7 +50,7 @@ mandatory firmware matrix. It currently defines the BIOS plan with the full
 not unnecessarily repeated in UEFI. The module sequence for each schedule remains
 owned by [`../main.pm`](../main.pm).
 
-The shared scheduler consumes this manifest in both environments:
+The development scheduler consumes this manifest locally:
 
 ```bash
 BIGLINUX_OPENQA_VERSION=candidate \
@@ -58,8 +59,8 @@ BIGLINUX_ISO_FILENAME=biglinux_2026-07-31_k71.iso \
 ./openqa/development/schedule-release-gate.sh --dry-run
 ```
 
-The GitHub release workflow calls the same scheduler automatically. A local run can
-use the already-started development container and the existing ISO:
+The production workflow uses the same manifest through the persistent server, while a
+local run can use the already-started development container and the existing ISO:
 
 ```bash
 read -rsp 'Test password: ' BIGLINUX_TEST_PASSWORD; export BIGLINUX_TEST_PASSWORD
@@ -120,14 +121,14 @@ Bearer credential. The MCP package is installed at the exact openQA package vers
 present in the base image. Copy that credential into a local MCP client configuration based on
 [`mcp.json.example`](mcp.json.example); do not commit the resulting file.
 
-This bridge intentionally uses the same QEMU backend as the release workflow, but the
-local bridge requires KVM for a practical interactive development cycle. It must not be
-started while a VirtualBox VM is running because both hypervisors compete for the host
-virtualization extension. The release gate runs on GitHub's `ubuntu-24.04` runner: KVM
-is passed through when available, and openQA's QEMU backend uses TCG automatically when
-the runner has no `/dev/kvm`. Neither path requires virgl; the `mpv` application test
-always selects software rendering. The local VirtualBox host remains available for
-unrelated development VMs when the bridge is stopped.
+This bridge intentionally uses the same QEMU backend as the production configuration,
+but the local bridge requires KVM for a practical interactive development cycle. It
+must not be started while a VirtualBox VM is running because both hypervisors compete
+for the host virtualization extension. The production gate never falls back to TCG:
+the worker class and archived QEMU command must prove KVM. Neither path requires
+virgl; the `mpv` application test always selects software rendering. The local
+VirtualBox host remains available for unrelated development VMs when the bridge is
+stopped.
 
 The Docker port proxy appears as a non-local request inside the container. The bridge
 therefore marks only `/mcp` as the secure local proxy hop required by openQA's token

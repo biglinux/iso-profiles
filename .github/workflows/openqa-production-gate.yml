@@ -1,0 +1,251 @@
+---
+name: BigLinux openQA production release gate
+
+on:
+  workflow_call:
+    inputs:
+      candidate_artifact:
+        description: Private workflow artifact containing the ISO candidate
+        required: true
+        type: string
+      iso_filename:
+        description: Exact ISO filename inside the candidate artifact
+        required: true
+        type: string
+      version:
+        description: openQA product version for this candidate
+        required: true
+        type: string
+      build_id:
+        description: Immutable build identifier shown in openQA
+        required: true
+        type: string
+    secrets:
+      OPENQA_SSH_PRIVATE_KEY:
+        required: true
+      OPENQA_KNOWN_HOSTS:
+        required: true
+      OPENQA_TEST_PASSWORD:
+        required: true
+  workflow_dispatch:
+    inputs:
+      candidate_artifact:
+        description: Private workflow artifact containing the ISO candidate
+        required: false
+        type: string
+        default: ''
+      iso_release_tag:
+        description: Existing release tag used only for manual validation
+        required: false
+        type: string
+        default: biglinux_2026-07-31_k71-r7
+      iso_filename:
+        description: ISO filename before release splitting
+        required: true
+        type: string
+        default: biglinux_2026-07-31_k71.iso
+      version:
+        description: openQA product version from scenario-definitions.yaml
+        required: true
+        type: string
+        default: candidate
+      build_id:
+        description: Immutable build identifier shown in openQA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openqa-candidate-${{ inputs.build_id }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Persistent openQA BIOS + UEFI
+    environment: openqa-production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      BIGLINUX_OPENQA_URL: ${{ vars.OPENQA_URL }}
+      BIGLINUX_OPENQA_SSH_HOST: ${{ vars.OPENQA_SSH_HOST }}
+      BIGLINUX_OPENQA_SSH_USER: ${{ vars.OPENQA_SSH_USER }}
+      BIGLINUX_OPENQA_SSH_PORT: ${{ vars.OPENQA_SSH_PORT || '22' }}
+      BIGLINUX_OPENQA_GROUP: ${{ vars.OPENQA_GROUP }}
+      BIGLINUX_OPENQA_WORKER_CLASS: ${{ vars.OPENQA_WORKER_CLASS }}
+      BIGLINUX_OPENQA_REMOTE_ISO_DIR: ${{ vars.OPENQA_REMOTE_ISO_DIR }}
+      BIGLINUX_OPENQA_VERSION: ${{ inputs.version }}
+      BIGLINUX_OPENQA_BUILD: ${{ inputs.build_id }}
+      BIGLINUX_ISO_FILENAME: ${{ inputs.iso_filename }}
+      BIGLINUX_OPENQA_CASEDIR: https://github.com/${{ github.repository }}.git#${{ github.sha }}
+      BIGLINUX_OPENQA_TEST_GIT_REFSPEC: ${{ github.sha }}
+      BIGLINUX_OPENQA_SCENARIO_DEFINITIONS: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/openqa/scenario-definitions.yaml
+
+    steps:
+      - name: Check out the tested sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Prepare restricted SSH files
+        env:
+          OPENQA_SSH_PRIVATE_KEY: ${{ secrets.OPENQA_SSH_PRIVATE_KEY }}
+          OPENQA_KNOWN_HOSTS: ${{ secrets.OPENQA_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_file="$RUNNER_TEMP/openqa-ci-key"
+          known_hosts_file="$RUNNER_TEMP/openqa-known-hosts"
+          printf '%s\n' "$OPENQA_SSH_PRIVATE_KEY" >"$key_file"
+          printf '%s\n' "$OPENQA_KNOWN_HOSTS" >"$known_hosts_file"
+          chmod 600 "$key_file" "$known_hosts_file"
+          {
+            printf 'BIGLINUX_OPENQA_SSH_KEY_FILE=%s\n' "$key_file"
+            printf 'BIGLINUX_OPENQA_SSH_KNOWN_HOSTS=%s\n' "$known_hosts_file"
+            printf 'BIGLINUX_OPENQA_DIAGNOSTICS_DIR=%s\n' "$RUNNER_TEMP/openqa-diagnostics"
+          } >>"$GITHUB_ENV"
+
+      - name: Download the private ISO candidate
+        if: ${{ inputs.candidate_artifact != '' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.candidate_artifact }}
+          path: ${{ runner.temp }}/openqa-assets
+
+      - name: Download existing release ISO for manual validation
+        if: ${{ inputs.candidate_artifact == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISO_RELEASE_TAG: ${{ inputs.iso_release_tag }}
+        run: |
+          set -euo pipefail
+          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
+          mkdir -p -- "$openqa_asset_dir"
+          gh release download "$ISO_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$openqa_asset_dir" \
+            --pattern "$BIGLINUX_ISO_FILENAME.7z.*" \
+            --pattern "$BIGLINUX_ISO_FILENAME.md5" \
+            --pattern "$BIGLINUX_ISO_FILENAME.sha256"
+          mapfile -t iso_parts < <(find "$openqa_asset_dir" -maxdepth 1 -type f \
+            -name "$BIGLINUX_ISO_FILENAME.7z.*" -print | sort -V)
+          test "${#iso_parts[@]}" -gt 0
+          7z x "${iso_parts[0]}" -o"$openqa_asset_dir"
+
+      - name: Verify candidate checksums
+        run: |
+          set -euo pipefail
+          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
+          test -s "$openqa_asset_dir/$BIGLINUX_ISO_FILENAME"
+          (
+            cd "$openqa_asset_dir"
+            sha256sum --check "$BIGLINUX_ISO_FILENAME.sha256"
+            md5sum --check "$BIGLINUX_ISO_FILENAME.md5"
+          )
+
+      - name: Validate production sources
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 -m unittest discover -s data -p 'test_*.py'
+          python3 -m unittest discover -s openqa/data -p 'test_*.py'
+          python3 -m unittest discover -s openqa/report -p 'test_*.py'
+          bash -n openqa/production/*.sh openqa/development/*.sh
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load_file(path, permitted_classes: [], aliases: false) }' \
+            .github/workflows/*.yml openqa/*.yaml openqa/development/*.yaml
+          cmp openqa/data/atspi_probe.py data/atspi_probe.py
+
+      - name: Validate persistent openQA and KVM worker capacity
+        run: openqa/production/validate-openqa.sh
+
+      - name: Upload candidate ISO to the restricted receiver
+        working-directory: ${{ runner.temp }}/openqa-assets
+        run: |
+          set -euo pipefail
+          "$GITHUB_WORKSPACE/openqa/production/upload-iso.sh" "$BIGLINUX_ISO_FILENAME"
+
+      - name: Schedule and monitor mandatory BIOS and UEFI plans
+        env:
+          BIGLINUX_TEST_USER: openqa
+          BIGLINUX_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
+        run: openqa/production/schedule-release-gate.sh
+
+      - name: Collect openQA job archives
+        if: ${{ always() }}
+        env:
+          BIGLINUX_OPENQA_JOB_IDS_FILE: ${{ runner.temp }}/openqa-diagnostics/job-ids.txt
+        run: |
+          set -euo pipefail
+          if [[ -s "$BIGLINUX_OPENQA_JOB_IDS_FILE" ]]; then
+            openqa/production/collect-results.sh
+          else
+            echo 'No scheduled job IDs; preserving scheduler diagnostics only.'
+          fi
+
+      - name: Verify real KVM execution
+        if: ${{ always() }}
+        env:
+          BIGLINUX_OPENQA_RESULTS_DIR: ${{ runner.temp }}/openqa-diagnostics/results
+          BIGLINUX_OPENQA_JOB_IDS_FILE: ${{ runner.temp }}/openqa-diagnostics/job-ids.txt
+        run: |
+          set -euo pipefail
+          if [[ -s "$BIGLINUX_OPENQA_JOB_IDS_FILE" ]]; then
+            openqa/production/verify-kvm-results.sh
+          else
+            echo 'KVM verification skipped because no job was scheduled.'
+          fi
+
+      - name: Redact test credentials from diagnostics
+        if: ${{ always() }}
+        env:
+          OPENQA_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$OPENQA_TEST_PASSWORD" ]] || exit 0
+          while IFS= read -r diagnostic; do
+            perl -0pi -e 's/\Q$ENV{OPENQA_TEST_PASSWORD}\E/[REDACTED]/g' "$diagnostic"
+          done < <(find "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR" -type f \( \
+            -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.html' \
+          \) -print)
+
+      - name: Generate human-readable validation report
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          mkdir -p -- "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR"
+          python3 openqa/report/generate_report.py \
+            --results-root "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR" \
+            --output "$BIGLINUX_OPENQA_DIAGNOSTICS_DIR/biglinux-validation-report.html"
+
+      - name: Publish job links in the Actions summary
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## openQA production gate'
+            echo
+            echo "openQA: $BIGLINUX_OPENQA_URL"
+            for firmware in bios uefi; do
+              ids_file="$BIGLINUX_OPENQA_DIAGNOSTICS_DIR/job-ids-$firmware.txt"
+              [[ -f "$ids_file" ]] || continue
+              while IFS= read -r job_id; do
+                [[ -n "$job_id" ]] || continue
+                echo "- $firmware: $BIGLINUX_OPENQA_URL/tests/$job_id"
+              done <"$ids_file"
+            done
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload openQA diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openqa-${{ inputs.build_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/openqa-diagnostics/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove restricted SSH files
+        if: ${{ always() }}
+        run: |
+          set +e
+          [[ -f "$BIGLINUX_OPENQA_SSH_KEY_FILE" ]] && unlink -- "$BIGLINUX_OPENQA_SSH_KEY_FILE"
+          [[ -f "$BIGLINUX_OPENQA_SSH_KNOWN_HOSTS" ]] && unlink -- "$BIGLINUX_OPENQA_SSH_KNOWN_HOSTS"

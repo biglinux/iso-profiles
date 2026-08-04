@@ -55,7 +55,7 @@ jobs:
       tag: ${{ steps.prepare.outputs.tag }}
       candidate_artifact: iso-candidate-${{ github.run_id }}
     container:
-      image: xivastudio/biglinux_build_package:latest
+      image: xivastudio/biglinux_build_package@sha256:317d3f13ea00967f325fc12dd9926a6a8035802def37c99e5dedcebbf647c9c2
       options: --privileged
       volumes:
         # The runner's large scratch disk is mounted at /mnt; the chroots and
@@ -65,7 +65,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Build the ISO
         env:
@@ -93,7 +93,7 @@ jobs:
 
       - name: Upload private ISO candidate for openQA
         id: candidate
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: iso-candidate-${{ github.run_id }}
           path: output/
@@ -104,7 +104,7 @@ jobs:
   openqa:
     name: openQA release gate
     needs: build
-    uses: ./.github/workflows/openqa-single-instance-experiment.yml
+    uses: ./.github/workflows/openqa-production-gate.yml
     with:
       candidate_artifact: ${{ needs.build.outputs.candidate_artifact }}
       iso_filename: ${{ needs.build.outputs.iso }}
@@ -112,6 +112,10 @@ jobs:
       # the unique build ID below distinguishes each candidate.
       version: candidate
       build_id: github-${{ github.run_id }}
+    secrets:
+      OPENQA_SSH_PRIVATE_KEY: ${{ secrets.OPENQA_SSH_PRIVATE_KEY }}
+      OPENQA_KNOWN_HOSTS: ${{ secrets.OPENQA_KNOWN_HOSTS }}
+      OPENQA_TEST_PASSWORD: ${{ secrets.OPENQA_TEST_PASSWORD }}
 
   publish:
     name: Publish validated ISO
@@ -123,7 +127,7 @@ jobs:
       contents: write
     steps:
       - name: Download validated candidate
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: ${{ needs.build.outputs.candidate_artifact }}
           path: output
@@ -158,7 +162,7 @@ jobs:
           fi
 
       - name: Publish release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ needs.build.outputs.tag }}
           name: ${{ needs.build.outputs.iso }}
