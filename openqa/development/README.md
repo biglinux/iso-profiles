@@ -10,9 +10,9 @@ Hard invariants:
 - The development image is derived from the same digest-pinned openQA image used by
   the release workflow and adds the matching `openQA-mcp` package locally.
 - The ISO is supplied by the caller; this bridge never builds one.
-- The production GitHub gate uses a persistent openQA host and rejects a run whose
-  job archive does not prove QEMU `-enable-kvm`. This development bridge is not the
-  production gate.
+- The GitHub gate creates one disposable openQA instance and one KVM worker in each
+  BIOS and UEFI runner. It rejects a run whose job archive does not prove KVM. This
+  bridge uses the same pinned image and test sources for local investigation.
 
 Run: `./openqa/development/start-mcp.sh /absolute/path/to/biglinux.iso`
 
@@ -61,16 +61,18 @@ BIGLINUX_ISO_FILENAME=biglinux_2026-07-31_k71.iso \
 ./openqa/development/schedule-release-gate.sh --dry-run
 ```
 
-The production workflow uses the same manifest through the persistent server, while a
-local run can use the already-started development container and the existing ISO:
+The GitHub workflow uses the same manifest through an ephemeral local instance, while
+a local run can use the already-started development container and the existing ISO:
 
 ```bash
-read -rsp 'Test password: ' BIGLINUX_TEST_PASSWORD; export BIGLINUX_TEST_PASSWORD
+printf '%s' 'temporary-password' > /path/to/test-password
 BIGLINUX_OPENQA_CONTAINER=biglinux-openqa-dev \
 BIGLINUX_OPENQA_VERSION=candidate \
 BIGLINUX_OPENQA_BUILD=dev-2026-07-31-k71 \
 BIGLINUX_ISO_FILENAME=biglinux_2026-07-31_k71.iso \
-./openqa/development/schedule-release-gate.sh
+BIGLINUX_TEST_PASSWORD_FILE=/path/to/test-password \
+BIGLINUX_OPENQA_DIAGNOSTICS_DIR=/path/to/diagnostics \
+./openqa/development/schedule-release-gate.sh --firmware bios
 ```
 
 Changing the daily matrix therefore means reviewing `release-gate.yaml`; changing
