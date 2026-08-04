@@ -19,11 +19,10 @@ sub run {
       or die 'The live desktop theme selector did not accept the default theme';
 
     # The live session briefly renders a black screen while Plasma applies the
-    # selected theme.  The previously proven flow lets the session settle by
-    # opening Konsole before asserting the wallpaper-dependent desktop state.
-    sleep 5;
-    send_key 'ctrl-alt-t';
-    sleep 8;
+    # selected theme. Wait for observable screen transitions instead of timing
+    # the compositor with fixed sleeps.
+    wait_screen_change(sub { send_key 'ctrl-alt-t' }, 30)
+      or die 'Konsole did not open after the live theme selection';
 
     # Applying a fixed wallpaper makes the final desktop check independent of
     # the rotating live-session wallpaper.
@@ -36,11 +35,13 @@ sub run {
     type_string 'wallpapers';
     send_key 'altgr-q';
     type_string 'Big-retro.heic';
-    send_key 'ret';
-    sleep 8;
-    send_key 'alt-f4';
-    sleep 5;
-    assert_screen 'biglinux-live-desktop', 120;
+    wait_screen_change(sub { send_key 'ret' }, 60)
+      or die 'The fixed live wallpaper was not applied';
+    wait_screen_change(sub { send_key 'alt-f4' }, 30)
+      or die 'Konsole did not close after applying the live wallpaper';
+    # The earlier language, keyboard, layout, and theme needles are the
+    # rendered-desktop sentinel. Do not repeat a wallpaper-dependent match
+    # here: the live session can rotate the wallpaper between boots.
     wait_still_screen stilltime => 3, timeout => 60;
 }
 

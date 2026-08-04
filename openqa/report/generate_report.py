@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import html
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,11 @@ class ModuleResult:
 
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        if path.suffix == ".gz":
+            with gzip.open(path, "rt", encoding="utf-8") as stream:
+                value = json.load(stream)
+        else:
+            value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -96,12 +101,17 @@ def load_module_runtimes(job_dir: Path | None) -> dict[str, float]:
 
 
 def find_biglinux_job(results_root: Path) -> tuple[Path | None, dict[str, Any]]:
+    candidates = find_biglinux_jobs(results_root)
+    return max(candidates, key=lambda item: item[0].stat().st_mtime, default=(None, {}))
+
+
+def find_biglinux_jobs(results_root: Path) -> list[tuple[Path, dict[str, Any]]]:
     candidates: list[tuple[Path, dict[str, Any]]] = []
     for vars_path in results_root.rglob("vars.json"):
         variables = load_json(vars_path)
         if variables.get("DISTRI") == "biglinux":
             candidates.append((vars_path.parent, variables))
-    return max(candidates, key=lambda item: item[0].stat().st_mtime, default=(None, {}))
+    return sorted(candidates, key=lambda item: item[0].stat().st_mtime)
 
 
 def load_application_metrics(
@@ -109,7 +119,13 @@ def load_application_metrics(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if job_dir is None:
         return {}, []
-    candidates = list(job_dir.rglob("application-metrics.json"))
+    candidates = sorted(
+        [
+            *job_dir.rglob("application-metrics.json"),
+            *job_dir.rglob("application-metrics.json.gz"),
+        ],
+        key=lambda path: path.suffix == ".gz",
+    )
     if not candidates:
         return {}, []
     payload = load_json(candidates[0])
@@ -119,6 +135,24 @@ def load_application_metrics(
     if not isinstance(applications, list):
         applications = []
     return system, [item for item in applications if isinstance(item, dict)]
+
+
+def load_application_metrics_from_jobs(
+    jobs: list[tuple[Path, dict[str, Any]]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    system: dict[str, Any] = {}
+    applications: list[dict[str, Any]] = []
+    for job, variables in jobs:
+        job_system, job_applications = load_application_metrics(job)
+        if job_system:
+            system = job_system
+        label = variables.get("BUILD") or variables.get("TEST") or job.name
+        firmware = variables.get("UEFI") and "UEFI" or "BIOS"
+        for application in job_applications:
+            applications.append({"job": label, "firmware": firmware, **application})
+    if len(jobs) > 1:
+        system = {**system, "jobs_tested": len(jobs)}
+    return system, applications
 
 
 def esc(value: Any) -> str:
@@ -147,6 +181,26 @@ def status_badge(result: str) -> str:
     return f'<span class="badge badge-{esc(normalized)}">{esc(label)}</span>'
 
 
+def atspi_status(application: dict[str, Any]) -> str | None:
+    if (
+        application.get("status") == "skipped"
+        or application.get("accessible_window") is None
+    ):
+        return None
+    if application.get("validation_mode") == "process-start":
+        return None
+    return "passed" if application.get("status") == "passed" else "fail"
+
+
+def validation_badge(application: dict[str, Any]) -> str:
+    if application.get("validation_mode") in {"x11-open", "x11-window"}:
+        return '<span class="badge badge-softfail">Fallback X11</span>'
+    if application.get("validation_mode") == "process-start":
+        return '<span class="badge badge-softfail">Início do processo</span>'
+    accessibility = atspi_status(application)
+    return status_badge(accessibility) if accessibility else metric(None)
+
+
 def render_report(
     variables: dict[str, Any],
     modules: list[ModuleResult],
@@ -161,9 +215,9 @@ def render_report(
     passed = sum(module.result in {"ok", "passed"} for module in modules)
     failed = sum(module.result == "fail" for module in modules)
     total_duration = sum(module.duration_seconds or 0 for module in modules)
-    measured_apps = sum(
-        app.get("status") not in {None, "skipped"} for app in applications
-    )
+    passed_apps = sum(app.get("status") == "passed" for app in applications)
+    failed_apps = sum(app.get("status") == "failed" for app in applications)
+    skipped_apps = sum(app.get("status") == "skipped" for app in applications)
 
     module_rows = (
         "".join(
@@ -188,17 +242,18 @@ def render_report(
             <span class="app-category">{esc(app.get("category", "Sem categoria"))}</span></th>
           <td>{status_badge(str(app.get("status", "unknown")))}</td>
           <td>{metric(app.get("open_seconds"), "s")}</td>
-          <td>{metric(app.get("close_seconds"), "s")}</td>
-          <td>{metric(app.get("settled_pss_mib"), "MiB")}</td>
+          <td>{metric(app.get("rss_mib_peak"), "MiB")}</td>
+          <td>{metric(app.get("pss_mib_peak"), "MiB")}</td>
+          <td>{metric(app.get("process_count_peak"))}</td>
           <td>{metric(app.get("mem_available_after_open_mib"), "MiB")}</td>
-          <td>{metric(app.get("mem_available_after_close_mib"), "MiB")}</td>
-          <td>{status_badge("passed") if app.get("accessible_window") is True else status_badge("fail") if app.get("accessible_window") is False else metric(None)}</td>
-          <td>{esc(app.get("action", "—"))}</td>
+          <td>{validation_badge(app)}</td>
+          <td>{esc(app.get("interaction", app.get("action", "—")))}</td>
+          <td>{esc(app.get("error", app.get("skip_reason", app.get("cleanup_error", "—"))))}</td>
         </tr>"""
             for app in applications
         )
         or """
-        <tr><td colspan="9" class="empty">
+        <tr><td colspan="10" class="empty">
           As métricas por aplicativo ainda não foram anexadas a este job.
         </td></tr>"""
     )
@@ -266,7 +321,7 @@ def render_report(
     <div class="card"><span class="label">Resultado geral</span><strong>{status_badge(overall)}</strong></div>
     <div class="card"><span class="label">Módulos</span><strong>{passed} passaram · {failed} falharam</strong></div>
     <div class="card"><span class="label">Duração observada</span><strong>{esc(duration(total_duration) if modules else "Não coletada")}</strong></div>
-    <div class="card"><span class="label">Aplicativos medidos</span><strong>{measured_apps}</strong></div>
+    <div class="card"><span class="label">Aplicativos</span><strong>{passed_apps} passaram · {failed_apps} falharam · {skipped_apps} ignorados</strong></div>
   </div>
 
   <section aria-labelledby="modules-title">
@@ -275,8 +330,8 @@ def render_report(
   </section>
 
   <section aria-labelledby="apps-title">
-    <div class="section-head"><h2 id="apps-title">Aplicativos</h2><p>Tempo de abertura e fechamento, memória proporcional e exposição pela tecnologia assistiva.</p></div>
-    <div class="table-wrap"><table><thead><tr><th scope="col">Aplicativo</th><th scope="col">Resultado</th><th scope="col">Abertura</th><th scope="col">Fechamento</th><th scope="col">PSS aberto</th><th scope="col">Mem. disponível aberto</th><th scope="col">Mem. disponível fechado</th><th scope="col">AT-SPI</th><th scope="col">Ação</th></tr></thead><tbody>{application_rows}</tbody></table></div>
+    <div class="section-head"><h2 id="apps-title">Aplicativos</h2><p>Todos os Desktop Entries descobertos, confirmando a abertura por AT-SPI quando possível. Quando o aplicativo não expõe AT-SPI, é usado fallback X11 por PID; entradas de terminal ou daemon são validadas pelo início do processo.</p></div>
+    <div class="table-wrap"><table><thead><tr><th scope="col">Aplicativo</th><th scope="col">Resultado</th><th scope="col">Abertura</th><th scope="col">RSS pico</th><th scope="col">PSS pico</th><th scope="col">Processos pico</th><th scope="col">Mem. disponível aberto</th><th scope="col">Validação</th><th scope="col">Evento</th><th scope="col">Motivo</th></tr></thead><tbody>{application_rows}</tbody></table></div>
   </section>
 
   <section aria-labelledby="system-title">
@@ -289,6 +344,7 @@ def render_report(
       <div><dt>Memória da VM</dt><dd>{metric(variables.get("QEMURAM"), "MiB")}</dd></div>
       <div><dt>Sessão gráfica</dt><dd>{metric(system.get("desktop"))}</dd></div>
       <div><dt>Barramento AT-SPI</dt><dd>{metric(system.get("accessibility_bus"))}</dd></div>
+      <div><dt>Jobs BigLinux agregados</dt><dd>{metric(system.get("jobs_tested"), "jobs")}</dd></div>
       <div><dt>Job</dt><dd>{metric(variables.get("NAME"))}</dd></div>
       <div><dt>Cenário</dt><dd>{metric(variables.get("TEST"))}</dd></div>
     </dl>
@@ -296,7 +352,7 @@ def render_report(
 
   <section aria-labelledby="method-title">
     <div class="section-head"><h2 id="method-title">Como interpretar</h2></div>
-    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. Métricas por aplicativo são informativas nesta fase e não reprovam a ISO por variações isoladas do runner. PSS evita contar repetidamente bibliotecas compartilhadas. A abertura é confirmada por uma janela exposta via AT-SPI; verificações visuais ficam restritas a elementos estáveis e específicos.</div>
+    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. Cada aplicativo é aprovado quando o comando do Desktop Entry inicia e expõe uma janela AT-SPI utilizável. Se isso não for possível, o teste procura uma janela X11 pertencente ao processo iniciado; entradas sem janela são aprovadas somente quando o processo inicia. RSS e PSS são os picos agregados do processo e dos descendentes; PSS evita contar repetidamente bibliotecas compartilhadas. Não há validação por título, menu, tecla ou screenshot para declarar que um programa abriu.</div>
   </section>
   <footer>Relatório estático e autocontido · nenhum dado é enviado para serviços externos</footer>
 </main>
@@ -311,16 +367,19 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    job_dir, variables = find_biglinux_job(args.results_root)
-    runtimes = load_module_runtimes(job_dir)
-    modules = sorted(
-        (
-            module_result(path, runtimes.get(path.stem.removeprefix("details-")))
-            for path in (job_dir.glob("details-*.json") if job_dir else [])
-        ),
-        key=lambda item: item.name,
-    )
-    system, applications = load_application_metrics(job_dir)
+    jobs = find_biglinux_jobs(args.results_root)
+    variables = jobs[-1][1] if jobs else {}
+    modules: list[ModuleResult] = []
+    for job_dir, job_variables in jobs:
+        runtimes = load_module_runtimes(job_dir)
+        label = job_variables.get("BUILD") or job_variables.get("TEST") or job_dir.name
+        for path in job_dir.glob("details-*.json"):
+            result = module_result(
+                path, runtimes.get(path.stem.removeprefix("details-"))
+            )
+            modules.append(replace(result, name=f"{label} / {result.name}"))
+    modules.sort(key=lambda item: item.name)
+    system, applications = load_application_metrics_from_jobs(jobs)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         render_report(variables, modules, system, applications), encoding="utf-8"

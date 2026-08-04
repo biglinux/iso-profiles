@@ -49,13 +49,24 @@ casedir=${BIGLINUX_OPENQA_CASEDIR:-/workspace}
 scenario_definitions=${BIGLINUX_OPENQA_SCENARIO_DEFINITIONS:-/workspace/openqa/scenario-definitions.yaml}
 test_git_refspec=${BIGLINUX_OPENQA_TEST_GIT_REFSPEC:-}
 productdir=${BIGLINUX_OPENQA_PRODUCTDIR:-openqa}
-needles_dir=${BIGLINUX_OPENQA_NEEDLES_DIR:-'%%CASEDIR%%/openqa/needles'}
+application_timeout=${BIGLINUX_APPLICATION_TIMEOUT:-8}
+qemu_no_kvm=${BIGLINUX_OPENQA_QEMU_NO_KVM:-0}
+needles_dir=${BIGLINUX_OPENQA_NEEDLES_DIR:-}
+if [[ -z "$needles_dir" ]]; then
+    if [[ "$casedir" == /* ]]; then
+        needles_dir="$casedir/openqa/needles"
+    else
+        needles_dir='%%CASEDIR%%/openqa/needles'
+    fi
+fi
 
 [[ "$container_name" =~ ^[A-Za-z0-9_.-]+$ ]] || die 'invalid BIGLINUX_OPENQA_CONTAINER'
 [[ "$openqa_version" =~ ^[A-Za-z0-9_.-]+$ ]] || die 'invalid BIGLINUX_OPENQA_VERSION'
 [[ "$openqa_build" =~ ^[A-Za-z0-9_.:-]+$ ]] || die 'invalid or missing BIGLINUX_OPENQA_BUILD'
 [[ "$iso_filename" =~ ^[A-Za-z0-9._-]+$ ]] || die 'invalid or missing BIGLINUX_ISO_FILENAME'
 [[ "$test_user" =~ ^[A-Za-z0-9_.-]+$ ]] || die 'invalid BIGLINUX_TEST_USER'
+[[ "$application_timeout" =~ ^[1-9][0-9]*$ ]] || die 'invalid BIGLINUX_APPLICATION_TIMEOUT'
+[[ "$qemu_no_kvm" =~ ^[01]$ ]] || die 'invalid BIGLINUX_OPENQA_QEMU_NO_KVM'
 [[ "$casedir" != *$'\n'* && "$scenario_definitions" != *$'\n'* ]] \
     || die 'path settings must not contain newlines'
 if ((dry_run == 0)); then
@@ -112,6 +123,8 @@ for plan_line in "${plan_lines[@]}"; do
         "_SECRET_BIGLINUX_TEST_PASSWORD=$test_password"
         BIGLINUX_RELEASE_GATE=1
         TIMEOUT_SCALE=1
+        "BIGLINUX_APPLICATION_TIMEOUT=$application_timeout"
+        "QEMU_NO_KVM=$qemu_no_kvm"
         _GROUP_ID=0
         "BUILD=$plan_build"
         "ISO=$iso_filename"

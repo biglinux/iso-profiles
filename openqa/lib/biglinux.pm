@@ -41,9 +41,14 @@ sub activate_console ($self, $console, $mode = 'live') {
     testapi::wait_serial qr/type=shell/, timeout => 60;
     testapi::type_string "exec env TERM=dumb bash --noprofile --norc\n";
     testapi::wait_serial qr/bash-[0-9.]+\$ /, timeout => 30;
-    testapi::type_string "export PS1='# '; printf '__OA_SERIAL_READY__\\n'\n";
-    testapi::wait_serial '__OA_SERIAL_READY__', timeout => 15;
+    my $ready_marker = '__OA_SERIAL_READY__';
+    testapi::type_string "export PS1='# '; printf '" . _marker_format($ready_marker) . "\\n'\n";
+    testapi::wait_serial $ready_marker, timeout => 15;
     testapi::wait_serial '# ', no_regex => 1, timeout => 10;
+}
+
+sub _marker_format ($marker) {
+    return join '', map { sprintf '\\%03o', ord } split //, $marker;
 }
 
 1;

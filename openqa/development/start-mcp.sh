@@ -54,11 +54,23 @@ openqa_image=$(tr -d '[:space:]' < "$image_file")
 
 [[ -f "$iso_path" && -r "$iso_path" ]] || die "ISO is not a readable regular file: $iso_path"
 [[ "$iso_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "ISO filename contains unsupported characters: $iso_name"
-[[ "$openqa_image" =~ ^registry\.opensuse\.org/.+@sha256:[[:xdigit:]]{64}$ ]] \
-    || die "openQA image is not pinned by a registry digest: $image_file"
+[[ "$openqa_image" =~ ^registry\.opensuse\.org/.+:[^@[:space:]]+@sha256:[[:xdigit:]]{64}$ ]] \
+    || die "openQA image must include a version tag and registry digest: $image_file"
+[[ "$openqa_image" != *:latest@sha256:* ]] \
+    || die 'openQA image must not use the mutable latest tag'
 command -v docker >/dev/null || die 'docker is required'
 command -v curl >/dev/null || die 'curl is required'
 [[ -c /dev/kvm ]] || die '/dev/kvm is required for the graphical worker'
+
+if command -v VBoxManage >/dev/null 2>&1; then
+    running_virtualbox_vms=$(VBoxManage list runningvms 2>/dev/null || true)
+    [[ -z "${running_virtualbox_vms//[[:space:]]/}" ]] \
+        || die 'a VirtualBox VM is running; stop it before starting the QEMU/KVM openQA worker'
+fi
+
+if pgrep -x VirtualBoxVM >/dev/null 2>&1 || pgrep -x VBoxHeadless >/dev/null 2>&1; then
+    die 'a VirtualBox process is running; stop it before starting the QEMU/KVM openQA worker'
+fi
 
 base_digest=${openqa_image##*@sha256:}
 [[ "$base_digest" != "$openqa_image" ]] || die 'openQA image must use a sha256 digest'

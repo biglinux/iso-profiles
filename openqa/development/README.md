@@ -10,6 +10,8 @@ Hard invariants:
 - The development image is derived from the same digest-pinned openQA image used by
   the release workflow and adds the matching `openQA-mcp` package locally.
 - The ISO is supplied by the caller; this bridge never builds one.
+- The GitHub release gate runs on `ubuntu-24.04`, uses KVM when the hosted runner
+  exposes `/dev/kvm`, and falls back to QEMU TCG when it does not.
 
 Run: `./openqa/development/start-mcp.sh /absolute/path/to/biglinux.iso`
 
@@ -72,6 +74,36 @@ Changing the daily matrix therefore means reviewing `release-gate.yaml`; changin
 what a plan does means reviewing the corresponding schedule in `main.pm`. No ISO
 generation or manual test-list duplication is part of this path.
 
+## Application validation
+
+The BIOS `applications` module discovers every `Type=Application` desktop entry below
+`/usr/share/applications/`, recursively. It launches each entry through
+`data/desktop_entry_launcher.py`, so the Desktop Entry is parsed without concatenating
+its `Exec` value into a shell command. Hidden, non-application, and otherwise
+non-launchable entries remain in `application-metrics.json` with a reason instead of
+silently disappearing. `NoDisplay=true` does not exclude an application: it is still
+launched and validated.
+
+The contract is intentionally small: start the Desktop Entry, confirm that a new
+AT-SPI window exists, and record the process memory. If AT-SPI cannot expose the
+window, a PID-scoped X11 window is enough; terminal and daemon entries use the
+supervisor child as their process-start evidence. No menu action, screenshot, title
+allowlist, or application-specific close path is required. All graphical entries use
+deterministic software rendering (`llvmpipe`, with Qt Quick's software backend) and
+the X11 Qt/GDK backends.
+After every case, windows and process trees created after the session baseline are
+closed or terminated so a broken application cannot contaminate the next case. Probe
+calls have an external deadline as well as their open deadline, so a stalled
+accessibility provider becomes a reportable application failure instead of blocking
+the whole suite. The module fails only after the inventory is exhausted. The optional
+`BIGLINUX_APPLICATION_TIMEOUT` variable controls the per-entry launch timeout and
+defaults to 8 seconds.
+
+The per-entry JSON records peak RSS, peak PSS, and peak process count for the process
+tree. The HTML report renders those values alongside the open result.
+Screenshots are not application assertions. The normal openQA video remains the video
+artifact for the job and is collected with the other openQA diagnostics.
+
 ## Start the development instance
 
 Use the exact ISO you want to investigate:
@@ -81,12 +113,21 @@ Use the exact ISO you want to investigate:
   /path/to/biglinux_2026-07-31_k71.iso
 ```
 
-The script checks `/dev/kvm`, validates the ISO filename, derives a local development
-image from the pinned base, binds the Web UI and MCP only to `127.0.0.1`, starts a
-disposable container, and prints a temporary Bearer credential. The MCP package is
-installed at the exact openQA package version present in the base image. Copy that
-credential into a local MCP client configuration based on
+The script checks `/dev/kvm`, rejects an active VirtualBox VM/process, validates the
+ISO filename, derives a local development image from the pinned base, binds the Web UI
+and MCP only to `127.0.0.1`, starts a disposable container, and prints a temporary
+Bearer credential. The MCP package is installed at the exact openQA package version
+present in the base image. Copy that credential into a local MCP client configuration based on
 [`mcp.json.example`](mcp.json.example); do not commit the resulting file.
+
+This bridge intentionally uses the same QEMU backend as the release workflow, but the
+local bridge requires KVM for a practical interactive development cycle. It must not be
+started while a VirtualBox VM is running because both hypervisors compete for the host
+virtualization extension. The release gate runs on GitHub's `ubuntu-24.04` runner: KVM
+is passed through when available, and openQA's QEMU backend uses TCG automatically when
+the runner has no `/dev/kvm`. Neither path requires virgl; the `mpv` application test
+always selects software rendering. The local VirtualBox host remains available for
+unrelated development VMs when the bridge is stopped.
 
 The Docker port proxy appears as a non-local request inside the container. The bridge
 therefore marks only `/mcp` as the secure local proxy hop required by openQA's token

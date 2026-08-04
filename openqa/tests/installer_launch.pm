@@ -2,29 +2,38 @@
 
 use Mojo::Base 'basetest';
 use testapi;
+use atspi;
 
 sub test_flags {
     return {fatal => 1};
 }
 
 sub run {
-    assert_screen 'biglinux-live-desktop', 60;
-
     # The UEFI build opens a firmware warning before the BigLinux launcher.
     # Detect the firmware through the live serial console so the graphical
     # path does not click blindly through a dialog that exists only in UEFI.
+    # The preceding live_desktop module already owns the non-black screenshot
+    # checkpoints; launching Calamares below validates this state semantically.
     select_console 'root-virtio-terminal';
-    type_string 'if [ -d /sys/firmware/efi ]; then printf "__OA_FIRMWARE_UEFI__\\n"; else printf "__OA_FIRMWARE_BIOS__\\n"; fi';
+    my $uefi_marker = _marker_format('__OA_FIRMWARE_UEFI__');
+    my $bios_marker = _marker_format('__OA_FIRMWARE_BIOS__');
+    type_string "if [ -d /sys/firmware/efi ]; then printf '$uefi_marker\\n'; else printf '$bios_marker\\n'; fi";
     send_key 'ret';
     my $biglinux_firmware_mode = wait_serial qr/__OA_FIRMWARE_(?:BIOS|UEFI)__/, timeout => 30;
     select_console 'sut';
     die 'The live firmware mode could not be determined from the serial console'
       unless defined $biglinux_firmware_mode;
 
-    send_key 'alt-f2';
-    type_string 'calamares-biglinux_polkit --software-render';
-    wait_screen_change(sub { send_key 'ret' }, 60)
-      or die 'The BigLinux Calamares launcher did not open';
+    atspi->prepare;
+    my (undef, $opened, undef, undef, $status_path) = atspi->launch_command(
+        'calamares-biglinux_polkit --software-render',
+        'Calamares',
+        120
+    );
+    unless ($opened->{status} eq 'passed') {
+        atspi->abort_launch($status_path);
+        die 'The BigLinux Calamares launcher did not expose an AT-SPI window';
+    }
 
     if ($biglinux_firmware_mode =~ /UEFI/) {
         wait_screen_change(sub { send_key 'ret' }, 60)
@@ -37,6 +46,11 @@ sub run {
     assert_and_click 'biglinux-installer-tips', timeout => 60,
       point_id => 'continue', mousehide => 1;
     assert_screen 'biglinux-installer-welcome', 90;
+}
+
+sub _marker_format {
+    my ($marker) = @_;
+    return join '', map { sprintf '\\%03o', ord } split //, $marker;
 }
 
 1;

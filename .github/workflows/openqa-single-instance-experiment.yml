@@ -1,5 +1,5 @@
 ---
-name: openQA candidate release gate
+name: BigLinux openQA candidate release gate
 
 on:
   workflow_call:
@@ -68,7 +68,8 @@ jobs:
         run: |
           set -euo pipefail
           openqa_image=$(tr -d '[:space:]' < openqa/openqa-image.txt)
-          [[ "$openqa_image" =~ ^registry\.opensuse\.org/.+@sha256:[[:xdigit:]]{64}$ ]]
+          [[ "$openqa_image" =~ ^registry\.opensuse\.org/.+:[^@[:space:]]+@sha256:[[:xdigit:]]{64}$ ]]
+          [[ "$openqa_image" != *:latest@sha256:* ]]
           echo "OPENQA_IMAGE=$openqa_image" >> "$GITHUB_ENV"
 
       - name: Download the private ISO candidate
@@ -113,10 +114,14 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          cmp openqa/data/atspi_probe.py data/atspi_probe.py
           python3 -m unittest discover -s data -p 'test_*.py'
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
+          bash -n data/gui_supervisor.sh openqa/development/schedule-release-gate.sh
+          if rg -n "alt-f2|x11_start_program" openqa/tests openqa/lib; then
+            echo 'GUI launchers must not depend on Alt+F2 or x11_start_program' >&2
+            exit 1
+          fi
           BIGLINUX_OPENQA_VERSION=candidate \
           BIGLINUX_OPENQA_BUILD=workflow-validation \
           BIGLINUX_ISO_FILENAME=validation.iso \
@@ -125,12 +130,16 @@ jobs:
       - name: Inspect virtualization support
         run: |
           set -euo pipefail
-          if [[ ! -c /dev/kvm ]]; then
-            echo 'The BigLinux release gate requires KVM on the GitHub runner' >&2
-            exit 1
+          if [[ -c /dev/kvm ]]; then
+            echo 'OPENQA_KVM_AVAILABLE=1' >> "$GITHUB_ENV"
+            echo 'OPENQA_QEMU_NO_KVM=0' >> "$GITHUB_ENV"
+            stat /dev/kvm
+          else
+            echo 'OPENQA_KVM_AVAILABLE=0' >> "$GITHUB_ENV"
+            echo 'OPENQA_QEMU_NO_KVM=1' >> "$GITHUB_ENV"
+            echo 'No /dev/kvm on this GitHub-hosted runner; openQA will use QEMU TCG.'
           fi
           docker version
-          stat /dev/kvm
 
       - name: Generate disposable openQA credentials
         run: |
@@ -143,29 +152,41 @@ jobs:
         run: |
           set -euo pipefail
           openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
-          kvm_gid=$(stat --format '%g' /dev/kvm)
-          docker run --detach \
-            --name openqa \
-            --publish 127.0.0.1:1080:80 \
-            --tmpfs /srv/www/htdocs:mode=0755 \
-            --tmpfs /var/log/apache2:mode=0755 \
-            --volume "$openqa_asset_dir:/var/lib/openqa/share/factory/iso:ro" \
-            --device /dev/kvm \
-            --env "KVM_GID=$kvm_gid" \
+          docker_args=(
+            --detach
+            --name openqa
+            --publish 127.0.0.1:1080:80
+            --tmpfs /srv/www/htdocs:mode=0755
+            --tmpfs /var/log/apache2:mode=0755
+            --volume "$openqa_asset_dir:/var/lib/openqa/share/factory/iso:ro"
+          )
+          if [[ "$OPENQA_KVM_AVAILABLE" == 1 ]]; then
+            kvm_gid=$(stat --format '%g' /dev/kvm)
+            docker_args+=(
+              --device /dev/kvm
+              --env "KVM_GID=$kvm_gid"
+            )
+          fi
+          docker run "${docker_args[@]}" \
             --entrypoint /bin/bash \
             "$OPENQA_IMAGE" \
-            -c 'groupmod --gid "$KVM_GID" --non-unique kvm &&
-                usermod --append --groups kvm _openqa-worker &&
+            -c 'if [[ -n "${KVM_GID:-}" ]]; then
+                  groupmod --gid "$KVM_GID" --non-unique kvm &&
+                  usermod --append --groups kvm _openqa-worker;
+                fi;
                 exec /usr/share/openqa/script/openqa-bootstrap'
 
       - name: Wait for the openQA API and worker
         run: |
           set -euo pipefail
+          worker_check=(true)
+          if [[ "$OPENQA_KVM_AVAILABLE" == 1 ]]; then
+            worker_check=(docker exec openqa su _openqa-worker -c 'test -r /dev/kvm -a -w /dev/kvm')
+          fi
           for attempt in {1..120}; do
             if curl --fail --silent --show-error \
               http://127.0.0.1:1080/api/v1/jobs >/dev/null \
-              && docker exec openqa su _openqa-worker -c \
-                'test -r /dev/kvm -a -w /dev/kvm'; then
+              && "${worker_check[@]}"; then
               echo "openQA became ready after $((attempt * 5)) seconds or less"
               exit 0
             fi
@@ -207,7 +228,7 @@ jobs:
           export BIGLINUX_ISO_FILENAME="$ISO_FILENAME"
           export BIGLINUX_TEST_USER=openqa
           export BIGLINUX_TEST_PASSWORD="$OPENQA_TEST_PASSWORD"
-          export BIGLINUX_OPENQA_CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git#${GITHUB_REF_NAME}"
+          export BIGLINUX_OPENQA_CASEDIR="https://github.com/${GITHUB_REPOSITORY}.git#${GITHUB_SHA}"
           export BIGLINUX_OPENQA_TEST_GIT_REFSPEC="$GITHUB_SHA"
           export BIGLINUX_OPENQA_SCENARIO_DEFINITIONS="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/openqa/scenario-definitions.yaml"
           ./openqa/development/schedule-release-gate.sh

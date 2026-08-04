@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from atspi_probe import mem_available_mib, process_tree_pss_mib
+sys.path.insert(0, str(Path(__file__).parents[2] / "data"))
+
+from atspi_probe import launch_process_exited, mem_available_mib, process_tree_pss_mib
 
 
 class AtspiProbeTest(unittest.TestCase):
@@ -37,6 +40,13 @@ class AtspiProbeTest(unittest.TestCase):
             result = process_tree_pss_mib(100, proc)
 
         self.assertEqual(result, 1.8)
+
+    def test_detects_exited_launch_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "123").mkdir()
+            self.assertFalse(launch_process_exited(123, proc))
+            self.assertTrue(launch_process_exited(456, proc))
 
 
 if __name__ == "__main__":

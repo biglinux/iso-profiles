@@ -1,1 +1,1 @@
-registry.opensuse.org/devel/openqa/containers/openqa-single-instance@sha256:2907e9f829bc0dc7c515c1e2eb17974fd8668449cc866597b67f49b1280e849f
+registry.opensuse.org/devel/openqa/containers/opensuse/openqa-single-instance:5.1784641659.4.14.164@sha256:c8ac1922d06253cc5264b51bbc7da182cc6c49cc169fa8cc0832b5f45bf2b15e

@@ -2,6 +2,7 @@
 
 use Mojo::Base 'basetest';
 use testapi;
+use atspi;
 use installed_system;
 
 sub test_flags {
@@ -9,28 +10,40 @@ sub test_flags {
 }
 
 sub run {
-    installed_system->assert_desktop;
+    installed_system->assert_brave_cli;
+    my $kernel = atspi->prepare;
+    my ($baseline, $opened, $launch_method, $open_seconds, $status_path) = atspi->launch_command(
+        'env QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 brave --no-first-run --no-default-browser-check about:blank',
+        'Brave',
+        120
+    );
+    unless ($opened->{status} eq 'passed') {
+        atspi->abort_launch($status_path);
+        die 'Installed Brave did not expose an accessible window';
+    }
 
-    # The installed user and password are intentionally different from the
-    # live-session account, so a post-reboot serial probe could block while
-    # waiting for the wrong getty credentials.  The independent graphical
-    # launch below proves that the executable is installed and usable.
-    send_key 'alt-f2';
-    type_string 'brave --no-first-run --no-default-browser-check about:blank';
-    wait_screen_change(sub { send_key 'ret' }, 60)
-      or die 'The Brave launcher did not change the installed desktop';
-    assert_screen 'biglinux-installed-brave-window', 120;
+    my $interaction = atspi->interact($opened->{pid});
+    unless ($interaction->{status} eq 'passed'
+        && $interaction->{action_result}
+        && $interaction->{semantic_change}) {
+        atspi->abort_launch($status_path);
+        die "Installed Brave did not accept an AT-SPI interaction: $interaction->{error}";
+    }
+    my $termination = atspi->terminate_window($opened->{pid}, $status_path);
+    die 'Installed Brave did not accept its AT-SPI close action'
+      unless $termination->{close_action_ok};
+    die "Installed Brave process $opened->{pid} did not exit after its AT-SPI close action"
+      unless $termination->{process_gone};
+    die "Installed Brave exited with unexpected code $termination->{application_exit_code}"
+      unless $termination->{application_exit_ok};
+    die 'Installed Brave left an accessible window open'
+      unless $termination->{closed}{status} eq 'passed';
 
-    wait_screen_change(sub {
-        send_key 'ctrl-l';
-        type_string 'about:version';
-        send_key 'ret';
-    }, 60) or die 'The installed Brave window did not respond to navigation';
-    assert_screen 'biglinux-installed-brave-version', 60;
-
-    wait_screen_change(sub { send_key 'alt-f4' }, 30)
-      or die 'The installed Brave window did not close';
-    assert_screen 'biglinux-installed-desktop', 60;
+    record_info 'Installed Brave', sprintf(
+        'CLI exit 0; AT-SPI action "%s"; window "%s" opened in %.2f s via %s and closed with exit 0; kernel %s',
+        $interaction->{action},
+        $opened->{window}, $open_seconds, $launch_method, $kernel
+    );
 }
 
 1;
