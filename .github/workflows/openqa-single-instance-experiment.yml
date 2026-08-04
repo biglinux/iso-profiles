@@ -90,7 +90,7 @@ jobs:
       - name: Initialize diagnostics and validate inputs
         run: |
           set -euo pipefail
-          OPENQA_DIAGNOSTICS_DIR="$RUNNER_TEMP/openqa-diagnostics/$FIRMWARE"
+          OPENQA_DIAGNOSTICS_DIR="$RUNNER_TEMP/openqa-diagnostics/$SUITE"
           OPENQA_PASSWORD_FILE="$RUNNER_TEMP/openqa-test-password"
           OPENQA_WORKER_CONFIG="$RUNNER_TEMP/openqa-worker.ini"
           OPENQA_OVMF_RUNTIME="$RUNNER_TEMP/openqa-ovmf"

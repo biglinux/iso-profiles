@@ -36,3 +36,19 @@ job_templates:
   release_uefi:
     product: biglinux
     machine: 64bit-uefi
+
+  applications_shard_0:
+    product: biglinux
+    machine: 64bit
+
+  applications_shard_1:
+    product: biglinux
+    machine: 64bit
+
+  applications_shard_2:
+    product: biglinux
+    machine: 64bit
+
+  applications_shard_3:
+    product: biglinux
+    machine: 64bit
