@@ -352,7 +352,7 @@ def render_report(
 
   <section aria-labelledby="method-title">
     <div class="section-head"><h2 id="method-title">Como interpretar</h2></div>
-    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. Cada aplicativo é aprovado quando o comando do Desktop Entry inicia e expõe uma janela AT-SPI utilizável. Se isso não for possível, o teste procura uma janela X11 pertencente ao processo iniciado; entradas sem janela são aprovadas somente quando o processo inicia. RSS e PSS são os picos agregados do processo e dos descendentes; PSS evita contar repetidamente bibliotecas compartilhadas. Não há validação por título, menu, tecla ou screenshot para declarar que um programa abriu.</div>
+    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. Cada aplicativo é aprovado quando o comando do Desktop Entry inicia e expõe uma janela AT-SPI utilizável. Se isso não for possível, o teste procura uma janela X11 pertencente ao processo iniciado; entradas sem janela são aprovadas somente quando o processo inicia. RSS e PSS são os picos agregados do processo e dos descendentes; PSS evita contar repetidamente bibliotecas compartilhadas. Screenshots podem ser preservadas como diagnóstico de falha, mas nunca são usadas como prova de que um programa abriu.</div>
   </section>
   <footer>Relatório estático e autocontido · nenhum dado é enviado para serviços externos</footer>
 </main>

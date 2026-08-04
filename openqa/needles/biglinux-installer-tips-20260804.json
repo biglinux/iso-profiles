@@ -1,0 +1,34 @@
+{
+  "area": [
+    {
+      "height": 20,
+      "type": "match",
+      "width": 145,
+      "xpos": 440,
+      "ypos": 56
+    },
+    {
+      "height": 24,
+      "type": "match",
+      "width": 318,
+      "xpos": 229,
+      "ypos": 113
+    },
+    {
+      "click_point": {
+        "id": "continue",
+        "xpos": 62,
+        "ypos": 22
+      },
+      "height": 44,
+      "type": "match",
+      "width": 125,
+      "xpos": 449,
+      "ypos": 628
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installer-tips"
+  ]
+}

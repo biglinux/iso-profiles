@@ -24,20 +24,30 @@ sub run {
     die 'The live firmware mode could not be determined from the serial console'
       unless defined $biglinux_firmware_mode;
 
+    my $is_uefi = $biglinux_firmware_mode =~ /UEFI/;
+    my $first_window = $is_uefi ? 'Install the system' : 'BigLinux Installation';
+
     atspi->prepare;
     my (undef, $opened, undef, undef, $status_path) = atspi->launch_command(
         'calamares-biglinux_polkit --software-render',
-        'Calamares',
+        $first_window,
         120
     );
     unless ($opened->{status} eq 'passed') {
         atspi->abort_launch($status_path);
-        die 'The BigLinux Calamares launcher did not expose an AT-SPI window';
+        die 'The BigLinux Calamares launcher did not expose its first AT-SPI window';
     }
 
-    if ($biglinux_firmware_mode =~ /UEFI/) {
+    if ($is_uefi) {
         wait_screen_change(sub { send_key 'ret' }, 60)
           or die 'The UEFI installation confirmation was not accepted';
+        my $main_window = atspi->result(
+            'wait-open', 120, '--name', 'BigLinux Installation'
+        );
+        unless ($main_window->{status} eq 'passed') {
+            atspi->abort_launch($status_path);
+            die 'The BigLinux installer did not open after the UEFI confirmation';
+        }
     }
 
     assert_and_click 'biglinux-installer-launcher', timeout => 90,

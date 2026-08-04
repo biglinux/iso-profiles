@@ -3,14 +3,18 @@
 use Mojo::Base 'basetest';
 use testapi;
 use atspi;
+use Digest::SHA qw(sha256_hex);
 use Encode qw(encode);
 use JSON::PP qw(encode_json);
+use Math::BigInt;
 use MIME::Base64 'encode_base64';
 use Time::HiRes 'time';
 
 my @application_metrics;
 my $metrics_uploaded = 0;
+my $metrics_upload_ok = 0;
 my $kernel_version;
+my $application_context;
 
 sub _record_info {
     my ($title, $output) = @_;
@@ -125,9 +129,150 @@ sub _entry_matches_filter {
     return scalar grep { $_ ne '' && index($haystack, lc $_) >= 0 } split /,/, $filter;
 }
 
+sub _desktop_id {
+    my ($entry) = @_;
+    my $relative_path = _entry_value($entry, 'relative_path', '');
+    return $relative_path if $relative_path ne '';
+    my $path = _entry_value($entry, 'path', '');
+    $path =~ s{\A/usr/share/applications/}{};
+    return $path;
+}
+
+sub _application_policy {
+    my $raw = get_var('BIGLINUX_APPLICATION_POLICY_JSON', '');
+    die 'BIGLINUX_APPLICATION_POLICY_JSON is required for application coverage'
+      unless defined $raw && $raw ne '';
+    my $policy = eval { JSON::PP::decode_json($raw) };
+    die "BIGLINUX_APPLICATION_POLICY_JSON is invalid: $@"
+      unless ref $policy eq 'HASH';
+    die 'application policy version must be 1'
+      unless $policy->{version} && $policy->{version} == 1;
+    for my $section (qw(exclude aliases critical)) {
+        die "application policy section '$section' is invalid"
+          if exists $policy->{$section} && ref $policy->{$section} ne 'ARRAY';
+    }
+
+    my %excluded;
+    for my $item (@{$policy->{exclude} // []}) {
+        die 'application policy exclusion is invalid'
+          unless ref $item eq 'HASH'
+          && defined $item->{desktop_id}
+          && defined $item->{reason}
+          && $item->{desktop_id} =~ /\A[^\r\n]+\.desktop\z/
+          && $item->{reason} ne '';
+        die 'application policy exclusion is duplicated'
+          if exists $excluded{$item->{desktop_id}};
+        $excluded{$item->{desktop_id}} = $item->{reason};
+    }
+    my %aliases;
+    for my $item (@{$policy->{aliases} // []}) {
+        die 'application policy alias is invalid'
+          unless ref $item eq 'HASH'
+          && defined $item->{desktop_id}
+          && defined $item->{canonical}
+          && $item->{desktop_id} =~ /\A[^\r\n]+\.desktop\z/
+          && $item->{canonical} =~ /\A[^\r\n]+\.desktop\z/;
+        die 'application policy alias is duplicated'
+          if exists $aliases{$item->{desktop_id}};
+        $aliases{$item->{desktop_id}} = $item->{canonical};
+    }
+    my %critical;
+    for my $item (@{$policy->{critical} // []}) {
+        die 'application policy critical entry is invalid'
+          unless ref $item eq 'HASH'
+          && defined $item->{desktop_id}
+          && defined $item->{functional_test}
+          && $item->{desktop_id} =~ /\A[^\r\n]+\.desktop\z/
+          && $item->{functional_test} =~ /\A[A-Za-z0-9_.-]+\z/;
+        die 'application policy critical entry is duplicated'
+          if exists $critical{$item->{desktop_id}};
+        $critical{$item->{desktop_id}} = $item->{functional_test};
+    }
+    return {excluded => \%excluded, aliases => \%aliases, critical => \%critical};
+}
+
+sub _shard_for {
+    my ($desktop_id, $shard_count) = @_;
+    my $digest = sha256_hex($desktop_id);
+    my $number = Math::BigInt->new('0x' . $digest);
+    return ($number % $shard_count)->numify;
+}
+
+sub _build_application_context {
+    my ($entries, $policy, $shard_index, $shard_count) = @_;
+    my @inventory;
+    for my $entry (@$entries) {
+        my $desktop_id = _desktop_id($entry);
+        die 'desktop entry inventory contains an invalid desktop ID'
+          unless $desktop_id =~ /\A[^\r\n\/]+(?:\/[^\r\n\/]+)*\.desktop\z/;
+        die 'desktop entry inventory contains a duplicate desktop ID'
+          if grep { $_->{desktop_id} eq $desktop_id } @inventory;
+        my $classification = exists $policy->{excluded}{$desktop_id}
+          ? 'excluded'
+          : exists $policy->{aliases}{$desktop_id}
+          ? 'duplicate-alias'
+          : defined _entry_value($entry, 'skip_reason', undef)
+          && _entry_value($entry, 'skip_reason', '') ne ''
+          ? 'invalid'
+          : 'launchable';
+        push @inventory, {
+            desktop_id => $desktop_id,
+            path => _entry_value($entry, 'path', undef),
+            name => _entry_value($entry, 'name', $desktop_id),
+            classification => $classification,
+            classification_reason => $classification eq 'invalid'
+              ? _entry_value($entry, 'skip_reason', 'invalid desktop entry')
+              : undef,
+            canonical => $policy->{aliases}{$desktop_id},
+            exclusion_reason => $policy->{excluded}{$desktop_id},
+            critical_functional_test => $policy->{critical}{$desktop_id},
+            assigned_shard => _shard_for($desktop_id, $shard_count),
+        };
+    }
+    @inventory = sort { $a->{desktop_id} cmp $b->{desktop_id} } @inventory;
+    my $inventory_json = JSON::PP->new->canonical(1)->encode(\@inventory);
+    my %totals;
+    for my $classification (qw(launchable excluded duplicate-alias invalid)) {
+        $totals{$classification} = scalar grep {
+            $_->{classification} eq $classification
+        } @inventory;
+    }
+    my @critical = sort keys %{$policy->{critical}};
+    my %known = map { $_->{desktop_id} => 1 } @inventory;
+    my @missing_critical = grep { !$known{$_} } @critical;
+    my $context = {
+        schema_version => 3,
+        iso_filename => get_var('BIGLINUX_ISO_FILENAME', ''),
+        iso_sha256 => get_var('BIGLINUX_ISO_SHA256', ''),
+        build_id => get_var('BIGLINUX_OPENQA_BUILD', ''),
+        commit_sha => get_var('BIGLINUX_OPENQA_TEST_GIT_REFSPEC', ''),
+        needles_git_hash => get_var('BIGLINUX_NEEDLES_GIT_HASH', ''),
+        policy_hash => get_var('BIGLINUX_APPLICATION_POLICY_HASH', ''),
+        policy_version => 1,
+        shard_index => $shard_index + 0,
+        shard_count => $shard_count + 0,
+        inventory_hash => sha256_hex($inventory_json),
+        inventory => \@inventory,
+        inventory_total => scalar @inventory,
+        launchable_total => $totals{launchable},
+        excluded_total => $totals{excluded},
+        duplicate_total => $totals{'duplicate-alias'},
+        invalid_total => $totals{invalid},
+        critical_desktop_ids => \@critical,
+        missing_critical => \@missing_critical,
+    };
+    return $context;
+}
+
 sub _test_entry {
     my ($entry, $timeout) = @_;
     my $metric = _entry_metric($entry);
+    my $coverage = $entry->{_coverage} // {};
+    $metric->{desktop_id} = $coverage->{desktop_id} // _desktop_id($entry);
+    $metric->{classification} = $coverage->{classification} // 'launchable';
+    $metric->{assigned_shard} = $coverage->{assigned_shard};
+    $metric->{critical_functional_test} = $coverage->{critical_functional_test}
+      if defined $coverage->{critical_functional_test};
     my $name = $metric->{name};
     my ($status_path, $window_pid, $launch_pid);
     my $failure;
@@ -231,6 +376,9 @@ sub _test_entry {
         $metric->{error} = $failure || 'application test failed';
         $metric->{cleanup_error} = $cleanup_error if $cleanup_error;
         $metric->{status} = 'failed';
+        if (eval { save_screenshot; 1 }) {
+            $metric->{failure_screenshot} = JSON::PP::true;
+        }
     }
     $metric->{duration_seconds} = sprintf('%.2f', time - $started) + 0;
     push @application_metrics, $metric;
@@ -302,7 +450,7 @@ sub _upload_guest_metrics {
 }
 
 sub upload_application_metrics {
-    return if $metrics_uploaded;
+    return $metrics_upload_ok if $metrics_uploaded;
     my $failed = scalar grep { $_->{status} eq 'failed' } @application_metrics;
     my $tested = scalar grep { $_->{status} ne 'skipped' } @application_metrics;
     my $skipped = scalar grep { $_->{status} eq 'skipped' } @application_metrics;
@@ -320,6 +468,7 @@ sub upload_application_metrics {
             failed => $failed,
             skipped => $skipped,
         },
+        coverage => $application_context,
         applications => \@application_metrics,
     });
     my $written = eval { _write_guest_metrics($payload); 1 };
@@ -330,6 +479,9 @@ sub upload_application_metrics {
               'Guest metrics file was created but upload returned exit code '
               . (defined $upload_exit_code ? $upload_exit_code : 'unknown');
         }
+        else {
+            $metrics_upload_ok = 1;
+        }
     }
     else {
         my $error = $@ || 'unknown metrics transfer error';
@@ -339,10 +491,11 @@ sub upload_application_metrics {
     }
     select_console 'sut';
     $metrics_uploaded = 1;
+    return $metrics_upload_ok;
 }
 
 sub post_run_hook {
-    upload_application_metrics;
+    die 'Application metrics upload failed' unless upload_application_metrics;
 }
 
 sub post_fail_hook {
@@ -370,20 +523,39 @@ sub run {
     my $timeout = get_var('BIGLINUX_APPLICATION_TIMEOUT', 8);
     my $heavy_timeout = get_var('BIGLINUX_APPLICATION_HEAVY_TIMEOUT', 20);
     my $filter = get_var('BIGLINUX_APPLICATION_FILTER', '');
+    my $shard_count = get_var('BIGLINUX_APPLICATION_SHARD_COUNT', 1);
+    my $shard_index = get_var('BIGLINUX_APPLICATION_SHARD_INDEX', 0);
     die 'BIGLINUX_APPLICATION_TIMEOUT must be a positive number'
       unless defined $timeout && $timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/;
     die 'BIGLINUX_APPLICATION_HEAVY_TIMEOUT must be a positive number'
       unless defined $heavy_timeout && $heavy_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/;
     die 'BIGLINUX_APPLICATION_FILTER must not contain newlines'
       if defined $filter && $filter =~ /[\r\n]/;
-    my @selected_entries = $filter ne ''
-      ? grep { _entry_matches_filter($_, $filter) } @$entries
-      : @$entries;
+    die 'BIGLINUX_APPLICATION_SHARD_COUNT must be a positive integer'
+      unless defined $shard_count && $shard_count =~ /\A[1-9][0-9]*\z/;
+    die 'BIGLINUX_APPLICATION_SHARD_INDEX must be a valid shard index'
+      unless defined $shard_index && $shard_index =~ /\A[0-9]+\z/ && $shard_index < $shard_count;
+    my $policy = _application_policy;
+    $application_context = _build_application_context(
+        $entries, $policy, $shard_index, $shard_count
+    );
+    my %coverage_by_id = map { $_->{desktop_id} => $_ } @{$application_context->{inventory}};
+    for my $entry (@$entries) {
+        $entry->{_coverage} = $coverage_by_id{_desktop_id($entry)};
+    }
+    my @selected_entries = grep {
+        my $coverage = $_->{_coverage};
+        $coverage->{classification} eq 'launchable'
+          && $coverage->{assigned_shard} == $shard_index
+          && ($filter eq '' || _entry_matches_filter($_, $filter));
+    } @$entries;
     die 'BIGLINUX_APPLICATION_FILTER matched no desktop entries'
       if $filter ne '' && !@selected_entries;
     _record_info 'Application inventory', sprintf(
-        '%d desktop entries discovered recursively; %d selected',
+        '%d desktop entries discovered recursively; shard %d/%d selected %d',
         scalar @$entries,
+        $shard_index,
+        $shard_count,
         scalar @selected_entries,
     );
     _record_info 'Application filter', $filter if defined $filter && $filter ne '';
@@ -393,16 +565,17 @@ sub run {
           || $a->{path} cmp $b->{path}
     } @selected_entries;
     for my $entry (@ordered_entries) {
-        my $reason = $entry->{skip_reason};
-        if (defined $reason && $reason ne '') {
-            _record_skipped($entry, $reason);
-            next;
-        }
         _test_entry($entry, _entry_timeout($entry, $timeout, $heavy_timeout));
     }
 
     upload_application_metrics;
     my @failed = grep { $_->{status} eq 'failed' } @application_metrics;
+    die 'Application coverage contains invalid desktop entries: '
+      . $application_context->{invalid_total}
+      if $application_context->{invalid_total};
+    die 'Critical application entries are missing: '
+      . join(', ', @{$application_context->{missing_critical}})
+      if @{$application_context->{missing_critical}};
     die sprintf('%d of %d desktop applications failed; see application-metrics.json',
         scalar @failed, scalar @application_metrics)
       if @failed;

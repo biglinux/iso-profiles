@@ -51,19 +51,37 @@ concurrency:
 
 jobs:
   validate:
-    name: openQA ${{ matrix.firmware }} (local KVM)
+    name: openQA ${{ matrix.suite }} (local KVM)
     strategy:
       fail-fast: false
       matrix:
-        firmware: [bios, uefi]
+        include:
+          - suite: bios
+            firmware: bios
+          - suite: uefi
+            firmware: uefi
+          - suite: applications-0
+            firmware: bios
+            application_shard_index: 0
+          - suite: applications-1
+            firmware: bios
+            application_shard_index: 1
+          - suite: applications-2
+            firmware: bios
+            application_shard_index: 2
+          - suite: applications-3
+            firmware: bios
+            application_shard_index: 3
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
+      SUITE: ${{ matrix.suite }}
       FIRMWARE: ${{ matrix.firmware }}
+      APPLICATION_SHARD_INDEX: ${{ matrix.application_shard_index }}
       ISO_FILENAME: ${{ inputs.iso_filename }}
       OPENQA_VERSION: ${{ inputs.version }}
       OPENQA_BUILD: ${{ inputs.build_id }}
-      OPENQA_CONTAINER: biglinux-openqa-${{ matrix.firmware }}-${{ github.run_id }}-${{ github.run_attempt }}
+      OPENQA_CONTAINER: biglinux-openqa-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Check out the tested sources
@@ -76,11 +94,18 @@ jobs:
           OPENQA_PASSWORD_FILE="$RUNNER_TEMP/openqa-test-password"
           OPENQA_WORKER_CONFIG="$RUNNER_TEMP/openqa-worker.ini"
           OPENQA_OVMF_RUNTIME="$RUNNER_TEMP/openqa-ovmf"
+          APPLICATION_SHARD_COUNT=$(ruby -ryaml -e \
+            'puts YAML.safe_load_file("openqa/development/release-gate.yaml", permitted_classes: [], aliases: false).fetch("application_shard_count")')
+          [[ "$APPLICATION_SHARD_COUNT" =~ ^[1-9][0-9]*$ ]] || {
+            echo 'Invalid application shard count in release-gate.yaml' >&2
+            exit 2
+          }
           {
             printf 'OPENQA_DIAGNOSTICS_DIR=%s\n' "$OPENQA_DIAGNOSTICS_DIR"
             printf 'OPENQA_PASSWORD_FILE=%s\n' "$OPENQA_PASSWORD_FILE"
             printf 'OPENQA_WORKER_CONFIG=%s\n' "$OPENQA_WORKER_CONFIG"
             printf 'OPENQA_OVMF_RUNTIME=%s\n' "$OPENQA_OVMF_RUNTIME"
+            printf 'APPLICATION_SHARD_COUNT=%s\n' "$APPLICATION_SHARD_COUNT"
           } >>"$GITHUB_ENV"
           mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results" "$OPENQA_OVMF_RUNTIME"
           [[ "$ISO_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ ]] || {
@@ -95,8 +120,21 @@ jobs:
             echo 'Invalid openQA build identifier' >&2
             exit 2
           }
-          printf 'firmware=%s\nrun_id=%s\nrun_attempt=%s\ncommit=%s\n' \
-            "$FIRMWARE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
+          if [[ "$SUITE" == applications-* ]]; then
+            if ! [[ "$APPLICATION_SHARD_INDEX" =~ ^[0-9]+$ ]] || \
+              ! ((APPLICATION_SHARD_INDEX < APPLICATION_SHARD_COUNT)); then
+              echo 'Invalid application shard index' >&2
+              exit 2
+            fi
+          else
+            [[ -z "$APPLICATION_SHARD_INDEX" ]] || {
+              echo 'Firmware suite must not have an application shard' >&2
+              exit 2
+            }
+          fi
+          printf 'suite=%s\nfirmware=%s\nshard=%s/%s\nrun_id=%s\nrun_attempt=%s\ncommit=%s\n' \
+            "$SUITE" "$FIRMWARE" "${APPLICATION_SHARD_INDEX:-none}" "$APPLICATION_SHARD_COUNT" \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
             >"$OPENQA_DIAGNOSTICS_DIR/run-metadata.txt"
 
       - name: Validate pinned openQA image
@@ -139,13 +177,38 @@ jobs:
           set -euo pipefail
           openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
           mkdir -p -- "$openqa_asset_dir"
-          gh release download "$ISO_RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir "$openqa_asset_dir" \
-            --pattern "$ISO_FILENAME" \
-            --pattern "$ISO_FILENAME.7z.*" \
-            --pattern "$ISO_FILENAME.md5" \
-            --pattern "$ISO_FILENAME.sha256"
+          mapfile -t release_assets < <(gh release view "$ISO_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          has_asset() {
+            local expected=$1 asset
+            for asset in "${release_assets[@]}"; do
+              [[ "$asset" == "$expected" ]] && return 0
+            done
+            return 1
+          }
+          if has_asset "$ISO_FILENAME"; then
+            has_asset "$ISO_FILENAME.sha256" || { echo 'Release ISO SHA-256 asset is missing' >&2; exit 1; }
+            has_asset "$ISO_FILENAME.md5" || { echo 'Release ISO MD5 asset is missing' >&2; exit 1; }
+            gh release download "$ISO_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$openqa_asset_dir" \
+              --pattern "$ISO_FILENAME" --pattern "$ISO_FILENAME.md5" --pattern "$ISO_FILENAME.sha256"
+          else
+            mapfile -t split_assets < <(printf '%s\n' "${release_assets[@]}" \
+              | awk -v prefix="$ISO_FILENAME.7z." 'index($0, prefix) == 1 {print}' \
+              | sort -V)
+            ((${#split_assets[@]} > 0)) || { echo 'Neither a direct ISO nor split ISO parts are published' >&2; exit 1; }
+            for asset in "${split_assets[@]}"; do
+              [[ "$asset" =~ ^[A-Za-z0-9._-]+\.7z\.[0-9]{3}$ ]] || {
+                echo "Invalid split ISO asset name: $asset" >&2
+                exit 2
+              }
+              gh release download "$ISO_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$openqa_asset_dir" \
+                --pattern "$asset"
+            done
+            has_asset "$ISO_FILENAME.sha256" || { echo 'Release ISO SHA-256 asset is missing' >&2; exit 1; }
+            has_asset "$ISO_FILENAME.md5" || { echo 'Release ISO MD5 asset is missing' >&2; exit 1; }
+            gh release download "$ISO_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$openqa_asset_dir" \
+              --pattern "$ISO_FILENAME.md5" --pattern "$ISO_FILENAME.sha256"
+          fi
           if [[ ! -s "$openqa_asset_dir/$ISO_FILENAME" ]]; then
             declare -A iso_parts=()
             for iso_part in "$openqa_asset_dir/$ISO_FILENAME.7z."*; do
@@ -188,6 +251,9 @@ jobs:
             sha256sum --check "$ISO_FILENAME.sha256"
             md5sum --check "$ISO_FILENAME.md5"
           ) | tee "$OPENQA_DIAGNOSTICS_DIR/checksums.txt"
+          sha256sum "$openqa_asset_dir/$ISO_FILENAME" | awk '{print $1}' \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/iso-sha256.txt"
+          printf 'BIGLINUX_ISO_SHA256=%s\n' "$(<"$OPENQA_DIAGNOSTICS_DIR/iso-sha256.txt")" >>"$GITHUB_ENV"
           printf '%s\n' "$ISO_FILENAME" >"$OPENQA_DIAGNOSTICS_DIR/iso-name.txt"
           stat --printf='iso_bytes=%s\n' "$openqa_asset_dir/$ISO_FILENAME" \
             | tee "$OPENQA_DIAGNOSTICS_DIR/iso-size.txt"
@@ -380,7 +446,7 @@ jobs:
             sleep 5
           done
 
-      - name: Schedule and monitor one mandatory firmware plan
+      - name: Schedule and monitor one mandatory plan
         run: |
           set -euo pipefail
           export BIGLINUX_OPENQA_CONTAINER="$OPENQA_CONTAINER"
@@ -398,7 +464,14 @@ jobs:
           export BIGLINUX_OPENQA_UEFI_PFLASH_VARS=/run/ovmf/OVMF_VARS.fd
           export BIGLINUX_OPENQA_PRODUCTDIR=openqa
           export BIGLINUX_OPENQA_DIAGNOSTICS_DIR="$OPENQA_DIAGNOSTICS_DIR"
-          ./openqa/development/schedule-release-gate.sh --firmware "$FIRMWARE"
+          export BIGLINUX_ISO_SHA256
+          export BIGLINUX_APPLICATION_SHARD_COUNT
+          if [[ "$SUITE" == applications-* ]]; then
+            ./openqa/development/schedule-release-gate.sh \
+              --applications-shard "$APPLICATION_SHARD_INDEX" "$APPLICATION_SHARD_COUNT"
+          else
+            ./openqa/development/schedule-release-gate.sh --firmware "$FIRMWARE"
+          fi
 
       - name: Collect openQA diagnostics
         if: ${{ always() }}
@@ -406,6 +479,8 @@ jobs:
           set +e
           collection_status=0
           mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results"
+          free -h >"$OPENQA_DIAGNOSTICS_DIR/resources-before-collection.txt"
+          df -h >"$OPENQA_DIAGNOSTICS_DIR/disk-before-collection.txt"
           if docker inspect "$OPENQA_CONTAINER" >/dev/null 2>&1; then
             docker logs "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container.log" 2>&1 || collection_status=1
             docker inspect "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container.json" || collection_status=1
@@ -440,6 +515,10 @@ jobs:
           docker system df >"$OPENQA_DIAGNOSTICS_DIR/docker-disk-after.txt" 2>&1 || collection_status=1
           sudo chown -R "$(id -u):$(id -g)" "$OPENQA_DIAGNOSTICS_DIR" \
             || collection_status=1
+          if ! BIGLINUX_OPENQA_RESULTS_DIR="$OPENQA_DIAGNOSTICS_DIR/results" \
+              openqa/production/verify-archive-screenshots.sh; then
+            collection_status=1
+          fi
           exit "$collection_status"
 
       - name: Verify archived QEMU KVM evidence
@@ -486,7 +565,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## openQA $FIRMWARE"
+            echo "## openQA $SUITE"
             echo
             echo 'Instance: local ephemeral openQA on this runner'
             echo "Commit: $GITHUB_SHA"
@@ -505,8 +584,8 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: openqa-${{ matrix.firmware }}-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.firmware }}/
+          name: openqa-${{ matrix.suite }}-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.suite }}/
           if-no-files-found: error
           retention-days: 14
 
@@ -515,6 +594,76 @@ jobs:
         run: |
           set -euo pipefail
           if docker inspect "$OPENQA_CONTAINER" >/dev/null 2>&1; then
-            docker stop --time 30 "$OPENQA_CONTAINER"
+            docker stop --timeout 30 "$OPENQA_CONTAINER"
             docker rm "$OPENQA_CONTAINER"
           fi
+
+  applications-aggregate:
+    name: Aggregate application coverage
+    if: ${{ always() }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the tested sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download application shard diagnostics
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: openqa-applications-*
+          path: ${{ runner.temp }}/openqa-application-artifacts
+          merge-multiple: false
+
+      - name: Prepare application policy
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          ruby -rjson -ryaml -e '
+            def canonical(value)
+              case value
+              when Hash then value.keys.sort.each_with_object({}) { |key, result| result[key] = canonical(value[key]) }
+              when Array then value.map { |item| canonical(item) }
+              else value
+              end
+            end
+            puts JSON.generate(canonical(YAML.safe_load_file("openqa/application-policy.yaml", permitted_classes: [], aliases: false)))
+          ' \
+            >"$RUNNER_TEMP/application-policy.json"
+
+      - name: Aggregate and validate the four application shards
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          application_shard_count=$(ruby -ryaml -e \
+            'puts YAML.safe_load_file("openqa/development/release-gate.yaml", permitted_classes: [], aliases: false).fetch("application_shard_count")')
+          python3 openqa/production/aggregate-application-results.py \
+            --artifacts-root "$RUNNER_TEMP/openqa-application-artifacts" \
+            --policy-json "$RUNNER_TEMP/application-policy.json" \
+            --output-dir "$RUNNER_TEMP/application-summary" \
+            --expected-shards "$application_shard_count"
+
+      - name: Upload application coverage summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openqa-applications-summary-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/application-summary/
+          if-no-files-found: warn
+          retention-days: 14
+
+  openqa-release-gate:
+    name: openQA release gate
+    if: ${{ always() }}
+    needs: [validate, applications-aggregate]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every mandatory openQA suite
+        run: |
+          set -euo pipefail
+          validate_result='${{ needs.validate.result }}'
+          aggregate_result='${{ needs.applications-aggregate.result }}'
+          printf 'validate=%s\napplications-aggregate=%s\n' "$validate_result" "$aggregate_result"
+          [[ "$validate_result" == success && "$aggregate_result" == success ]] || {
+            echo 'Mandatory openQA firmware or application coverage did not pass.' >&2
+            exit 1
+          }

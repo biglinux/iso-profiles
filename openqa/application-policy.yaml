@@ -1,0 +1,42 @@
+version: 1
+
+# Entries with no executable command or a service type are classified explicitly
+# so a new non-launchable entry becomes an invalid coverage change instead of a
+# silent omission.
+exclude:
+  - desktop_id: org.kde.baloorunner.desktop
+    reason: KDE service entry has no executable command
+  - desktop_id: org.kde.kded5.desktop
+    reason: KDE service entry is not a graphical application
+  - desktop_id: org.kde.kded6.desktop
+    reason: KDE service entry is not a graphical application
+  - desktop_id: org.kde.kwin.dialoghelper.desktop
+    reason: KDE helper entry has no executable command
+  - desktop_id: org.kde.plasma-interactiveconsole.desktop
+    reason: Plasma service entry has no executable command
+  - desktop_id: org.kde.secretprompter.desktop
+    reason: KDE helper entry has no executable command
+
+aliases: []
+
+critical:
+  - desktop_id: org.kde.dolphin.desktop
+    functional_test: dolphin
+  - desktop_id: org.kde.konsole.desktop
+    functional_test: konsole
+  - desktop_id: brave-browser.desktop
+    functional_test: brave
+  - desktop_id: libreoffice-startcenter.desktop
+    functional_test: libreoffice
+  - desktop_id: gimp.desktop
+    functional_test: gimp
+  - desktop_id: bigcontrolcenter.desktop
+    functional_test: control-center
+  - desktop_id: bigcontrolcenter/mpv.desktop
+    functional_test: mpv
+  - desktop_id: org.kde.kate.desktop
+    functional_test: kate
+  - desktop_id: org.kde.okular.desktop
+    functional_test: okular
+  - desktop_id: org.manjaro.pamac.manager.desktop
+    functional_test: pamac

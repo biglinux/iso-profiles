@@ -49,6 +49,10 @@ fi
     printf 'overlay root: %s\n' "$overlay_root"
     printf 'EFI mount: %s\n' "$efi_mount"
     printf 'EFI boot entries: %s\n' "$efi_boot"
+    printf 'memory after installed boot:\n'
+    free -h
+    printf 'disk after installed boot:\n'
+    df -h /
 } >/tmp/openqa-installed-health.log
 printf '__OA_HEALTH_MARKER_FORMAT__root=%s;type=%s;release=%s;failed=%s;overlay=%s;brave=%s;efi=%s;efi_mount=%s;efi_boot=%s__\n' "$root_source" "$root_fstype" "$release_present" "$failed_units" "$overlay_root" "$brave_present" "$efi_present" "$efi_mount" "$efi_boot"
 SHELL
