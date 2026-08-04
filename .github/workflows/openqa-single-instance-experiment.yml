@@ -286,7 +286,7 @@ jobs:
             --publish 127.0.0.1:1080:80
             --tmpfs /srv/www/htdocs:mode=0755
             --tmpfs /var/log/apache2:mode=0755
-            --volume "$GITHUB_WORKSPACE:/workspace:ro"
+            --volume "$GITHUB_WORKSPACE:/workspace-source:ro"
             --volume "$openqa_asset_dir:/var/lib/openqa/share/factory/iso:ro"
             --volume "$OPENQA_DIAGNOSTICS_DIR/results:/var/lib/openqa/biglinux-results:rw"
             --volume "$OPENQA_PASSWORD_FILE:/run/secrets/biglinux-test-password:ro"
@@ -298,7 +298,7 @@ jobs:
             --entrypoint /bin/bash
           )
           docker run "${docker_args[@]}" "$OPENQA_IMAGE" \
-            /workspace/openqa/development/start-container.sh
+            /workspace-source/openqa/development/start-container.sh
           docker inspect "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container-start.json"
 
       - name: Wait for local API scheduler and worker
@@ -389,7 +389,9 @@ jobs:
                 [[ "$job_id" =~ ^[1-9][0-9]*$ ]] || { collection_status=1; continue; }
                 docker exec "$OPENQA_CONTAINER" mkdir -p \
                   "/var/lib/openqa/biglinux-results/$job_id"
-                if ! docker exec "$OPENQA_CONTAINER" openqa-cli archive --host http://localhost \
+                if ! docker exec "$OPENQA_CONTAINER" openqa-cli archive \
+                  --host http://localhost \
+                  --asset-size-limit 1 \
                   "$job_id" "/var/lib/openqa/biglinux-results/$job_id" \
                   >"$OPENQA_DIAGNOSTICS_DIR/archive-$job_id.log" 2>&1; then
                   echo "Failed to archive openQA job $job_id" >&2

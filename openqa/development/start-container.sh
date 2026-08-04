@@ -12,6 +12,11 @@ fi
 
 groupmod --gid "$KVM_GID" --non-unique kvm
 usermod --append --groups kvm _openqa-worker
+if [[ -d /workspace-source ]]; then
+    install -d -m 0755 /workspace
+    cp -a /workspace-source/. /workspace/
+    chown -R _openqa-worker:_openqa-worker /workspace
+fi
 export skip_suse_specifics=1
 export skip_suse_tests=1
 exec /usr/share/openqa/script/openqa-bootstrap
