@@ -104,7 +104,7 @@ jobs:
   openqa:
     name: openQA release gate
     needs: build
-    uses: ./.github/workflows/openqa-production-gate.yml
+    uses: ./.github/workflows/openqa-single-instance-experiment.yml
     with:
       candidate_artifact: ${{ needs.build.outputs.candidate_artifact }}
       iso_filename: ${{ needs.build.outputs.iso }}
