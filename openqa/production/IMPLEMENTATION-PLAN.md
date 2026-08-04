@@ -15,7 +15,7 @@ the evidence required before that interface may authorize publication.
   a failed, incomplete, skipped, or unverifiable mandatory job blocks release;
   build secrets are not exposed to the privileged ISO-build job.
 - **Run:** after the external prerequisites are configured,
-  `gh workflow run "Build ISO" --repo biglinux/iso-profiles --ref openqa-production-gate -f edition=kde -f kernel=lts -f manjaro_branch=stable -f big_branch=stable -f publish_release=false`.
+  `gh workflow run "Build ISO" --repo biglinux/iso-profiles --ref openqa-single-instance-experiment -f edition=kde -f kernel=lts -f manjaro_branch=stable -f big_branch=stable -f publish_release=false`.
 - **Validate a change:** `git diff --check`, `bash -n openqa/production/*.sh openqa/development/*.sh`, `shellcheck -x openqa/production/*.sh openqa/development/*.sh`, `actionlint`, the repository Python tests, and a real BIOS+UEFI gate run.
 
 ---
@@ -57,12 +57,12 @@ build ISO once                         web UI + scheduler
 
 | Area | Current evidence | State |
 | --- | --- | --- |
-| Production workflow and scripts | Commit `e5e1a3a`; static checks pass | Verified locally |
-| BIOS/UEFI plan split | `release` includes applications; `release_uefi` omits the broad application module | Verified in source |
+| Production workflow and scripts | Working-tree implementation; static checks pass | Verified locally; commit pending |
+| BIOS/UEFI plan split | `release` contains the application module with a critical filter supplied by the gate; `release_uefi` omits it | Verified in source |
 | Secure receiver | Isolated contract tests pass | Verified locally |
-| KVM capability on `192.168.1.48` | `/dev/kvm`, KVM modules, QEMU, OVMF, and NTP available | Host capability only |
-| Persistent openQA on `192.168.1.48` | `openqa-cli` absent; web UI and scheduler inactive | Missing |
-| GitHub production environment | No repository secrets or variables currently listed | Missing |
+| Configured KVM workers | No production host is configured in GitHub variables | Unverified |
+| Persistent openQA | The `openqa-production` environment is not present in GitHub | Missing |
+| GitHub production environment | `gh secret list` and `gh variable list` returned HTTP 404 for the environment | Missing |
 | Real BIOS job | No job from this branch | Missing |
 | Real UEFI job | No job from this branch | Missing |
 | Release decision | No green production gate and no controlled publication | Missing |
@@ -134,7 +134,8 @@ from the ISO build host.
 - Configure retention and cleanup only after confirming that active jobs and
   their assets are excluded.
 - Enable HTTPS and synchronize the clock with NTP.
-- Create a BigLinux group and a CI-specific client identity.
+- Create a BigLinux group and a CI-specific operator API identity. Keep API
+  operations on HTTPS; reserve SSH for the upload-only receiver.
 - Restrict API and SSH access to the required GitHub runner path or relay.
 
 ### Server evidence
@@ -217,6 +218,8 @@ openQA asset directory.
 
 Create the protected `openqa-production` environment with these secrets:
 
+- `OPENQA_API_KEY`;
+- `OPENQA_API_SECRET`;
 - `OPENQA_SSH_PRIVATE_KEY`;
 - `OPENQA_KNOWN_HOSTS`;
 - `OPENQA_TEST_PASSWORD`.
@@ -230,6 +233,9 @@ Create these non-secret variables:
 - `OPENQA_GROUP`;
 - `OPENQA_WORKER_CLASS`;
 - `OPENQA_REMOTE_ISO_DIR`.
+
+The API credentials are passed only to the pinned official client image. The
+SSH key is used only by the upload script and cannot execute a remote shell.
 
 Check that the build job cannot read the production secrets. The reusable gate
 must receive secrets explicitly, use strict host-key checking, and remove
@@ -317,9 +323,9 @@ pass and all evidence is reviewed, run the controlled green case with
 `publish_release=true`. Recompute checksums after downloading and recombining
 published assets.
 
-The PR can leave draft status only when all mandatory acceptance rows have real
-job evidence. Local tests, a known-good ISO, or a simulated KVM command cannot
-substitute for the real BIOS and UEFI jobs.
+The production branch can be declared ready only when all mandatory acceptance
+rows have real job evidence. Local tests, a known-good ISO, or a simulated KVM
+command cannot substitute for the real BIOS and UEFI jobs.
 
 ## Rollback
 
@@ -340,4 +346,4 @@ substitute for the real BIOS and UEFI jobs.
   **Phase 4**.
 - Why are all `.desktop` entries outside the mandatory gate? See the opening
   problem statement and **Phase 6**.
-- What must be true before the PR stops being draft? See **Phase 9**.
+- What must be true before the production branch is ready? See **Phase 9**.

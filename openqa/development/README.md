@@ -47,8 +47,10 @@ or workflow settings.
 [`release-gate.yaml`](release-gate.yaml) is the single source of truth for the
 mandatory firmware matrix. It currently defines the BIOS plan with the full
 `release` schedule and the UEFI plan with `release_uefi`, so application coverage is
-not unnecessarily repeated in UEFI. The module sequence for each schedule remains
-owned by [`../main.pm`](../main.pm).
+not unnecessarily repeated in UEFI. The production gate supplies a critical
+application filter to the BIOS plan; an unfiltered `applications` run remains the
+separate broad audit. The module sequence for each schedule remains owned by
+[`../main.pm`](../main.pm).
 
 The development scheduler consumes this manifest locally:
 
