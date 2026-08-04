@@ -66,7 +66,7 @@ fi
 [[ "$iso_filename" =~ ^[A-Za-z0-9._-]+$ ]] || die 'invalid or missing BIGLINUX_ISO_FILENAME'
 [[ "$test_user" =~ ^[A-Za-z0-9_.-]+$ ]] || die 'invalid BIGLINUX_TEST_USER'
 [[ "$application_timeout" =~ ^[1-9][0-9]*$ ]] || die 'invalid BIGLINUX_APPLICATION_TIMEOUT'
-[[ "$qemu_no_kvm" =~ ^[01]$ ]] || die 'invalid BIGLINUX_OPENQA_QEMU_NO_KVM'
+[[ "$qemu_no_kvm" == 0 ]] || die 'development release gate does not permit QEMU TCG'
 [[ "$casedir" != *$'\n'* && "$scenario_definitions" != *$'\n'* ]] \
     || die 'path settings must not contain newlines'
 if ((dry_run == 0)); then
@@ -125,7 +125,6 @@ for plan_line in "${plan_lines[@]}"; do
         TIMEOUT_SCALE=1
         "BIGLINUX_APPLICATION_TIMEOUT=$application_timeout"
         "QEMU_NO_KVM=$qemu_no_kvm"
-        _GROUP_ID=0
         "BUILD=$plan_build"
         "ISO=$iso_filename"
         "CASEDIR=$casedir"
@@ -133,6 +132,9 @@ for plan_line in "${plan_lines[@]}"; do
         "NEEDLES_DIR=$needles_dir"
         SERIALDEV=hvc0
     )
+    if [[ "$firmware" == bios ]]; then
+        args+=(BIGLINUX_APPLICATION_FILTER='dolphin,libreoffice,gimp,brave,biglinux-control-center,control-center')
+    fi
     [[ -n "$test_git_refspec" ]] && args+=("TEST_GIT_REFSPEC=$test_git_refspec")
 
     if ((dry_run)); then
