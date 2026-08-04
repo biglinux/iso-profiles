@@ -269,7 +269,8 @@ jobs:
           python3 -m unittest discover -s data -p 'test_*.py'
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
-          python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py
+          python3 -m unittest discover -s openqa/production -p 'test_*.py'
+          python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py openqa/production/*.py
 
       - name: Install KVM validation tools
         run: |
@@ -488,14 +489,11 @@ jobs:
             if [[ -s "$job_ids_file" ]]; then
               while IFS= read -r job_id; do
                 [[ "$job_id" =~ ^[1-9][0-9]*$ ]] || { collection_status=1; continue; }
-                docker exec "$OPENQA_CONTAINER" mkdir -p \
-                  "/var/lib/openqa/biglinux-results/$job_id"
-                if ! docker exec "$OPENQA_CONTAINER" openqa-cli archive \
-                  --host http://localhost \
-                  --asset-size-limit 200000000 \
-                  "$job_id" "/var/lib/openqa/biglinux-results/$job_id" \
+                if ! openqa/production/copy-job-results.sh \
+                  "$OPENQA_CONTAINER" "$job_id" \
+                  "$OPENQA_DIAGNOSTICS_DIR/results/$job_id" \
                   >"$OPENQA_DIAGNOSTICS_DIR/archive-$job_id.log" 2>&1; then
-                  echo "Failed to archive openQA job $job_id" >&2
+                  echo "Failed to copy openQA job $job_id results" >&2
                   collection_status=1
                 fi
                 docker exec "$OPENQA_CONTAINER" openqa-cli api --host http://localhost \
