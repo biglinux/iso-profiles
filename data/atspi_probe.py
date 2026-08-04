@@ -30,7 +30,7 @@ def mem_available_mib(meminfo: Path = Path("/proc/meminfo")) -> float | None:
             if line.startswith("MemAvailable:"):
                 return round(int(line.split()[1]) / 1024, 1)
     except (OSError, ValueError, IndexError):
-        pass
+        return None
     return None
 
 
@@ -82,7 +82,7 @@ def process_memory(root_pid: int, proc_root: Path = Path("/proc")) -> dict[str, 
                     rss_kib += int(line.split()[1])
                     rss_found = True
                 except (ValueError, IndexError):
-                    pass
+                    break
                 break
         live_pids += 1
         try:
@@ -97,7 +97,7 @@ def process_memory(root_pid: int, proc_root: Path = Path("/proc")) -> dict[str, 
                     pss_kib += int(line.split()[1])
                     pss_found = True
                 except (ValueError, IndexError):
-                    pass
+                    break
                 break
     return {
         "rss_mib": round(rss_kib / 1024, 1) if rss_found else None,
