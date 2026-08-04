@@ -82,7 +82,7 @@ jobs:
             printf 'OPENQA_WORKER_CONFIG=%s\n' "$OPENQA_WORKER_CONFIG"
             printf 'OPENQA_OVMF_RUNTIME=%s\n' "$OPENQA_OVMF_RUNTIME"
           } >>"$GITHUB_ENV"
-          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results"
+          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results" "$OPENQA_OVMF_RUNTIME"
           [[ "$ISO_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ ]] || {
             echo 'Invalid ISO filename' >&2
             exit 2
@@ -205,29 +205,55 @@ jobs:
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
           python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py
 
-      - name: Install KVM and UEFI prerequisites
+      - name: Install KVM validation tools
         run: |
           set -euo pipefail
           if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || \
              ! command -v kvm-ok >/dev/null 2>&1 || \
-             ! dpkg-query -W -f='${Status}' ovmf 2>/dev/null | grep -q 'install ok installed'; then
+             ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install --yes cpu-checker jq ovmf qemu-system-x86
+            sudo apt-get install --yes cpu-checker jq qemu-system-x86
           fi
           command -v qemu-system-x86_64
           command -v kvm-ok
-          dpkg-query -W -f='${Package} ${Version}\n' ovmf qemu-system-x86 cpu-checker \
+          command -v jq
+          dpkg-query -W -f='${Package} ${Version}\n' qemu-system-x86 cpu-checker \
             | tee "$OPENQA_DIAGNOSTICS_DIR/host-packages.txt"
-          ovmf_code=$(find /usr/share -type f -iname 'OVMF_CODE*.fd' -print -quit)
-          ovmf_vars=$(find /usr/share -type f -iname 'OVMF_VARS*.fd' -print -quit)
+
+      - name: Prepare deterministic non-Secure-Boot UEFI firmware
+        if: ${{ matrix.firmware == 'uefi' }}
+        run: |
+          set -euo pipefail
+          if ! dpkg-query -W -f='${Status}' ovmf 2>/dev/null | grep -q 'install ok installed'; then
+            sudo apt-get update
+            sudo apt-get install --yes ovmf
+          fi
+
+          ovmf_code=
+          ovmf_vars=
+          for pair in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd; do
+            candidate_code=${pair%%:*}
+            candidate_vars=${pair#*:}
+            if [[ -s "$candidate_code" && -s "$candidate_vars" ]]; then
+              ovmf_code=$candidate_code
+              ovmf_vars=$candidate_vars
+              break
+            fi
+          done
           [[ -n "$ovmf_code" && -n "$ovmf_vars" ]] || {
-            echo 'OVMF firmware files were not found on the runner' >&2
+            echo 'A matching non-Secure-Boot OVMF code/vars pair was not found' >&2
+            find /usr/share/OVMF -maxdepth 1 -type f -printf '%f\n' >&2 || true
             exit 1
           }
-          mkdir -p -- "$OPENQA_OVMF_RUNTIME"
+
           cp -- "$ovmf_code" "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd"
           cp -- "$ovmf_vars" "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
-          chmod 0666 -- "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd" "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
+          chmod 0444 -- "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd"
+          chmod 0644 -- "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
+          dpkg-query -W -f='${Package} ${Version}\n' ovmf \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/ovmf-package.txt"
           printf 'host_code=%s\nhost_vars=%s\n' "$ovmf_code" "$ovmf_vars" \
             | tee "$OPENQA_DIAGNOSTICS_DIR/ovmf.txt"
 
@@ -412,6 +438,8 @@ jobs:
           free -h >"$OPENQA_DIAGNOSTICS_DIR/resources-after.txt"
           df -h >"$OPENQA_DIAGNOSTICS_DIR/disk-after.txt"
           docker system df >"$OPENQA_DIAGNOSTICS_DIR/docker-disk-after.txt" 2>&1 || collection_status=1
+          sudo chown -R "$(id -u):$(id -g)" "$OPENQA_DIAGNOSTICS_DIR" \
+            || collection_status=1
           exit "$collection_status"
 
       - name: Verify archived QEMU KVM evidence

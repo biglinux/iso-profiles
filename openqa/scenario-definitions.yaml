@@ -22,6 +22,7 @@ machines:
       QEMUCPUS: '2'
       QEMURAM: '4096'
       HDDSIZEGB: '40'
+      QEMUMACHINE: q35
       UEFI: '1'
       UEFI_SECURE_BOOT: '0'
       XRES: '1024'

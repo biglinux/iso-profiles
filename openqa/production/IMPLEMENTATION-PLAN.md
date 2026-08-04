@@ -12,8 +12,8 @@ for a real GitHub-hosted run. It does not describe a persistent server.
 - Each job validates `/dev/kvm`, prepares OVMF when needed, starts the pinned
   openQA single-instance image, and starts one worker with class
   `biglinux-kvm`.
-- The local API schedules one plan only. BIOS uses `release`; UEFI uses
-  `release_uefi`.
+- The local API schedules one plan only. BIOS uses `release` with the explicit
+  critical application filter; UEFI uses `release_uefi`.
 - Diagnostic collection runs after failures. Publication depends on the build,
   BIOS, and UEFI jobs all being successful.
 - The recursive application audit remains available through the separate
@@ -52,7 +52,7 @@ with both matrix jobs. The artifacts must show:
 | --- | --- |
 | KVM | `/dev/kvm`, `kvm-ok`, QEMU smoke test, and archived KVM command |
 | BIOS | one local job ID, passed modules, installation and installed boot |
-| UEFI | one local job ID, OVMF paths, EFI checks, and passed modules |
+| UEFI | one local job ID, deterministic non-Secure-Boot OVMF pair, EFI checks, and passed modules |
 | Diagnostics | archive, `autoinst-log.txt`, screenshots, video when produced, report |
 | Gate | red BIOS/UEFI blocks publication; green pair permits controlled publication |
 | Isolation | two runs keep artifacts and local containers separate |

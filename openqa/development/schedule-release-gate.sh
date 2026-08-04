@@ -250,7 +250,7 @@ while :; do
     case "$job_state" in
         done|cancelled|obsolete)
             if [[ "$job_state" == d* ]]; then
-                if [[ "$job_result" == passed || "$job_result" == softfailed ]]; then
+                if [[ "$job_result" == passed ]]; then
                     printf 'Local openQA job %s finished with %s\n' "$job_id" "$job_result" | tee -a "$schedule_log"
                     exit 0
                 fi

@@ -99,18 +99,21 @@ non-dry invocation requires `--firmware bios` or `--firmware uefi`, submits
 polls the returned product and job JSON. It never uses SSH, a remote API key,
 or a server URL.
 
-The test sources are mounted at `/workspace` from the checked-out commit. The
-job records the full `GITHUB_SHA` as `TEST_GIT_REFSPEC`, uses the mounted
-scenario file and needles, and sets `QEMU_NO_KVM=0`. BIOS uses the `release`
-schedule with the explicit critical application filter. UEFI uses
-`release_uefi`, which does not load the broad application module.
+The checked-out sources are mounted read-only at `/workspace-source`; the
+container entrypoint copies them to writable `/workspace` before openQA checks
+out the pinned `TEST_GIT_REFSPEC`. The job records the full `GITHUB_SHA`, uses
+the copied scenario file and needles, and sets `QEMU_NO_KVM=0`. BIOS uses the
+`release` schedule with the explicit critical application filter. UEFI uses
+`release_uefi`, which does not load the broad application audit.
 
 ## KVM and UEFI evidence
 
 The runner first checks the character device, read/write access, `kvm-ok`, and
-a minimal QEMU process started with `-accel kvm`. The UEFI job also installs
-`ovmf`, records the discovered code and variable firmware files, and mounts a
-per-job writable copy into the worker container.
+a minimal QEMU process started with `-accel kvm`. The UEFI job installs `ovmf`
+when needed and selects a matching non-Secure-Boot pair in this order:
+`OVMF_CODE_4M.fd` with `OVMF_VARS_4M.fd`, then the legacy `OVMF_CODE.fd` with
+`OVMF_VARS.fd`. It records the selected paths and mounts per-job copies into
+the worker container. The UEFI machine uses Q35 and keeps Secure Boot disabled.
 
 After the openQA job, [`verify-kvm-results.sh`](verify-kvm-results.sh) requires
 positive evidence such as `-enable-kvm`, `-accel kvm`, or `-accel=kvm` in the
