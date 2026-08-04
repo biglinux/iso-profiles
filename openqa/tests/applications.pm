@@ -376,21 +376,26 @@ sub run {
       unless defined $heavy_timeout && $heavy_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/;
     die 'BIGLINUX_APPLICATION_FILTER must not contain newlines'
       if defined $filter && $filter =~ /[\r\n]/;
-    _record_info 'Application inventory', sprintf('%d desktop entries discovered recursively', scalar @$entries);
+    my @selected_entries = $filter ne ''
+      ? grep { _entry_matches_filter($_, $filter) } @$entries
+      : @$entries;
+    die 'BIGLINUX_APPLICATION_FILTER matched no desktop entries'
+      if $filter ne '' && !@selected_entries;
+    _record_info 'Application inventory', sprintf(
+        '%d desktop entries discovered recursively; %d selected',
+        scalar @$entries,
+        scalar @selected_entries,
+    );
     _record_info 'Application filter', $filter if defined $filter && $filter ne '';
 
     my @ordered_entries = sort {
         _entry_priority($a) <=> _entry_priority($b)
           || $a->{path} cmp $b->{path}
-    } @$entries;
+    } @selected_entries;
     for my $entry (@ordered_entries) {
         my $reason = $entry->{skip_reason};
         if (defined $reason && $reason ne '') {
             _record_skipped($entry, $reason);
-            next;
-        }
-        if (!_entry_matches_filter($entry, $filter)) {
-            _record_skipped($entry, 'not selected by BIGLINUX_APPLICATION_FILTER');
             next;
         }
         _test_entry($entry, _entry_timeout($entry, $timeout, $heavy_timeout));
