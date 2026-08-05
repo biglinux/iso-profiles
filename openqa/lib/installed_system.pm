@@ -24,6 +24,7 @@ release_present=0
 test -f /etc/big-release && release_present=1
 failed_unit_list=$(systemctl --failed --no-legend --plain)
 failed_units=$(printf '%s\n' "$failed_unit_list" | awk 'NF {count++} END {print count+0}')
+failed_unit_names=$(printf '%s\n' "$failed_unit_list" | awk 'NF {printf "%s%s", sep, $1; sep=","}')
 brave_present=0
 test -x /usr/bin/brave && brave_present=1
 overlay_root=0
@@ -57,20 +58,25 @@ fi
     printf 'disk after installed boot:\n'
     df -h /
 } >/tmp/openqa-installed-health.log
-printf '__OA_HEALTH_MARKER_FORMAT__root=%s;type=%s;release=%s;failed=%s;overlay=%s;brave=%s;efi=%s;efi_mount=%s;efi_boot=%s__\n' "$root_source" "$root_fstype" "$release_present" "$failed_units" "$overlay_root" "$brave_present" "$efi_present" "$efi_mount" "$efi_boot"
+printf '__OA_HEALTH_MARKER_FORMAT__root=%s;type=%s;release=%s;failed=%s;overlay=%s;brave=%s;efi=%s;efi_mount=%s;efi_boot=%s;units=%s__\n' "$root_source" "$root_fstype" "$release_present" "$failed_units" "$overlay_root" "$brave_present" "$efi_present" "$efi_mount" "$efi_boot" "$failed_unit_names"
 SHELL
     $health_check =~ s/__OA_HEALTH_MARKER_FORMAT__/_marker_format('__OA_INSTALLED_HEALTH__')/e;
     type_string $health_check;
-    my $result = wait_serial qr/__OA_INSTALLED_HEALTH__root=([^;]*);type=([^;]*);release=(\d+);failed=(\d+);overlay=(\d+);brave=(\d+);efi=(\d+);efi_mount=(\d+);efi_boot=(\d+)__/, timeout => 90;
+    my $result = wait_serial qr/__OA_INSTALLED_HEALTH__root=([^;]*);type=([^;]*);release=(\d+);failed=(\d+);overlay=(\d+);brave=(\d+);efi=(\d+);efi_mount=(\d+);efi_boot=(\d+);units=([^_]*)__/, timeout => 90;
     select_console 'sut';
     atspi->upload_guest_file('/tmp/openqa-installed-health.log', 'installed-health.log');
 
     die 'The installed-system health probe did not return a result' unless defined $result;
-    my ($root_source, $root_fstype, $release_present, $failed_units, $overlay_root, $brave_present, $efi_present, $efi_mount, $efi_boot) = $result =~ /__OA_INSTALLED_HEALTH__root=([^;]*);type=([^;]*);release=(\d+);failed=(\d+);overlay=(\d+);brave=(\d+);efi=(\d+);efi_mount=(\d+);efi_boot=(\d+)__/;
+    my ($root_source, $root_fstype, $release_present, $failed_units, $overlay_root, $brave_present, $efi_present, $efi_mount, $efi_boot, $failed_unit_names) = $result =~ /__OA_INSTALLED_HEALTH__root=([^;]*);type=([^;]*);release=(\d+);failed=(\d+);overlay=(\d+);brave=(\d+);efi=(\d+);efi_mount=(\d+);efi_boot=(\d+);units=([^_]*)__/;
     die 'The installed root filesystem is missing or still uses overlayfs'
       unless $root_source =~ m{^/dev/} && $root_fstype ne 'overlay' && !$overlay_root;
     die 'The installed system is missing /etc/big-release' unless $release_present;
-    die "The installed system has $failed_units failed systemd units" unless !$failed_units;
+    # Name them: a bare count sends whoever reads the report digging through
+    # the uploaded log to learn whether the ISO is broken or a unit merely has
+    # no hardware to talk to in a virtual machine.
+    die "The installed system has $failed_units failed systemd units: "
+      . ($failed_unit_names || 'names unavailable')
+      unless !$failed_units;
     die 'The installed system is missing an executable Brave binary' unless $brave_present;
     my $uefi_expected = get_var('UEFI', '0') eq '1';
     die 'UEFI job did not expose /sys/firmware/efi' if $uefi_expected && !$efi_present;
