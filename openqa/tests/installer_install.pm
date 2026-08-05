@@ -47,17 +47,13 @@ sub run {
     eject_cd;
     calamares->click_action(\@calamares::DONE);
 
-    # Pressing Done with "restart now" selected is the user's path and is
-    # exercised above, but the gate must not depend on it: the previous run
-    # pressed the button and the machine stayed up, with the serial shell still
-    # answering. Reboot from the console in that case and record which path
-    # was taken, so a broken installer reboot is reported without hiding
-    # whether the installed system itself is good.
-    if (defined atspi->run_command('true', 30)) {
-        record_info 'Installer reboot',
-          'The installer did not reboot after Done; rebooting from the console';
-        atspi->run_command('systemctl reboot || reboot', 15);
-    }
+    # No reboot fallback here on purpose. Calamares reboots through a
+    # privileged helper and takes its time: a previous run saw the machine
+    # still answering 30 seconds after Done and the broadcast arrive later.
+    # Rebooting from this console cannot work anyway, because the live user is
+    # unprivileged, and the next module already proves the outcome -- it waits
+    # for the installed system's own login prompt and fails clearly if the
+    # machine never came back.
     reset_consoles;
 }
 
