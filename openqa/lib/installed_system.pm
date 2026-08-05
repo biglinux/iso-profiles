@@ -107,9 +107,7 @@ sub assert_display_manager {
     reset_consoles;
     select_console 'root-virtio-terminal';
     select_console 'sut';
-    my $exit_code = atspi->run_command(
-        'for i in $(seq 1 60); do pgrep -x sddm >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',
-        90);
+    my $exit_code = atspi->run_command_until('pgrep -x sddm >/dev/null 2>&1', 60);
     die 'The installed system did not start its display manager'
       unless defined $exit_code && $exit_code == 0;
     record_info 'Installed boot',
@@ -118,9 +116,8 @@ sub assert_display_manager {
 
 sub assert_desktop {
     atspi->prepare;
-    my $desktop_exit_code = atspi->run_command(
-        'for i in $(seq 1 30); do pgrep -u 1000 -x plasmashell >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',
-        45);
+    my $desktop_exit_code =
+      atspi->run_command_until('pgrep -u 1000 -x plasmashell >/dev/null 2>&1', 45);
     die 'The installed KDE Plasma shell did not start'
       unless defined $desktop_exit_code && $desktop_exit_code == 0;
     record_info 'Installed desktop', 'AT-SPI is active and plasmashell is running for the logged-in user';

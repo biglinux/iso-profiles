@@ -630,6 +630,17 @@ sub run_command {
     return $exit_code;
 }
 
+# Poll a guest condition until it holds. Deliberately without "exit": these
+# commands run inside the interactive login shell, so an exit ends the session
+# and the getty respawns a login prompt. That turned a display manager which
+# was up, greeter and all, into "did not start its display manager".
+sub run_command_until {
+    my ($class, $probe, $seconds) = @_;
+    return $class->run_command(
+        "i=0; while [ \$i -lt $seconds ] && ! { $probe; }; do sleep 1; i=\$((i+1)); done; $probe",
+        $seconds + $WALK_HEADROOM);
+}
+
 sub upload_guest_file {
     my ($class, $guest_path, $log_name) = @_;
     die "invalid guest path '$guest_path'"
