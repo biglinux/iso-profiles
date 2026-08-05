@@ -10,6 +10,7 @@ from atspi_probe import (
     _is_transient_window,
     _label_matches,
     _name_matches,
+    _normalize_label,
     _parse_x11_window,
     launch_process_exited,
     mem_available_mib,
@@ -226,6 +227,34 @@ class FakeWidget:
 
     def get_action_iface(self):
         return self._actions
+
+
+class RichTextLabelTest(unittest.TestCase):
+    """Calamares names some controls with their whole rich-text description."""
+
+    ERASE = (
+        "<strong>Erase disk</strong><br/>This will "
+        '<font color="red">delete</font> all data currently present on the '
+        "selected storage device."
+    )
+    MANUAL = (
+        "<strong>Manual partitioning</strong><br/>You can create or resize "
+        "partitions yourself."
+    )
+
+    def test_matches_the_heading_of_a_rich_text_label(self) -> None:
+        self.assertTrue(_label_matches(self.ERASE, ["Erase disk"]))
+        self.assertTrue(_label_matches(self.MANUAL, ["Manual partitioning"]))
+
+    def test_does_not_confuse_two_rich_text_controls(self) -> None:
+        self.assertFalse(_label_matches(self.MANUAL, ["Erase disk"]))
+        self.assertFalse(_label_matches(self.ERASE, ["Manual partitioning"]))
+
+    def test_anchors_at_the_start_of_the_label(self) -> None:
+        self.assertFalse(_label_matches("Do not erase disk", ["Erase disk"]))
+
+    def test_strips_markup_before_comparing(self) -> None:
+        self.assertEqual(_normalize_label("<b>Next</b>"), "next")
 
 
 class WidgetSearchTest(unittest.TestCase):

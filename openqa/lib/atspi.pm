@@ -223,6 +223,21 @@ sub wait_widget {
     return $class->_widget_operation('wait-widget', $role, $labels, $timeout);
 }
 
+# Wait a long budget in short guest calls. One blocking serial command for the
+# whole installation would leave the host with nothing to report for the better
+# part of an hour, and openQA would have no chance to notice it went silent.
+sub wait_widget_until {
+    my ($class, $role, $labels, $total_timeout, $slice) = @_;
+    $slice //= 60;
+    my $deadline = time + $total_timeout;
+    my $found;
+    while (1) {
+        $found = $class->wait_widget($role, $labels, $slice);
+        return $found if ref $found eq 'HASH' && $found->{status} eq 'passed';
+        return $found if time >= $deadline;
+    }
+}
+
 # Activate a control by its accessibility identity, asking the control to act
 # on itself. AT-SPI reports widget extents relative to the window rather than
 # to the screen, so a pointer click on the reported rectangle lands one title

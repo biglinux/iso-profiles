@@ -642,8 +642,9 @@ def _widget_record(accessible: Any) -> dict[str, Any] | None:
     try:
         showing = states.contains(Atspi.StateType.SHOWING)
         sensitive = states.contains(Atspi.StateType.SENSITIVE)
+        checked = states.contains(Atspi.StateType.CHECKED)
     except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-        showing = sensitive = False
+        showing = sensitive = checked = False
     return {
         "role": role,
         "name": name,
@@ -655,6 +656,7 @@ def _widget_record(accessible: Any) -> dict[str, Any] | None:
         "center_y": extents.y + extents.height // 2,
         "showing": bool(showing),
         "sensitive": bool(sensitive),
+        "checked": bool(checked),
     }
 
 
@@ -675,19 +677,45 @@ def _visible_widgets(expected_pid: int | None) -> list[tuple[Any, dict[str, Any]
     return widgets
 
 
+_MARKUP_TAG = re.compile(r"<[^>]*>")
+
+
+def _normalize_label(value: str) -> str:
+    """Reduce a label to letters and digits, ignoring any markup around it.
+
+    Calamares names some controls with their whole rich-text description, for
+    example "<strong>Erase disk</strong><br/>This will delete all data...", so
+    the tags have to go before anything can be compared. Dropping punctuation
+    and spacing also means an accelerator marker or a translator's padding
+    cannot decide the match.
+    """
+    return "".join(
+        character
+        for character in _MARKUP_TAG.sub(" ", value).casefold()
+        if character.isalnum()
+    )
+
+
+def _label_is_exact(name: str, labels: list[str]) -> bool:
+    actual = _normalize_label(name)
+    return any(label and _normalize_label(label) == actual for label in labels)
+
+
 def _label_matches(name: str, labels: list[str]) -> bool:
     if not labels:
         return True
-
-    # Compare on letters and digits only so an accelerator marker, trailing
-    # punctuation or padding in a translated label does not decide the match.
-    def normalize(value: str) -> str:
-        return "".join(
-            character for character in value.casefold() if character.isalnum()
+    actual = _normalize_label(name)
+    # A rich-text name leads with its heading, so a label that the name starts
+    # with identifies the control. Anchoring at the start keeps "Erase disk"
+    # from matching a description that merely mentions erasing a disk.
+    return any(
+        label
+        and (
+            actual == _normalize_label(label)
+            or actual.startswith(_normalize_label(label))
         )
-
-    actual = normalize(name)
-    return any(label and normalize(label) == actual for label in labels)
+        for label in labels
+    )
 
 
 _ACTIVATE_ACTIONS = ("click", "press", "activate", "toggle", "jump")
@@ -736,6 +764,7 @@ def _widget_matches(
         and pair[1]["sensitive"]
         and _label_matches(pair[1]["name"], labels)
     ]
+    matches.sort(key=lambda pair: not _label_is_exact(pair[1]["name"], labels))
     return matches, observed
 
 

@@ -9,19 +9,33 @@ sub test_flags {
     return {fatal => 1};
 }
 
+our @RESTART = ('Restart now', 'Reiniciar agora');
+
 sub run {
     calamares->click_action(\@calamares::INSTALL);
     assert_screen 'calamares-install-confirmation', 30;
     calamares->click_action(\@calamares::INSTALL, 30);
-    assert_screen 'calamares-install-progress', 120;
 
-    # An error page is intentionally not treated as an alternative success
-    # needle: it must time out as a fatal release-gate failure.
-    assert_screen 'calamares-install-finished', 2400;
+    # A progress bar proves the installation really started rather than
+    # returning to the summary or opening an error dialog.
+    my $progress = atspi->wait_widget('progress bar', [], 120);
+    die 'The installation did not start: ' . ($progress->{error} // 'unknown reason')
+      unless $progress->{status} eq 'passed';
+
+    # The finish page is the only one offering to restart, so waiting for that
+    # control proves the installation completed and hands us the control to
+    # act on. An error page never exposes it, which is exactly why a failed
+    # installation must run out of budget here instead of matching something.
+    my $restart = atspi->wait_widget_until('check box|checkbox', \@RESTART, 2400);
+    die 'The installation did not finish: ' . ($restart->{error} // 'unknown reason')
+      unless $restart->{status} eq 'passed';
 
     calamares->upload_installation_log;
-    atspi->activate_widget('check box|checkbox', ['Restart now', 'Reiniciar agora'], 60);
-    assert_screen 'calamares-install-restart-selected', 30;
+    atspi->activate_widget('check box|checkbox', \@RESTART, 60);
+    my $selected = atspi->wait_widget('check box|checkbox', \@RESTART, 30);
+    die 'The installer did not accept restarting after the installation'
+      unless $selected->{status} eq 'passed' && $selected->{widget}{checked};
+
     # Eject as late as possible: the live root can still be served from the
     # medium, so every rendering step after this point is a risk. Only the
     # final click remains, and it reboots the machine.
