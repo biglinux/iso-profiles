@@ -91,13 +91,24 @@ sub assert_brave_cli {
       unless defined $exit_code && $exit_code == 0;
 }
 
-sub assert_desktop {
-    # First serial use after the reboot: activate the console with the
-    # installed credentials before atspi->prepare selects it without a mode
-    # (which would try the live biglinux/biglinux login that no longer exists).
+# First serial use after the reboot: activating the console proves two things
+# at once, that the installed system finished booting and that the account the
+# installer created authenticates. Every later module reuses this session, so
+# none of them may reset the console again.
+sub assert_display_manager {
     reset_consoles;
     select_console 'root-virtio-terminal', 'installed';
     select_console 'sut';
+    my $exit_code = atspi->run_command(
+        'for i in $(seq 1 60); do pgrep -x sddm >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',
+        90);
+    die 'The installed system did not start its display manager'
+      unless defined $exit_code && $exit_code == 0;
+    record_info 'Installed boot',
+      'The installed system booted, its account authenticates and SDDM is running';
+}
+
+sub assert_desktop {
     atspi->prepare;
     my $desktop_exit_code = atspi->run_command(
         'for i in $(seq 1 30); do pgrep -u 1000 -x plasmashell >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',

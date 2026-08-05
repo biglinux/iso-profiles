@@ -20,7 +20,9 @@ sub activate_console ($self, $console, $mode = 'live') {
     # Every wait must be checked: continuing to type after a missed prompt
     # would feed the credentials (including the installed secret) to whatever
     # owns the tty and echo them into the uploaded serial log.
-    defined testapi::wait_serial('login:', timeout => 60)
+    # Generous: after the installer reboots, this waits for the whole boot of
+    # the freshly installed system, not just for a getty to respawn.
+    defined testapi::wait_serial('login:', timeout => 180)
       or die 'serial console did not show a login prompt';
     my ($user, $password) = ('biglinux', 'biglinux');
     if ($mode eq 'installed') {
@@ -40,13 +42,22 @@ sub activate_console ($self, $console, $mode = 'live') {
     }
     testapi::send_key 'ret';
 
-    # Wait for the shell integration marker instead of matching the decorated
-    # ble.sh prompt. Then replace the interactive shell with a plain Bash so
-    # command echo and upload_logs remain deterministic on the serial console.
-    defined testapi::wait_serial(qr/type=shell/, timeout => 60)
-      or die 'serial login did not reach an interactive shell';
-    testapi::type_string "exec env TERM=dumb bash --noprofile --norc\n";
-    defined testapi::wait_serial(qr/bash-[0-9.]+\$ /, timeout => 30)
+    # The image announces its shell integration once the decorated prompt is
+    # up, which is a convenient hint that input will be read. Treat it as a
+    # hint only: the installed system creates a fresh user whose shell may not
+    # announce anything, and an image is free to change or drop that banner.
+    testapi::wait_serial(qr/type=shell/, timeout => 30);
+
+    # Replace the interactive shell with a plain Bash so command echo stays
+    # deterministic. Retry: characters typed before the login shell starts
+    # reading are simply lost, and only the prompt proves it took over.
+    my $bash_ready;
+    for (1 .. 10) {
+        testapi::type_string "exec env TERM=dumb bash --noprofile --norc\n";
+        $bash_ready = testapi::wait_serial(qr/bash-[0-9.]+\$ /, timeout => 15);
+        last if defined $bash_ready;
+    }
+    defined $bash_ready
       or die 'plain bash did not take over the serial console';
     my $ready_marker = '__OA_SERIAL_READY__';
     testapi::type_string "export PS1='# '; printf '" . _marker_format($ready_marker) . "\\n'\n";
