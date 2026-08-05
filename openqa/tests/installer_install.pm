@@ -19,13 +19,13 @@ sub run {
 
     # The dialog is proven by its own button. A needle would add the dialog's
     # position on screen as a variable, and it does move between runs.
-    atspi->activate_widget($calamares::BUTTON_ROLES, \@CONFIRM, 60);
-
-    # A progress bar proves the installation really started rather than
-    # returning to the summary or opening an error dialog.
-    my $progress = atspi->wait_widget('progress bar', [], 120);
-    die 'The installation did not start: ' . ($progress->{error} // 'unknown reason')
-      unless $progress->{status} eq 'passed';
+    #
+    # Let the dialog settle before confirming and require it to disappear: one
+    # run pressed Install Now while the dialog was still fading in, the action
+    # reported success, and the installer sat on the summary page until the
+    # whole budget ran out.
+    wait_still_screen stilltime => 2, timeout => 30;
+    atspi->activate_widget_until_gone($calamares::BUTTON_ROLES, \@CONFIRM, 60);
 
     # The finish page is the only one offering to restart, so waiting for that
     # control proves the installation completed and hands us the control to

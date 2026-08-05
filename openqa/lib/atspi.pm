@@ -252,6 +252,23 @@ sub activate_widget {
     return $activated;
 }
 
+# A dialog can swallow an activation that arrives while it is still animating
+# in: the action reports success and nothing happens. Where the control is
+# expected to disappear once it works, that disappearance is the only reliable
+# confirmation, so press again until it does.
+sub activate_widget_until_gone {
+    my ($class, $role, $labels, $timeout) = @_;
+    my $found = $class->wait_widget($role, $labels, $timeout);
+    die "AT-SPI could not locate the $role: " . ($found->{error} // 'unknown reason')
+      unless ref $found eq 'HASH' && $found->{status} eq 'passed';
+    for my $attempt (1 .. 3) {
+        $class->activate_widget($role, $labels, 10);
+        my $still = $class->wait_widget($role, $labels, 10);
+        return $attempt unless ref $still eq 'HASH' && $still->{status} eq 'passed';
+    }
+    die "the $role stayed on screen after three activations";
+}
+
 sub _launch_argv {
     my ($class, $argv, $expected_name, $timeout, $expected_pid) = @_;
     my $started = time;
