@@ -4,7 +4,6 @@ use Mojo::Base 'basetest';
 use testapi;
 use atspi;
 use Digest::SHA qw(sha256_hex);
-use Encode qw(encode);
 use JSON::PP qw(encode_json);
 use Math::BigInt;
 use MIME::Base64 'encode_base64';
@@ -18,10 +17,9 @@ my $application_context;
 
 sub _record_info {
     my ($title, $output) = @_;
-    # isotovideo writes record_info through a byte-oriented serial channel.
-    # Keep the detailed UTF-8 values in application-metrics.json, but pass
-    # encoded octets here so one localized desktop name cannot abort the run.
-    record_info encode('UTF-8', "$title"), encode('UTF-8', "$output");
+    # The detailed UTF-8 values stay in application-metrics.json; what reaches
+    # the job log goes through the shared encoder.
+    atspi->record_guest_info($title, $output);
 }
 
 sub test_flags {

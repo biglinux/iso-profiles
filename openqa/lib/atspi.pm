@@ -5,6 +5,7 @@ package atspi;
 
 use Mojo::Base -strict;
 
+use Encode qw(encode);
 use JSON::PP qw(decode_json);
 use MIME::Base64 qw(decode_base64);
 use Text::ParseWords qw(shellwords);
@@ -34,6 +35,14 @@ my %crash_exit_code = map { $_ => 1 } (
 );
 
 our $WALK_HEADROOM = 30;
+
+# isotovideo writes record_info through a byte-oriented channel, so a window
+# title carrying something like an em dash aborts the run with "Wide character
+# in syswrite". Guest text is never trustworthy ASCII: pass encoded octets.
+sub record_guest_info {
+    my ($class, $title, $output) = @_;
+    return record_info encode('UTF-8', "$title"), encode('UTF-8', "$output");
+}
 
 sub is_crash_exit_code {
     my ($code) = @_;

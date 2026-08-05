@@ -55,14 +55,14 @@ sub _test_application {
         die "application crashed on exit (wait status $termination->{raw_application_exit_code})"
           if $termination->{application_crashed};
 
-        record_info "Critical application: $desktop_id", sprintf(
+        atspi->record_guest_info("Critical application: $desktop_id", sprintf(
             'functional_test=%s; window "%s" opened in %.2f s via %s; exit status %s',
             $functional_test,
             $opened->{window} // 'untitled',
             $open_seconds,
             $launch_method,
             $termination->{raw_application_exit_code} // 'unknown',
-        );
+        ));
     };
     $failure = $@ if $@;
 

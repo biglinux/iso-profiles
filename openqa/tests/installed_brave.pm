@@ -31,11 +31,11 @@ sub run {
     die "Installed Brave crashed on exit (wait status $termination->{raw_application_exit_code})"
       if $termination->{application_crashed};
 
-    record_info 'Installed Brave', sprintf(
+    atspi->record_guest_info('Installed Brave', sprintf(
         'CLI exit 0; window "%s" opened in %.2f s via %s and exited with status %s; kernel %s',
         $opened->{window} // 'untitled', $open_seconds, $launch_method,
         $termination->{raw_application_exit_code} // 'unknown', $kernel
-    );
+    ));
 }
 
 1;
