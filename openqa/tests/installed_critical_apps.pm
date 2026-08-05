@@ -53,7 +53,25 @@ sub _test_application {
                 $validation_mode = 'x11-open';
             }
         }
-        die 'did not expose a window of its own' unless $opened->{status} eq 'passed';
+        if ($opened->{status} ne 'passed') {
+            # A launcher that hands the work to another process -- xdg-open, a
+            # settings opener, a D-Bus activation -- exits successfully and the
+            # window belongs to whoever it asked. Its own success plus a window
+            # that was not there before is the evidence available, so identity
+            # by provenance cannot be required of these entries.
+            my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
+            if (defined $exit_code && $exit_code == 0) {
+                my $delegated = eval { atspi->result('wait-open', 120, '--name', '') };
+                if (ref $delegated eq 'HASH' && $delegated->{status} eq 'passed') {
+                    $opened = $delegated;
+                    $validation_mode = 'delegated-open';
+                }
+            }
+        }
+        # Carry the launcher's own output: throwing it away sent the last
+        # triage back into the guest for a reason already collected.
+        die 'did not expose a window of its own: ' . ($opened->{error} // 'no reason given')
+          unless $opened->{status} eq 'passed';
 
         # Opening a window that belongs to this launch and closing without a
         # crash is the whole contract. Asserting an AT-SPI action, a specific

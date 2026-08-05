@@ -307,6 +307,21 @@ sub _test_entry {
                 $metric->{fallback_reason} = 'AT-SPI did not expose a window; PID-scoped X11 window found';
             }
         }
+        if ($opened->{status} ne 'passed') {
+            # A launcher that hands the work to another process -- xdg-open, a
+            # settings opener, a D-Bus activation -- exits successfully and the
+            # window belongs to whoever it asked. Its own success plus a window
+            # that was not there before is the evidence available, so identity
+            # by provenance cannot be required of these entries.
+            my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
+            if (defined $exit_code && $exit_code == 0) {
+                my $delegated = eval { atspi->result('wait-open', $timeout, '--name', '') };
+                if (ref $delegated eq 'HASH' && $delegated->{status} eq 'passed') {
+                    $opened = $delegated;
+                    $validation_mode = 'delegated-open';
+                }
+            }
+        }
         $metric->{launch_method} = $launch_method;
         $metric->{launch_pid} = $launch_pid;
         $metric->{launch_timeout_seconds} = $timeout + 0;
