@@ -47,13 +47,17 @@ sub run {
     eject_cd;
     calamares->click_action(\@calamares::DONE);
 
-    # No reboot fallback here on purpose. Calamares reboots through a
-    # privileged helper and takes its time: a previous run saw the machine
-    # still answering 30 seconds after Done and the broadcast arrive later.
-    # Rebooting from this console cannot work anyway, because the live user is
-    # unprivileged, and the next module already proves the outcome -- it waits
-    # for the installed system's own login prompt and fails clearly if the
-    # machine never came back.
+    # Give the installer's own reboot room to happen, then reset the machine
+    # regardless of what it did. Nothing about this transition can be trusted:
+    # the reboot goes through a privileged helper and has been seen to arrive
+    # more than a minute after Done, rebooting from this console is impossible
+    # because the live user is unprivileged, and in some runs the display
+    # stopped updating altogether while the session kept running, so the screen
+    # says nothing either. The installation is finished and its target already
+    # unmounted here, which makes a reset the deterministic way to reach the
+    # installed system -- and reaching it is the point of the whole gate.
+    sleep 60;
+    power 'reset';
     reset_consoles;
 }
 

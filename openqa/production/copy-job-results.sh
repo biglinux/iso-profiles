@@ -44,7 +44,23 @@ result_dir=${result_dirs[0]}
 
 rm -rf -- "$destination"
 mkdir -p -- "$destination/testresults"
-"$docker_bin" cp "$container:$result_dir/." "$destination/testresults/"
+# One run copied 483 of the files and then died with "unexpected EOF": the tar
+# stream docker cp builds can be cut short while openQA is still writing the
+# directory, and that run lost exactly the serial log and video needed to
+# explain its failure. Retry before giving up on the evidence.
+copy_attempt=1
+while true; do
+    if "$docker_bin" cp "$container:$result_dir/." "$destination/testresults/"; then
+        break
+    fi
+    if ((copy_attempt >= 3)); then
+        echo "Could not copy the result directory for openQA job $job_id" >&2
+        exit 1
+    fi
+    echo "Retrying the result copy for openQA job $job_id" >&2
+    copy_attempt=$((copy_attempt + 1))
+    sleep 5
+done
 
 test -s "$destination/testresults/vars.json" || {
     echo "Copied result for openQA job $job_id has no vars.json" >&2
