@@ -1,0 +1,48 @@
+{
+  "area": [
+    {
+      "height": 18,
+      "type": "match",
+      "width": 125,
+      "xpos": 195,
+      "ypos": 42
+    },
+    {
+      "height": 18,
+      "type": "match",
+      "width": 255,
+      "xpos": 195,
+      "ypos": 106
+    },
+    {
+      "height": 18,
+      "type": "match",
+      "width": 222,
+      "xpos": 195,
+      "ypos": 170
+    },
+    {
+      "height": 18,
+      "type": "match",
+      "width": 290,
+      "xpos": 195,
+      "ypos": 234
+    },
+    {
+      "click_point": {
+        "id": "next",
+        "xpos": 38,
+        "ypos": 16
+      },
+      "height": 32,
+      "type": "match",
+      "width": 76,
+      "xpos": 840,
+      "ypos": 689
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-users-page"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "area": [
+    {
+      "height": 22,
+      "type": "match",
+      "width": 22,
+      "xpos": 399,
+      "ypos": 67
+    },
+    {
+      "height": 22,
+      "type": "match",
+      "width": 22,
+      "xpos": 399,
+      "ypos": 131
+    },
+    {
+      "height": 22,
+      "type": "match",
+      "width": 22,
+      "xpos": 399,
+      "ypos": 195
+    },
+    {
+      "height": 22,
+      "type": "match",
+      "width": 22,
+      "xpos": 603,
+      "ypos": 259
+    },
+    {
+      "height": 18,
+      "type": "match",
+      "width": 290,
+      "xpos": 195,
+      "ypos": 234
+    },
+    {
+      "click_point": {
+        "id": "next",
+        "xpos": 38,
+        "ypos": 16
+      },
+      "height": 32,
+      "type": "match",
+      "width": 76,
+      "xpos": 840,
+      "ypos": 689
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-users-valid"
+  ]
+}

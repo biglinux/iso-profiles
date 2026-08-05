@@ -1,0 +1,77 @@
+{
+  "area": [
+    {
+      "height": 17,
+      "type": "match",
+      "width": 470,
+      "xpos": 195,
+      "ypos": 36
+    },
+    {
+      "height": 28,
+      "type": "match",
+      "width": 112,
+      "xpos": 196,
+      "ypos": 62
+    },
+    {
+      "height": 17,
+      "type": "match",
+      "width": 300,
+      "xpos": 238,
+      "ypos": 110
+    },
+    {
+      "height": 17,
+      "type": "match",
+      "width": 410,
+      "xpos": 238,
+      "ypos": 128
+    },
+    {
+      "height": 28,
+      "type": "match",
+      "width": 122,
+      "xpos": 196,
+      "ypos": 192
+    },
+    {
+      "height": 17,
+      "type": "match",
+      "width": 378,
+      "xpos": 238,
+      "ypos": 244
+    },
+    {
+      "height": 28,
+      "type": "match",
+      "width": 150,
+      "xpos": 196,
+      "ypos": 304
+    },
+    {
+      "height": 17,
+      "type": "match",
+      "width": 340,
+      "xpos": 238,
+      "ypos": 346
+    },
+    {
+      "click_point": {
+        "id": "install",
+        "xpos": 38,
+        "ypos": 16
+      },
+      "height": 32,
+      "type": "match",
+      "width": 76,
+      "xpos": 840,
+      "ypos": 689
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-summary-page",
+    "calamares-summary-expected"
+  ]
+}

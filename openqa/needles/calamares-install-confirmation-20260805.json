@@ -1,0 +1,41 @@
+{
+  "area": [
+    {
+      "height": 17,
+      "type": "match",
+      "width": 175,
+      "xpos": 425,
+      "ypos": 306
+    },
+    {
+      "height": 32,
+      "type": "match",
+      "width": 450,
+      "xpos": 313,
+      "ypos": 334
+    },
+    {
+      "height": 17,
+      "type": "match",
+      "width": 270,
+      "xpos": 313,
+      "ypos": 369
+    },
+    {
+      "click_point": {
+        "id": "confirm",
+        "xpos": 40,
+        "ypos": 10
+      },
+      "height": 20,
+      "type": "match",
+      "width": 80,
+      "xpos": 424,
+      "ypos": 401
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "calamares-install-confirmation"
+  ]
+}
