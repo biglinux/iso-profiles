@@ -268,6 +268,15 @@ jobs:
           python3 -m unittest discover -s openqa/production -p 'test_*.py'
           openqa/production/test_verify-kvm-results.sh
           python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py openqa/production/*.py
+          # "type_string calamares->test_user" is valid Perl that means
+          # "calamares->type_string(...)": the indirect object syntax silently
+          # calls the wrong method, and perl -c cannot see it. Require the
+          # parentheses that settle the parse.
+          if grep -rnE '^\s*(type_string|type_password|assert_script_run|script_run|record_info|upload_logs)\s+[a-z_]+->' \
+            openqa/tests/*.pm openqa/lib/*.pm; then
+            echo 'Call the method first and pass its result in parentheses' >&2
+            exit 1
+          fi
 
       - name: Install KVM validation tools
         run: |

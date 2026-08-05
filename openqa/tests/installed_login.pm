@@ -14,7 +14,7 @@ sub run {
     # A fresh BigLinux SDDM session selects the created user and focuses its
     # password field.  The login needle proves which user was selected before
     # the secret is entered.
-    type_password installed_system->test_password;
+    type_password(installed_system->test_password);
     send_key 'ret';
     installed_system->assert_desktop;
 }

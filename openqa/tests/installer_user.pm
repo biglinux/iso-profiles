@@ -21,13 +21,13 @@ sub run {
     # same focus order used by the graphical test backend.
     type_string 'BigLinux openQA';
     send_key 'tab';
-    type_string calamares->test_user;
+    type_string(calamares->test_user);
     send_key 'tab';
-    type_string calamares->test_hostname;
+    type_string(calamares->test_hostname);
     send_key 'tab';
-    type_password calamares->test_password;
+    type_password(calamares->test_password);
     send_key 'tab';
-    type_password calamares->test_password;
+    type_password(calamares->test_password);
     # The green validation marks are the meaningful proof that Calamares
     # accepted the account, so this needle stays. The button that follows is
     # located through AT-SPI because it only becomes enabled at this point.
