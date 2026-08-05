@@ -113,7 +113,7 @@ sub kernel_version {
 sub result {
     my ($class, $operation, $timeout, @arguments) = @_;
     die "invalid AT-SPI operation '$operation'"
-      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|dump-widgets|close|cleanup|memory|inventory|inventory-chunk)\z/;
+      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|activate-widget|dump-widgets|close|cleanup|memory|inventory|inventory-chunk)\z/;
     die 'invalid AT-SPI timeout' unless defined $timeout && $timeout =~ /\A[0-9]+(?:\.[0-9]+)?\z/;
 
     my @command = (
