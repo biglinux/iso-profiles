@@ -330,6 +330,8 @@ sub _test_entry {
             if (_uses_delegating_launcher($entry)
                 || (defined $exit_code && $exit_code == 0)) {
                 my $delegated = eval { atspi->result('wait-open', $timeout, '--name', '') };
+                $delegated = eval { atspi->result('x11-wait-open', $timeout, '--name', '') }
+                  unless ref $delegated eq 'HASH' && $delegated->{status} eq 'passed';
                 if (ref $delegated eq 'HASH' && $delegated->{status} eq 'passed') {
                     $opened = $delegated;
                     $validation_mode = 'delegated-open';

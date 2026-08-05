@@ -25,9 +25,11 @@ my %session_launch_pids;
 # signal arrives as 128+signal. Only a fatal crash disqualifies an application:
 # a non-zero exit, or the SIGTERM/SIGKILL this framework itself sends during
 # cleanup, says nothing about whether the program works.
+# SIGTRAP is deliberately absent: Chromium-based browsers raise it while tearing
+# down, so Brave closing normally arrived as wait status 133 and was reported as
+# a crash. The signals kept here leave no such doubt.
 my %crash_exit_code = map { $_ => 1 } (
     132,    # SIGILL
-    133,    # SIGTRAP
     134,    # SIGABRT
     135,    # SIGBUS
     136,    # SIGFPE
