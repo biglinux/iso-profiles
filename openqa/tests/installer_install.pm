@@ -10,11 +10,16 @@ sub test_flags {
 }
 
 our @RESTART = ('Restart now', 'Reiniciar agora');
+# Only the confirmation dialog offers this, so it cannot be confused with the
+# summary page's own Install button behind the modal.
+our @CONFIRM = ('Install Now', 'Instalar agora');
 
 sub run {
     calamares->click_action(\@calamares::INSTALL);
-    assert_screen 'calamares-install-confirmation', 30;
-    calamares->click_action(\@calamares::INSTALL, 30);
+
+    # The dialog is proven by its own button. A needle would add the dialog's
+    # position on screen as a variable, and it does move between runs.
+    atspi->activate_widget($calamares::BUTTON_ROLES, \@CONFIRM, 60);
 
     # A progress bar proves the installation really started rather than
     # returning to the summary or opening an error dialog.
