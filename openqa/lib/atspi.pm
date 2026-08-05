@@ -331,7 +331,11 @@ sub _launch_argv {
     my @wait_arguments = ('--name', $expected_name);
     push @wait_arguments, ('--pid', $window_pid) if defined $window_pid;
     my $opened = $class->result('wait-open', $timeout, @wait_arguments);
-    if ($opened->{status} ne 'passed' && get_var('BIGLINUX_DEBUG_GUI_LAUNCH', 0)) {
+    if ($opened->{status} ne 'passed') {
+        # Always attach the launcher's own output. A release gate that reports
+        # "no window appeared" and nothing else sends whoever reads it back
+        # into the guest to find out why, and this dump was already written --
+        # it was just hidden behind a debug variable nobody sets.
         $opened->{error} = ($opened->{error} // 'accessible application window did not open')
           . ': ' . _read_launch_debug($status_path);
     }
