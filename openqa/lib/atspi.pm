@@ -33,6 +33,8 @@ my %crash_exit_code = map { $_ => 1 } (
     139,    # SIGSEGV
 );
 
+our $WALK_HEADROOM = 30;
+
 sub is_crash_exit_code {
     my ($code) = @_;
     return 0 unless defined $code && $code =~ /\A[0-9]+\z/;
@@ -123,7 +125,11 @@ sub result {
     );
     push @command, @arguments;
     my $probe_command = join ' ', map { _shell_quote($_) } @command;
-    my $probe_timeout = $timeout + 2;
+    # One accessibility tree walk can take many seconds on a guest busy
+    # installing, and the probe only checks its own deadline between walks. Two
+    # seconds of headroom got the probe killed mid-answer during the
+    # installation wait, which reads exactly like a real failure.
+    my $probe_timeout = $timeout + $WALK_HEADROOM;
     my $shell_command = join ' ',
       'if command -v timeout >/dev/null 2>&1; then timeout --kill-after=2',
       _shell_quote($probe_timeout), $probe_command, '; else', $probe_command, '; fi; printf',
@@ -134,7 +140,7 @@ sub result {
     send_key 'ret';
     my $serial = wait_serial(
         qr/(?:__OPENQA_ATSPI__([0-9a-f]+)\r?\n)?__OPENQA_ATSPI_DONE__/,
-        $timeout + 3
+        $timeout + $WALK_HEADROOM + 5
     );
     if (!defined $serial) {
         # A broken client can leave a libatspi call blocked.  Keep the serial
@@ -231,10 +237,18 @@ sub wait_widget_until {
     $slice //= 60;
     my $deadline = time + $total_timeout;
     my $found;
+    my $error;
     while (1) {
-        $found = $class->wait_widget($role, $labels, $slice);
+        # A slice that cannot answer is not a verdict: on a guest busy
+        # installing, a tree walk can be cut short. Only the overall deadline
+        # decides, which is the whole reason the wait is sliced.
+        $found = eval { $class->wait_widget($role, $labels, $slice) };
+        $error = $@ if $@;
         return $found if ref $found eq 'HASH' && $found->{status} eq 'passed';
-        return $found if time >= $deadline;
+        next if time < $deadline;
+        return ref $found eq 'HASH'
+          ? $found
+          : {status => 'failed', error => $error || 'the probe did not answer'};
     }
 }
 
