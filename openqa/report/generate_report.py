@@ -217,6 +217,49 @@ def validation_badge(application: dict[str, Any]) -> str:
     return status_badge(accessibility) if accessibility else metric(None)
 
 
+def render_markdown(
+    modules: list[ModuleResult], applications: list[dict[str, Any]]
+) -> str:
+    """A verdict short enough to be read on the run page without downloading.
+
+    The HTML report is thorough, but it lives inside a zip nobody opens unless
+    they already suspect something. This is the part that has to be visible.
+    """
+    failed = [module for module in modules if module.result in {"fail", "failed"}]
+    broken = [app for app in applications if app.get("status") == "failed"]
+    weak = [
+        app
+        for app in applications
+        if app.get("validation_mode") in {"process-alive", "delegated-open"}
+    ]
+    lines = [
+        "## Resultado",
+        "",
+        f"- Módulos: **{len(modules) - len(failed)} de {len(modules)}** passaram",
+        f"- Aplicativos: **{len(applications) - len(broken)} de {len(applications)}** passaram",
+    ]
+    if weak:
+        lines.append(
+            f"- Provados sem inspecionar a janela: **{len(weak)}** "
+            "(processo vivo ou aberto por delegação)"
+        )
+    if failed:
+        lines += ["", "### Módulos que falharam", ""]
+        lines += [f"- `{module.name}`" for module in failed]
+    if broken:
+        lines += ["", "### Aplicativos que falharam", ""]
+        for app in broken:
+            reason = str(app.get("error") or "sem motivo registrado")
+            reason = reason.split(": child_pid=")[0].strip()[:200]
+            lines.append(f"- `{app.get('desktop_id')}` — {reason}")
+    if weak:
+        lines += ["", "### Provados sem inspecionar a janela", ""]
+        lines += [f"- `{app.get('desktop_id')}`" for app in weak]
+    if not failed and not broken:
+        lines += ["", "Nenhuma falha."]
+    return "\n".join(lines) + "\n"
+
+
 def render_report(
     variables: dict[str, Any],
     modules: list[ModuleResult],
@@ -381,6 +424,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--markdown-output", type=Path)
     args = parser.parse_args()
 
     jobs = find_biglinux_jobs(args.results_root)
@@ -400,6 +444,11 @@ def main() -> int:
     args.output.write_text(
         render_report(variables, modules, system, applications), encoding="utf-8"
     )
+    if args.markdown_output:
+        args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
+        args.markdown_output.write_text(
+            render_markdown(modules, applications), encoding="utf-8"
+        )
     return 0
 
 

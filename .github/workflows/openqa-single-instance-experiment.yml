@@ -568,27 +568,45 @@ jobs:
           set -euo pipefail
           python3 openqa/report/generate_report.py \
             --results-root "$OPENQA_DIAGNOSTICS_DIR" \
-            --output "$OPENQA_DIAGNOSTICS_DIR/biglinux-validation-report.html"
+            --output "$OPENQA_DIAGNOSTICS_DIR/biglinux-validation-report.html" \
+            --markdown-output "$OPENQA_DIAGNOSTICS_DIR/RESULTADO.md"
 
       - name: Publish local job information in the Actions summary
         if: ${{ always() }}
         run: |
           set -euo pipefail
+          # The verdict belongs on the run page. A report inside a zip is only
+          # opened by someone who already suspects something is wrong.
           {
             echo "## openQA $SUITE"
             echo
-            echo 'Instance: local ephemeral openQA on this runner'
-            echo "Commit: $GITHUB_SHA"
-            echo "ISO: $ISO_FILENAME"
-            ids_file="$OPENQA_DIAGNOSTICS_DIR/job-ids.txt"
-            if [[ -s "$ids_file" ]]; then
-              while IFS= read -r job_id; do
-                echo "- local job ID: $job_id"
-              done <"$ids_file"
+            echo "ISO: \`$ISO_FILENAME\` — commit \`${GITHUB_SHA:0:7}\`"
+            if [[ -s "$OPENQA_DIAGNOSTICS_DIR/RESULTADO.md" ]]; then
+              echo
+              sed 's/^## Resultado$//' "$OPENQA_DIAGNOSTICS_DIR/RESULTADO.md"
             else
-              echo '- no openQA job ID was created'
+              echo
+              echo 'O openQA não produziu resultado; ver os diagnósticos no artefato.'
             fi
           } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Arrange the artifact around what a person opens first
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          cd "$OPENQA_DIAGNOSTICS_DIR"
+          # Thirty-seven files sat beside the report, nearly all of them about
+          # the runner rather than the ISO. Keep the three entry points at the
+          # top and move the machine's own paperwork one level down.
+          mkdir -p diagnostics
+          for entry in *; do
+            case "$entry" in
+              results | diagnostics | RESULTADO.md | biglinux-validation-report.html)
+                continue
+                ;;
+            esac
+            mv -- "$entry" diagnostics/
+          done
 
       - name: Upload openQA diagnostics
         if: ${{ always() }}
