@@ -698,9 +698,11 @@ def wait_for_widget(
     """Locate a clickable widget by role and label, polling until the timeout.
 
     The host clicks the returned screen rectangle with the real pointer, so
-    navigation no longer depends on how the theme paints the control.
+    navigation no longer depends on how the theme paints the control. Several
+    roles may be accepted, separated by "|": widget toolkits disagree on
+    whether a button is a "push button" or a "button".
     """
-    role_wanted = role.casefold()
+    roles_wanted = {part.casefold() for part in role.split("|") if part}
     deadline = time.monotonic() + timeout
     observed: list[dict[str, Any]] = []
     while True:
@@ -708,7 +710,7 @@ def wait_for_widget(
         matches = [
             widget
             for widget in observed
-            if widget["role"].casefold() == role_wanted
+            if widget["role"].casefold() in roles_wanted
             and widget["showing"]
             and widget["sensitive"]
             and _label_matches(widget["name"], labels)
@@ -718,16 +720,26 @@ def wait_for_widget(
         if time.monotonic() > deadline:
             break
         time.sleep(0.25)
-    described = "; ".join(
+    wanted = "; ".join(
         f"{widget['role']}/{widget['name'] or '?'}"
         f"{'' if widget['sensitive'] else ' (insensitive)'}"
         for widget in observed
-        if widget["role"].casefold() == role_wanted
+        if widget["role"].casefold() in roles_wanted
+    )
+    # Without a census of what the application did expose, a renamed control and
+    # a toolkit that publishes no accessible controls at all look identical.
+    census: dict[str, int] = {}
+    for widget in observed:
+        census[widget["role"]] = census.get(widget["role"], 0) + 1
+    roles_seen = ", ".join(
+        f"{seen_role}={count}"
+        for seen_role, count in sorted(census.items(), key=lambda item: -item[1])[:12]
     )
     return {
         "status": "failed",
         "error": f"no showing and sensitive {role} matching {labels or 'any label'}"
-        f"; observed {role}s: {described or 'none'}",
+        f"; matching roles observed: {wanted or 'none'}"
+        f"; all roles observed: {roles_seen or 'none'}",
     }
 
 

@@ -20,7 +20,7 @@ sub run {
     assert_screen 'calamares-install-finished', 2400;
 
     calamares->upload_installation_log;
-    atspi->click_widget('check box', ['Restart now', 'Reiniciar agora'], 60);
+    atspi->click_widget('check box|checkbox', ['Restart now', 'Reiniciar agora'], 60);
     assert_screen 'calamares-install-restart-selected', 30;
     # Eject as late as possible: the live root can still be served from the
     # medium, so every rendering step after this point is a risk. Only the

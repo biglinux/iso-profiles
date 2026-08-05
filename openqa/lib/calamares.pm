@@ -13,9 +13,13 @@ our @NEXT = ('Next', 'Próximo', 'Continue', 'Continuar', 'Avançar');
 our @INSTALL = ('Install', 'Instalar', 'Install now', 'Instalar agora');
 our @DONE = ('Done', 'Concluir', 'Finish', 'Finalizar');
 
+# Qt Widgets publishes a "push button" while Qt Quick publishes a "button";
+# accept both so the toolkit Calamares happens to use is not a variable.
+our $BUTTON_ROLES = 'push button|button';
+
 sub click_action {
     my ($class, $labels, $timeout) = @_;
-    return atspi->click_widget('push button', $labels, $timeout // 60);
+    return atspi->click_widget($BUTTON_ROLES, $labels, $timeout // 60);
 }
 
 sub advance {

@@ -203,6 +203,50 @@ class WidgetLabelTest(unittest.TestCase):
         self.assertFalse(_label_matches("Cancel", ["Next", "Continue"]))
 
 
+class WidgetSearchTest(unittest.TestCase):
+    def _widget(self, role, name, sensitive=True):
+        return {
+            "role": role,
+            "name": name,
+            "showing": True,
+            "sensitive": sensitive,
+            "center_x": 5,
+            "center_y": 6,
+        }
+
+    def test_accepts_any_of_the_listed_roles(self) -> None:
+        with mock.patch.object(
+            atspi_probe,
+            "_visible_widgets",
+            return_value=[self._widget("button", "Next")],
+        ):
+            result = atspi_probe.wait_for_widget(0, "push button|button", ["Next"])
+
+        self.assertEqual(result["status"], "passed")
+
+    def test_reports_every_role_it_saw_when_nothing_matches(self) -> None:
+        with mock.patch.object(
+            atspi_probe,
+            "_visible_widgets",
+            return_value=[self._widget("document web", "")],
+        ):
+            result = atspi_probe.wait_for_widget(0, "push button", ["Next"])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("all roles observed: document web=1", result["error"])
+
+    def test_skips_an_insensitive_control(self) -> None:
+        with mock.patch.object(
+            atspi_probe,
+            "_visible_widgets",
+            return_value=[self._widget("push button", "Next", sensitive=False)],
+        ):
+            result = atspi_probe.wait_for_widget(0, "push button", ["Next"])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("(insensitive)", result["error"])
+
+
 class WindowAcceptanceTest(unittest.TestCase):
     """The approval rule: a window belonging to the launched process tree is
     enough, whatever its title or accessibility subtree looks like."""
