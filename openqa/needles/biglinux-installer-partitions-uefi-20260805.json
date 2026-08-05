@@ -1,0 +1,57 @@
+{
+  "area": [
+    {
+      "height": 22,
+      "type": "match",
+      "width": 26,
+      "xpos": 228,
+      "ypos": 38
+    },
+    {
+      "height": 28,
+      "type": "match",
+      "width": 375,
+      "xpos": 272,
+      "ypos": 36
+    },
+    {
+      "height": 32,
+      "type": "match",
+      "width": 455,
+      "xpos": 290,
+      "ypos": 84
+    },
+    {
+      "height": 32,
+      "type": "match",
+      "width": 300,
+      "xpos": 290,
+      "ypos": 148
+    },
+    {
+      "click_point": {
+        "id": "erase-disk",
+        "xpos": 11,
+        "ypos": 11
+      },
+      "height": 22,
+      "type": "match",
+      "width": 22,
+      "xpos": 196,
+      "ypos": 90
+    },
+    {
+      "height": 18,
+      "type": "match",
+      "width": 320,
+      "xpos": 250,
+      "ypos": 640
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-installer-partitions-uefi",
+    "calamares-partitions-page",
+    "calamares-erase-disk-option"
+  ]
+}
