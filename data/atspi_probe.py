@@ -777,7 +777,9 @@ def activate_widget(
     lands on whatever sits one title bar higher. Asking the control to act on
     itself removes the coordinate system from the problem entirely.
     """
-    _atspi, GLib = _atspi_import()
+    # No AT-SPI import here: GLib.Error is a RuntimeError, so the calls below
+    # are already covered, and importing would make this function unusable
+    # wherever the bindings are absent, including the repository test run.
     deadline = time.monotonic() + timeout
     observed: list[tuple[Any, dict[str, Any]]] = []
     while True:
@@ -787,14 +789,14 @@ def activate_widget(
                 actions = accessible.get_action_iface()
                 count = actions.get_n_actions() if actions else 0
                 names = [actions.get_action_name(index) or "" for index in range(count)]
-            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+            except (RuntimeError, AttributeError, TypeError, OSError):
                 continue
             for index, name in enumerate(names):
                 if name.casefold() not in _ACTIVATE_ACTIONS:
                     continue
                 try:
                     performed = actions.do_action(index)
-                except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+                except (RuntimeError, AttributeError, TypeError, OSError):
                     continue
                 if performed:
                     return {
