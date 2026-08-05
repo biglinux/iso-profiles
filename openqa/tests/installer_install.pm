@@ -50,13 +50,7 @@ sub run {
 }
 
 sub post_fail_hook {
-    eval {
-        select_console 'root-virtio-terminal';
-        upload_logs '/home/biglinux/installation.log', failok => 1,
-          log_name => 'calamares-live-installation.log';
-        upload_logs '/var/log/installation.log', failok => 1,
-          log_name => 'calamares-installation.log';
-    };
+    eval { calamares->upload_installation_log };
     eval { select_console 'sut' };
 }
 

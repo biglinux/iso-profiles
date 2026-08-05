@@ -588,6 +588,32 @@ sub _kill_process_groups {
     );
 }
 
+# testapi's script_run and upload_logs speak their own protocol on the serial
+# console and time out on this image, so guest commands and guest files travel
+# the marker path the rest of this module already relies on.
+sub run_command {
+    my ($class, $command, $timeout) = @_;
+    select_console 'root-virtio-terminal';
+    my $exit_code = _run_guest_command($command, $timeout // 30);
+    select_console 'sut';
+    return $exit_code;
+}
+
+sub upload_guest_file {
+    my ($class, $guest_path, $log_name) = @_;
+    die "invalid guest path '$guest_path'"
+      unless defined $guest_path && $guest_path =~ m{\A/[^\s'"]+\z};
+    die "invalid uploaded log name '$log_name'"
+      unless defined $log_name && $log_name =~ /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/;
+    my $command = join ' ',
+      'test -s', _shell_quote($guest_path), '&&',
+      'curl --fail --silent --show-error --max-time 90',
+      '--form', _shell_quote('upload=@' . $guest_path),
+      '--form', _shell_quote('upname=' . $log_name),
+      _shell_quote(autoinst_url("/uploadlog/$log_name"));
+    return $class->run_command($command, 120);
+}
+
 sub _run_guest_command {
     my ($command, $timeout) = @_;
     my $marker = sprintf('__OA_COMMAND_DONE_%d_%d__', $$, int(time * 1000) % 1_000_000);

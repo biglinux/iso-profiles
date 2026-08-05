@@ -42,14 +42,12 @@ sub test_hostname {
     return get_var('BIGLINUX_TEST_HOSTNAME', 'biglinux-openqa');
 }
 
+# Evidence, never a verdict: an installation that succeeded must not fail the
+# release gate because its log could not be collected.
 sub upload_installation_log {
-    select_console 'root-virtio-terminal';
-    assert_script_run 'test -s /home/biglinux/installation.log || test -s /var/log/installation.log';
-    upload_logs '/home/biglinux/installation.log', failok => 1,
-      log_name => 'calamares-live-installation.log';
-    upload_logs '/var/log/installation.log', failok => 1,
-      log_name => 'calamares-installation.log';
-    select_console 'sut';
+    atspi->upload_guest_file('/var/log/installation.log', 'calamares-installation.log');
+    atspi->upload_guest_file('/home/biglinux/installation.log',
+        'calamares-live-installation.log');
 }
 
 1;

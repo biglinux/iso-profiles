@@ -61,8 +61,8 @@ SHELL
     $health_check =~ s/__OA_HEALTH_MARKER_FORMAT__/_marker_format('__OA_INSTALLED_HEALTH__')/e;
     type_string $health_check;
     my $result = wait_serial qr/__OA_INSTALLED_HEALTH__root=([^;]*);type=([^;]*);release=(\d+);failed=(\d+);overlay=(\d+);brave=(\d+);efi=(\d+);efi_mount=(\d+);efi_boot=(\d+)__/, timeout => 90;
-    upload_logs '/tmp/openqa-installed-health.log', log_name => 'installed-health.log', failok => 1;
     select_console 'sut';
+    atspi->upload_guest_file('/tmp/openqa-installed-health.log', 'installed-health.log');
 
     die 'The installed-system health probe did not return a result' unless defined $result;
     my ($root_source, $root_fstype, $release_present, $failed_units, $overlay_root, $brave_present, $efi_present, $efi_mount, $efi_boot) = $result =~ /__OA_INSTALLED_HEALTH__root=([^;]*);type=([^;]*);release=(\d+);failed=(\d+);overlay=(\d+);brave=(\d+);efi=(\d+);efi_mount=(\d+);efi_boot=(\d+)__/;
@@ -83,11 +83,11 @@ SHELL
 }
 
 sub assert_brave_cli {
-    select_console 'root-virtio-terminal';
-    my $exit_code = script_run 'brave --version >/tmp/openqa-brave-version.log 2>&1', timeout => 60;
-    upload_logs '/tmp/openqa-brave-version.log', log_name => 'brave-version.log', failok => 1;
-    select_console 'sut';
-    die "Brave CLI did not exit successfully (exit code " . (defined $exit_code ? $exit_code : 'timeout') . ')'
+    my $exit_code = atspi->run_command(
+        'brave --version >/tmp/openqa-brave-version.log 2>&1', 60);
+    atspi->upload_guest_file('/tmp/openqa-brave-version.log', 'brave-version.log');
+    die 'Brave CLI did not exit successfully (exit code '
+      . (defined $exit_code ? $exit_code : 'timeout') . ')'
       unless defined $exit_code && $exit_code == 0;
 }
 
@@ -99,11 +99,9 @@ sub assert_desktop {
     select_console 'root-virtio-terminal', 'installed';
     select_console 'sut';
     atspi->prepare;
-    select_console 'root-virtio-terminal';
-    my $desktop_exit_code = script_run
-      'for i in $(seq 1 30); do pgrep -u 1000 -x plasmashell >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',
-      timeout => 45;
-    select_console 'sut';
+    my $desktop_exit_code = atspi->run_command(
+        'for i in $(seq 1 30); do pgrep -u 1000 -x plasmashell >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',
+        45);
     die 'The installed KDE Plasma shell did not start'
       unless defined $desktop_exit_code && $desktop_exit_code == 0;
     record_info 'Installed desktop', 'AT-SPI is active and plasmashell is running for the logged-in user';
