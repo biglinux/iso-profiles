@@ -277,6 +277,13 @@ jobs:
             echo 'Call the method first and pass its result in parentheses' >&2
             exit 1
           fi
+          # os-autoinst forwards a second select_console argument to
+          # distribution::console_selected, whose signature takes the console
+          # alone and dies on anything more. perl -c cannot see it either.
+          if grep -rnE "select_console\s+'[a-z0-9-]+'\s*," openqa/tests/*.pm openqa/lib/*.pm; then
+            echo 'select_console takes the console name alone' >&2
+            exit 1
+          fi
 
       - name: Install KVM validation tools
         run: |

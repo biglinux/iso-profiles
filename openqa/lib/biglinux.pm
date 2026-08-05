@@ -14,8 +14,19 @@ sub init ($self) {
     $self->add_console('root-virtio-terminal', 'virtio-terminal');
 }
 
-sub activate_console ($self, $console, $mode = 'live') {
+# Which credentials the next activation should use. An extra argument to
+# select_console cannot carry this: os-autoinst forwards it to
+# distribution::console_selected, whose signature takes the console alone and
+# dies on anything more.
+my $credentials = 'live';
+
+sub use_installed_credentials {
+    $credentials = 'installed';
+}
+
+sub activate_console ($self, $console, @) {
     return unless $console eq 'root-virtio-terminal';
+    my $mode = $credentials;
 
     # Every wait must be checked: continuing to type after a missed prompt
     # would feed the credentials (including the installed secret) to whatever

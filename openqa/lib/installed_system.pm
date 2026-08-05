@@ -5,15 +5,16 @@ package installed_system;
 use Mojo::Base -strict;
 use testapi;
 use atspi;
+use biglinux;
 
 sub test_password {
     return get_required_var('_SECRET_BIGLINUX_TEST_PASSWORD');
 }
 
 sub assert_filesystem {
-    # assert_desktop (installed_login, fatal) already activated the serial
-    # console with the installed credentials; the login session owns hvc0 and
-    # a reset would wait for a login prompt that never reappears.
+    # assert_display_manager (installed_boot, fatal) already activated the
+    # serial console with the installed credentials; the login session owns
+    # hvc0 and a reset would wait for a prompt that never reappears.
     select_console 'root-virtio-terminal';
 
     my $health_check = <<'SHELL';
@@ -96,8 +97,9 @@ sub assert_brave_cli {
 # installer created authenticates. Every later module reuses this session, so
 # none of them may reset the console again.
 sub assert_display_manager {
+    biglinux::use_installed_credentials();
     reset_consoles;
-    select_console 'root-virtio-terminal', 'installed';
+    select_console 'root-virtio-terminal';
     select_console 'sut';
     my $exit_code = atspi->run_command(
         'for i in $(seq 1 60); do pgrep -x sddm >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',
