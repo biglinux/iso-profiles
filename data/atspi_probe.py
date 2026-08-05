@@ -658,9 +658,10 @@ def _widget_record(accessible: Any) -> dict[str, Any] | None:
     }
 
 
-def _visible_widgets(expected_pid: int | None) -> list[dict[str, Any]]:
+def _visible_widgets(expected_pid: int | None) -> list[tuple[Any, dict[str, Any]]]:
+    """Pair every visible widget with its accessible, which can act on it."""
     allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
-    widgets: list[dict[str, Any]] = []
+    widgets: list[tuple[Any, dict[str, Any]]] = []
     for window, record in _window_records():
         if allowed_pids is not None and record["pid"] not in allowed_pids:
             continue
@@ -670,7 +671,7 @@ def _visible_widgets(expected_pid: int | None) -> list[dict[str, Any]]:
                 continue
             widget["pid"] = record["pid"]
             widget["window"] = record["name"]
-            widgets.append(widget)
+            widgets.append((accessible, widget))
     return widgets
 
 
@@ -689,47 +690,26 @@ def _label_matches(name: str, labels: list[str]) -> bool:
     return any(label and normalize(label) == actual for label in labels)
 
 
-def wait_for_widget(
-    timeout: float,
+_ACTIVATE_ACTIONS = ("click", "press", "activate", "toggle", "jump")
+
+
+def _failure(
     role: str,
     labels: list[str],
-    expected_pid: int | None = None,
+    observed: list[tuple[Any, dict[str, Any]]],
+    reason: str,
 ) -> dict[str, Any]:
-    """Locate a clickable widget by role and label, polling until the timeout.
-
-    The host clicks the returned screen rectangle with the real pointer, so
-    navigation no longer depends on how the theme paints the control. Several
-    roles may be accepted, separated by "|": widget toolkits disagree on
-    whether a button is a "push button" or a "button".
-    """
     roles_wanted = {part.casefold() for part in role.split("|") if part}
-    deadline = time.monotonic() + timeout
-    observed: list[dict[str, Any]] = []
-    while True:
-        observed = _visible_widgets(expected_pid)
-        matches = [
-            widget
-            for widget in observed
-            if widget["role"].casefold() in roles_wanted
-            and widget["showing"]
-            and widget["sensitive"]
-            and _label_matches(widget["name"], labels)
-        ]
-        if matches:
-            return {"status": "passed", "widget": matches[0], "matches": len(matches)}
-        if time.monotonic() > deadline:
-            break
-        time.sleep(0.25)
     wanted = "; ".join(
         f"{widget['role']}/{widget['name'] or '?'}"
         f"{'' if widget['sensitive'] else ' (insensitive)'}"
-        for widget in observed
+        for _accessible, widget in observed
         if widget["role"].casefold() in roles_wanted
     )
     # Without a census of what the application did expose, a renamed control and
     # a toolkit that publishes no accessible controls at all look identical.
     census: dict[str, int] = {}
-    for widget in observed:
+    for _accessible, widget in observed:
         census[widget["role"]] = census.get(widget["role"], 0) + 1
     roles_seen = ", ".join(
         f"{seen_role}={count}"
@@ -737,15 +717,114 @@ def wait_for_widget(
     )
     return {
         "status": "failed",
-        "error": f"no showing and sensitive {role} matching {labels or 'any label'}"
+        "error": f"{reason} for {role} matching {labels or 'any label'}"
         f"; matching roles observed: {wanted or 'none'}"
         f"; all roles observed: {roles_seen or 'none'}",
     }
 
 
+def _widget_matches(
+    role: str, labels: list[str], expected_pid: int | None
+) -> tuple[list[tuple[Any, dict[str, Any]]], list[tuple[Any, dict[str, Any]]]]:
+    roles_wanted = {part.casefold() for part in role.split("|") if part}
+    observed = _visible_widgets(expected_pid)
+    matches = [
+        pair
+        for pair in observed
+        if pair[1]["role"].casefold() in roles_wanted
+        and pair[1]["showing"]
+        and pair[1]["sensitive"]
+        and _label_matches(pair[1]["name"], labels)
+    ]
+    return matches, observed
+
+
+def wait_for_widget(
+    timeout: float,
+    role: str,
+    labels: list[str],
+    expected_pid: int | None = None,
+) -> dict[str, Any]:
+    """Report whether a control with this role and label is on screen.
+
+    Several roles may be accepted, separated by "|": widget toolkits disagree
+    on whether a button is a "push button" or a "button".
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        matches, observed = _widget_matches(role, labels, expected_pid)
+        if matches:
+            return {
+                "status": "passed",
+                "widget": matches[0][1],
+                "matches": len(matches),
+            }
+        if time.monotonic() > deadline:
+            return _failure(role, labels, observed, "no showing and sensitive control")
+        time.sleep(0.25)
+
+
+def activate_widget(
+    timeout: float,
+    role: str,
+    labels: list[str],
+    expected_pid: int | None = None,
+) -> dict[str, Any]:
+    """Activate a control through its own accessibility action.
+
+    Deliberately not a pointer click: AT-SPI reports widget extents relative to
+    the window rather than to the screen, so clicking the reported rectangle
+    lands on whatever sits one title bar higher. Asking the control to act on
+    itself removes the coordinate system from the problem entirely.
+    """
+    _atspi, GLib = _atspi_import()
+    deadline = time.monotonic() + timeout
+    observed: list[tuple[Any, dict[str, Any]]] = []
+    while True:
+        matches, observed = _widget_matches(role, labels, expected_pid)
+        for accessible, record in matches:
+            try:
+                actions = accessible.get_action_iface()
+                count = actions.get_n_actions() if actions else 0
+                names = [actions.get_action_name(index) or "" for index in range(count)]
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+                continue
+            for index, name in enumerate(names):
+                if name.casefold() not in _ACTIVATE_ACTIONS:
+                    continue
+                try:
+                    performed = actions.do_action(index)
+                except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+                    continue
+                if performed:
+                    return {
+                        "status": "passed",
+                        "widget": record,
+                        "action": name,
+                        "matches": len(matches),
+                    }
+            record["actions"] = names
+        if matches:
+            described = "; ".join(
+                f"{record['name'] or '?'} actions={record.get('actions', [])}"
+                for _accessible, record in matches
+            )
+            return {
+                "status": "failed",
+                "error": f"no usable accessibility action on {role} "
+                f"matching {labels or 'any label'}: {described}",
+            }
+        if time.monotonic() > deadline:
+            return _failure(role, labels, observed, "no showing and sensitive control")
+        time.sleep(0.25)
+
+
 def dump_widget_tree(expected_pid: int | None) -> dict[str, Any]:
     """Report every visible widget so a failed navigation can be diagnosed."""
-    return {"status": "passed", "widgets": _visible_widgets(expected_pid)}
+    return {
+        "status": "passed",
+        "widgets": [record for _accessible, record in _visible_widgets(expected_pid)],
+    }
 
 
 def do_close(pid: int) -> dict[str, Any]:
@@ -920,6 +999,7 @@ def main() -> int:
             "x11-wait-open",
             "wait-close",
             "wait-widget",
+            "activate-widget",
             "dump-widgets",
             "close",
             "cleanup",
@@ -983,6 +1063,15 @@ def main() -> int:
             if not args.role:
                 raise ProbeError("--role is required to locate a widget")
             result = wait_for_widget(
+                args.timeout,
+                args.role,
+                [label for label in args.labels.split("|") if label],
+                args.pid if args.pid and args.pid > 1 else None,
+            )
+        elif args.operation == "activate-widget":
+            if not args.role:
+                raise ProbeError("--role is required to activate a widget")
+            result = activate_widget(
                 args.timeout,
                 args.role,
                 [label for label in args.labels.split("|") if label],

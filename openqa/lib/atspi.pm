@@ -210,33 +210,31 @@ sub x11_wait_open {
     return $class->result('x11-wait-open', $timeout, '--pid', $pid, '--name', $expected_name // '');
 }
 
-sub wait_widget {
-    my ($class, $role, $labels, $timeout) = @_;
+sub _widget_operation {
+    my ($class, $operation, $role, $labels, $timeout) = @_;
     die 'AT-SPI widget role is required' unless defined $role && $role ne '';
     my $label_list = join '|', @{$labels // []};
     die 'AT-SPI widget labels must not contain a newline' if $label_list =~ /[\r\n]/;
-    return $class->result('wait-widget', $timeout, '--role', $role, '--labels', $label_list);
+    return $class->result($operation, $timeout, '--role', $role, '--labels', $label_list);
 }
 
-# Click a control through its accessibility identity: locate it by role and
-# label, then press its real screen rectangle with the pointer. This keeps the
-# input path identical to a user's while making navigation independent of how
-# the active theme paints the control and of where a repaint moves it.
-sub click_widget {
+sub wait_widget {
     my ($class, $role, $labels, $timeout) = @_;
-    my $found = $class->wait_widget($role, $labels, $timeout);
-    die "AT-SPI could not locate the $role to click: "
-      . ($found->{error} // 'unknown reason')
-      unless ref $found eq 'HASH' && $found->{status} eq 'passed';
-    my $widget = $found->{widget};
-    die "AT-SPI returned a $role without usable screen coordinates"
-      unless ref $widget eq 'HASH'
-      && defined $widget->{center_x}
-      && defined $widget->{center_y};
-    mouse_set $widget->{center_x}, $widget->{center_y};
-    mouse_click;
-    mouse_hide;
-    return $widget;
+    return $class->_widget_operation('wait-widget', $role, $labels, $timeout);
+}
+
+# Activate a control by its accessibility identity, asking the control to act
+# on itself. AT-SPI reports widget extents relative to the window rather than
+# to the screen, so a pointer click on the reported rectangle lands one title
+# bar too high; using the control's own action removes the coordinate system
+# from the problem and survives a theme change or a repaint.
+sub activate_widget {
+    my ($class, $role, $labels, $timeout) = @_;
+    my $activated = $class->_widget_operation('activate-widget', $role, $labels, $timeout);
+    die "AT-SPI could not activate the $role: "
+      . ($activated->{error} // 'unknown reason')
+      unless ref $activated eq 'HASH' && $activated->{status} eq 'passed';
+    return $activated;
 }
 
 sub _launch_argv {

@@ -203,9 +203,34 @@ class WidgetLabelTest(unittest.TestCase):
         self.assertFalse(_label_matches("Cancel", ["Next", "Continue"]))
 
 
+class FakeActions:
+    def __init__(self, names, performed=True):
+        self.names = names
+        self.performed = performed
+        self.done = []
+
+    def get_n_actions(self):
+        return len(self.names)
+
+    def get_action_name(self, index):
+        return self.names[index]
+
+    def do_action(self, index):
+        self.done.append(self.names[index])
+        return self.performed
+
+
+class FakeWidget:
+    def __init__(self, actions):
+        self._actions = actions
+
+    def get_action_iface(self):
+        return self._actions
+
+
 class WidgetSearchTest(unittest.TestCase):
-    def _widget(self, role, name, sensitive=True):
-        return {
+    def _pair(self, role, name, sensitive=True, actions=None):
+        record = {
             "role": role,
             "name": name,
             "showing": True,
@@ -213,12 +238,11 @@ class WidgetSearchTest(unittest.TestCase):
             "center_x": 5,
             "center_y": 6,
         }
+        return FakeWidget(actions or FakeActions(["click"])), record
 
     def test_accepts_any_of_the_listed_roles(self) -> None:
         with mock.patch.object(
-            atspi_probe,
-            "_visible_widgets",
-            return_value=[self._widget("button", "Next")],
+            atspi_probe, "_visible_widgets", return_value=[self._pair("button", "Next")]
         ):
             result = atspi_probe.wait_for_widget(0, "push button|button", ["Next"])
 
@@ -228,7 +252,7 @@ class WidgetSearchTest(unittest.TestCase):
         with mock.patch.object(
             atspi_probe,
             "_visible_widgets",
-            return_value=[self._widget("document web", "")],
+            return_value=[self._pair("document web", "")],
         ):
             result = atspi_probe.wait_for_widget(0, "push button", ["Next"])
 
@@ -239,12 +263,60 @@ class WidgetSearchTest(unittest.TestCase):
         with mock.patch.object(
             atspi_probe,
             "_visible_widgets",
-            return_value=[self._widget("push button", "Next", sensitive=False)],
+            return_value=[self._pair("push button", "Next", sensitive=False)],
         ):
             result = atspi_probe.wait_for_widget(0, "push button", ["Next"])
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("(insensitive)", result["error"])
+
+
+class WidgetActivationTest(unittest.TestCase):
+    """Navigation activates a control through its own accessibility action,
+    never through the reported rectangle, which is window-relative."""
+
+    def _pair(self, name, actions):
+        record = {
+            "role": "button",
+            "name": name,
+            "showing": True,
+            "sensitive": True,
+            "center_x": 873,
+            "center_y": 675,
+        }
+        return FakeWidget(actions), record
+
+    def test_performs_the_click_action(self) -> None:
+        actions = FakeActions(["click"])
+        with mock.patch.object(
+            atspi_probe, "_visible_widgets", return_value=[self._pair("Next", actions)]
+        ):
+            result = atspi_probe.activate_widget(0, "button", ["Next"])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["action"], "click")
+        self.assertEqual(actions.done, ["click"])
+
+    def test_ignores_an_action_it_must_not_trigger(self) -> None:
+        actions = FakeActions(["show-menu", "press"])
+        with mock.patch.object(
+            atspi_probe, "_visible_widgets", return_value=[self._pair("Next", actions)]
+        ):
+            result = atspi_probe.activate_widget(0, "button", ["Next"])
+
+        self.assertEqual(result["action"], "press")
+        self.assertEqual(actions.done, ["press"])
+
+    def test_reports_a_control_that_exposes_no_usable_action(self) -> None:
+        actions = FakeActions(["show-menu"])
+        with mock.patch.object(
+            atspi_probe, "_visible_widgets", return_value=[self._pair("Next", actions)]
+        ):
+            result = atspi_probe.activate_widget(0, "button", ["Next"])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("no usable accessibility action", result["error"])
+        self.assertIn("show-menu", result["error"])
 
 
 class WindowAcceptanceTest(unittest.TestCase):

@@ -11,7 +11,7 @@ sub test_flags {
 
 sub run {
     assert_screen 'calamares-partitions-page', 60;
-    atspi->click_widget('radio button', ['Erase disk', 'Apagar disco'], 60);
+    atspi->activate_widget('radio button', ['Erase disk', 'Apagar disco'], 60);
     assert_screen 'calamares-erase-disk-selected', 30;
     calamares->click_action(\@calamares::NEXT);
     assert_screen 'calamares-users-page', 90;

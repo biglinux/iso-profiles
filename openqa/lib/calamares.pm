@@ -19,7 +19,7 @@ our $BUTTON_ROLES = 'push button|button';
 
 sub click_action {
     my ($class, $labels, $timeout) = @_;
-    return atspi->click_widget($BUTTON_ROLES, $labels, $timeout // 60);
+    return atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60);
 }
 
 sub advance {
