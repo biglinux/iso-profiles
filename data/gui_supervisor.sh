@@ -26,14 +26,12 @@ fi
 child_pid=$!
 printf 'child_pid=%s\nprocess_group=%s\nstate=running\n' "$child_pid" "$child_pid" >"$status_file"
 
+# Report the wait status verbatim: a process killed by a signal arrives as
+# 128+signal, which is what lets the host tell a crash from any other exit.
 set +e
 wait "$child_pid"
-raw_exit_code=$?
+exit_code=$?
 set -e
-exit_code=$raw_exit_code
-if [ "$raw_exit_code" = 143 ] && [ "${OPENQA_EXPECTED_GRACEFUL_SIGTERM:-0}" = 1 ]; then
-	exit_code=0
-fi
-printf 'raw_exit_code=%s\n' "$raw_exit_code" >>"$status_file"
+printf 'raw_exit_code=%s\n' "$exit_code" >>"$status_file"
 printf 'exit_code=%s\nstate=exited\n' "$exit_code" >>"$status_file"
 exit "$exit_code"

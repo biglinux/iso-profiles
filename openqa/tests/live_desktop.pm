@@ -8,7 +8,9 @@ sub test_flags {
 }
 
 sub run {
-    assert_and_click 'biglinux-live-language', timeout => 300, mousehide => 1;
+    # This is the first module: the budget covers the GRUB countdown, the
+    # live boot, and the first-boot wizard appearing.
+    assert_and_click 'biglinux-live-language', timeout => 360, mousehide => 1;
     assert_and_click 'biglinux-live-keyboard', timeout => 30, mousehide => 1;
 
     assert_screen 'biglinux-live-desktop-layout', 60;

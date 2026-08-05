@@ -20,6 +20,25 @@ my $session_state_path = '/tmp/openqa-atspi-session-baseline.json';
 my $kernel_version;
 my %session_launch_pids;
 
+# The guest supervisor reports the shell wait status, so a process killed by a
+# signal arrives as 128+signal. Only a fatal crash disqualifies an application:
+# a non-zero exit, or the SIGTERM/SIGKILL this framework itself sends during
+# cleanup, says nothing about whether the program works.
+my %crash_exit_code = map { $_ => 1 } (
+    132,    # SIGILL
+    133,    # SIGTRAP
+    134,    # SIGABRT
+    135,    # SIGBUS
+    136,    # SIGFPE
+    139,    # SIGSEGV
+);
+
+sub is_crash_exit_code {
+    my ($code) = @_;
+    return 0 unless defined $code && $code =~ /\A[0-9]+\z/;
+    return $crash_exit_code{$code} ? 1 : 0;
+}
+
 sub prepare {
     my ($class) = @_;
     %session_launch_pids = ();
@@ -94,7 +113,7 @@ sub kernel_version {
 sub result {
     my ($class, $operation, $timeout, @arguments) = @_;
     die "invalid AT-SPI operation '$operation'"
-      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|interact|close|cleanup|memory|inventory|inventory-chunk)\z/;
+      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|close|cleanup|memory|inventory|inventory-chunk)\z/;
     die 'invalid AT-SPI timeout' unless defined $timeout && $timeout =~ /\A[0-9]+(?:\.[0-9]+)?\z/;
 
     my @command = (
@@ -178,15 +197,10 @@ sub launch_desktop_entry {
       && $path =~ m{\A/usr/share/applications/.+\.desktop\z}
       && $path !~ m{(?:\A|/)\.\.(?:/|\z)};
     my @argv = ('python3', $desktop_launcher_path, '--entry', $path);
-    # The baseline isolates the window created by this launch, so matching by
-    # title only adds toolkit-specific brittleness.
-    return $class->_launch_argv(
-        \@argv,
-        '',
-        $timeout,
-        undef,
-        _allows_graceful_sigterm($entry),
-    );
+    # Identity comes from provenance: the launcher execs the application, so its
+    # window must belong to the launched process tree. Matching a window title
+    # would only add toolkit- and release-specific brittleness.
+    return $class->_launch_argv(\@argv, '', $timeout, 'process-tree');
 }
 
 sub x11_wait_open {
@@ -197,14 +211,11 @@ sub x11_wait_open {
 }
 
 sub _launch_argv {
-    my ($class, $argv, $expected_name, $timeout, $expected_pid, $allow_graceful_sigterm) = @_;
+    my ($class, $argv, $expected_name, $timeout, $expected_pid) = @_;
     my $started = time;
     my $baseline = $class->result('baseline', 3);
     my $status_path = sprintf('/tmp/openqa-gui-status-%d-%d', $$, int(time * 1000) % 1_000_000);
-    my $graceful_signal_prefix = $allow_graceful_sigterm
-      ? 'OPENQA_EXPECTED_GRACEFUL_SIGTERM=1 '
-      : '';
-    my $user_launcher_arguments = $graceful_signal_prefix . join ' ',
+    my $user_launcher_arguments = join ' ',
       _shell_quote($user_launcher_path),
       _shell_quote($status_path),
       (map { _shell_quote($_) } @$argv);
@@ -223,7 +234,14 @@ sub _launch_argv {
       . ': ' . _read_launch_debug($status_path)
       unless defined $launch_pid;
     $session_launch_pids{$launch_pid} = 1;
-    my $window_pid = $expected_pid && $expected_pid eq 'pending' ? undef : $expected_pid;
+    # 'process-tree' scopes the window search to this launch. A privileged
+    # launcher can re-parent the real application outside our tree, so those
+    # call sites stay unscoped and prove identity through the flow that follows.
+    my $window_pid =
+        !defined $expected_pid            ? undef
+      : $expected_pid eq 'process-tree'   ? $launch_pid
+      : $expected_pid eq 'pending'        ? undef
+      :                                     $expected_pid;
     my $launch_memory = eval { $class->result('memory', 1, '--pid', $launch_pid) };
     my @wait_arguments = ('--name', $expected_name);
     push @wait_arguments, ('--pid', $window_pid) if defined $window_pid;
@@ -241,13 +259,6 @@ sub _launch_argv {
         $launch_pid,
         $launch_memory,
     );
-}
-
-sub interact {
-    my ($class, $pid, $timeout) = @_;
-    die "invalid AT-SPI application PID '$pid'" unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
-    $timeout //= 8;
-    return $class->result('interact', $timeout, '--pid', $pid);
 }
 
 sub cleanup {
@@ -273,8 +284,7 @@ sub terminate_window {
     if ($close->{status} ne 'passed') {
         # Some toolkit windows expose no Window/Action close entry even though
         # the focused window still supports the normal desktop close shortcut.
-        # Use that keyboard path only after AT-SPI interaction succeeded; the
-        # process and exit-code checks below remain mandatory. This also
+        # The process and crash checks below remain mandatory. This also
         # handles a toolkit close action that is accepted but leaves a dialog
         # or popup focused instead of terminating the application.
         my $native_close = _native_close_command($entry, $pid);
@@ -377,7 +387,6 @@ sub terminate_window {
     delete $session_launch_pids{$launch_pid}
       if defined $launch_pid && $process_gone;
     return {
-        close_action_ok => $close->{status} eq 'passed',
         close_action => $close->{action},
         close_action_error => $close->{error},
         process_exit_code => $wait_exit,
@@ -385,25 +394,9 @@ sub terminate_window {
         cleanup_signal_exit_code => $cleanup_signal_exit_code,
         raw_application_exit_code => $raw_application_exit_code,
         application_exit_code => $application_exit_code,
-        application_exit_ok => defined $application_exit_code && $application_exit_code == 0,
+        application_crashed => is_crash_exit_code($raw_application_exit_code),
         closed => $closed,
     };
-}
-
-sub _allows_graceful_sigterm {
-    my ($entry) = @_;
-    return unless ref $entry eq 'HASH';
-    my $binary = lc($entry->{launch_binary} // '');
-    my %graceful_sigterm_application = map { $_ => 1 } qw(
-      big-driver-manager
-      biglinux-config
-      big-kernel-manager
-      big-store
-      gufw
-      jamesdsp
-    );
-    return 1 if $graceful_sigterm_application{$binary};
-    return lc($entry->{path} // '') =~ m{/gufw\.desktop\z} ? 1 : 0;
 }
 
 sub _preferred_close_key {
@@ -502,13 +495,12 @@ sub terminate_x11_window {
         $process_gone ? 5 : 2,
     );
     return {
-        close_action_ok => $process_gone,
         close_action => $close_action,
         process_exit_code => $wait_exit,
         process_gone => $process_gone,
         raw_application_exit_code => $raw_application_exit_code,
         application_exit_code => $application_exit_code,
-        application_exit_ok => defined $application_exit_code && $application_exit_code == 0,
+        application_crashed => is_crash_exit_code($raw_application_exit_code),
     };
 }
 

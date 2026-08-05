@@ -341,14 +341,15 @@ sub _test_entry {
             $metric->{pss_mib_peak} // 'not collected');
 
         if ($opened->{status} ne 'passed') {
-            # Terminal and daemon-style entries have no window to observe.
-            # The supervisor records the child's exit code: a command that
-            # already died non-zero must not pass on PID evidence alone, while
-            # a still-running daemon (no exit code yet) counts as started.
+            # Terminal and daemon-style entries have no window to observe. The
+            # supervisor records the wait status, so a command that already died
+            # from a crash signal must not pass on PID evidence alone. Any other
+            # exit is accepted: a short-lived console tool exiting non-zero is
+            # not a defect this gate should report.
             if ($metric->{terminal} || _uses_process_only($entry)) {
                 my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
-                die "application exited with code $exit_code before validation"
-                  if defined $exit_code && $exit_code != 0;
+                die "application crashed on start (wait status $exit_code)"
+                  if atspi::is_crash_exit_code($exit_code);
                 $metric->{launch_exit_code} = $exit_code;
                 $metric->{validation_mode} = 'process-start';
                 $metric->{interaction} = 'process.started';

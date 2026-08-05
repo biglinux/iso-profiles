@@ -125,9 +125,7 @@ class FakeGLib:
 
 
 class FakeAccessible:
-    def __init__(
-        self, name: str, pid: int, children=None, role: str = "frame"
-    ) -> None:
+    def __init__(self, name: str, pid: int, children=None, role: str = "frame") -> None:
         self.name = name
         self.pid = pid
         self.children = list(children or [])
@@ -191,6 +189,60 @@ class AtspiNullChildrenTest(unittest.TestCase):
             walked = list(atspi_probe._walk(root))
 
         self.assertEqual(walked, [root, child])
+
+
+class WindowAcceptanceTest(unittest.TestCase):
+    """The approval rule: a window belonging to the launched process tree is
+    enough, whatever its title or accessibility subtree looks like."""
+
+    def _wait(self, windows, expected_pid, tree):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory, "baseline.json")
+            state.write_text('{"windows": []}', encoding="utf-8")
+            with (
+                mock.patch.object(atspi_probe, "baseline_keys", return_value=set()),
+                mock.patch.object(
+                    atspi_probe,
+                    "accessible_snapshot",
+                    return_value={"windows": windows, "mem_available_mib": 100.0},
+                ),
+                mock.patch.object(atspi_probe, "_process_tree", return_value=tree),
+                mock.patch.object(
+                    atspi_probe, "sample_process_memory", return_value={}
+                ),
+            ):
+                return atspi_probe.wait_for_window_change(
+                    state, 0.5, opening=True, expected_pid=expected_pid
+                )
+
+    def _window(self, pid, name="", children=0):
+        return {
+            "key": f"w{pid}",
+            "pid": pid,
+            "name": name,
+            "application": "",
+            "role": "frame",
+            "children": children,
+        }
+
+    def test_accepts_untitled_window_without_accessible_children(self) -> None:
+        result = self._wait([self._window(42)], expected_pid=42, tree={42})
+
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["accessible_window"])
+
+    def test_accepts_window_owned_by_a_forked_child(self) -> None:
+        result = self._wait([self._window(99)], expected_pid=42, tree={42, 99})
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["pid"], 99)
+
+    def test_rejects_window_outside_the_launched_process_tree(self) -> None:
+        result = self._wait(
+            [self._window(1234, "Notification")], expected_pid=42, tree={42}
+        )
+
+        self.assertEqual(result["status"], "failed")
 
 
 if __name__ == "__main__":

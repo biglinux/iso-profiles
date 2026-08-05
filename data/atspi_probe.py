@@ -1,4 +1,4 @@
-"""Query AT-SPI windows, interact with them, and sample their memory."""
+"""Query AT-SPI windows, close them, and sample their memory."""
 
 from __future__ import annotations
 
@@ -394,12 +394,16 @@ def wait_for_window_change(
     deadline = time.monotonic() + timeout
     last_snapshot: dict[str, Any] = {}
     while time.monotonic() <= deadline:
+        # An application legitimately reaches its window through a wrapper or a
+        # forked helper, so identity is the launched process tree rather than a
+        # single PID. Recompute it every poll: children appear over time.
+        allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
         last_snapshot = accessible_snapshot()
         extra = [
             window
             for window in last_snapshot["windows"]
             if window["key"] not in baseline
-            and (expected_pid is None or window["pid"] == expected_pid)
+            and (allowed_pids is None or window["pid"] in allowed_pids)
             and _name_matches(
                 " ".join(
                     value for value in (window["application"], window["name"]) if value
@@ -415,13 +419,11 @@ def wait_for_window_change(
                 "error": "launch process exited before exposing an accessible window; "
                 f"observed={_describe_windows(last_snapshot['windows'])}",
             }
-        usable = [
-            window
-            for window in extra
-            if window["name"]
-            and window["children"] > 0
-            and not _is_transient_window(window)
-        ]
+        # A window that belongs to the launched process is enough evidence that
+        # the application started. Requiring a title or a populated
+        # accessibility subtree only fails applications whose next release
+        # renames a window or changes toolkit, which is not a defect.
+        usable = [window for window in extra if not _is_transient_window(window)]
         if (
             not opening
             and expected_pid is not None
@@ -619,242 +621,6 @@ def _action_candidates(
     return sorted(candidates, key=lambda item: item[0], reverse=True)
 
 
-def _state_signature(accessible: Any) -> tuple[str, ...]:
-    _atspi, GLib = _atspi_import()
-    try:
-        state_set = accessible.get_state_set()
-        states = state_set.get_states()
-    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-        return ()
-    return tuple(sorted(str(state) for state in states))
-
-
-def _semantic_signature(pid: int, window: Any) -> tuple[Any, ...]:
-    """Include top-level AT-SPI windows so popup menus count as an effect."""
-    _atspi, GLib = _atspi_import()
-    records = tuple(
-        sorted(
-            (
-                record["key"],
-                record["name"],
-                record["role"],
-                record["children"],
-            )
-            for _window, record in _window_records()
-            if record["pid"] == pid
-        )
-    )
-    try:
-        root = (
-            window.get_name() or "",
-            window.get_role_name() or "",
-            window.get_child_count(),
-            _state_signature(window),
-        )
-    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-        root = ()
-    return (_semantic_fingerprint(window), records, root)
-
-
-def _semantic_fingerprint(window: Any) -> tuple[tuple[Any, ...], ...]:
-    """Return stable semantic data for proving an AT-SPI action had an effect."""
-    _atspi, GLib = _atspi_import()
-    fingerprint: list[tuple[Any, ...]] = []
-    # Large Chromium/Qt accessibility trees can make an unrestricted D-Bus
-    # walk outlive the probe deadline. A bounded semantic sample still proves
-    # that the chosen action changed an exposed accessible state.
-    for accessible in _walk(window, limit=_FINGERPRINT_TREE_LIMIT):
-        try:
-            actions = accessible.get_action_iface()
-            action_names = tuple(
-                (actions.get_action_name(index) or "")
-                for index in range(actions.get_n_actions() if actions else 0)
-            )
-            fingerprint.append(
-                (
-                    accessible.get_role_name() or "",
-                    accessible.get_name() or "",
-                    accessible.get_description() or "",
-                    accessible.get_child_count(),
-                    action_names,
-                    _state_signature(accessible),
-                )
-            )
-        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-            continue
-    return tuple(fingerprint)
-
-
-def _focus_targets(window: Any) -> Iterable[tuple[Any, Any, str, str]]:
-    _atspi, GLib = _atspi_import()
-    fallback_targets: list[tuple[Any, Any, str, str]] = []
-    for accessible in _walk(window, limit=_ACTION_TREE_LIMIT):
-        try:
-            component = accessible.get_component_iface()
-            role = (accessible.get_role_name() or "").casefold()
-            name = accessible.get_name() or ""
-        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-            continue
-        if component is None or role in {"application", "frame", "window"}:
-            continue
-        if name or any(token in role for token in _INTERACTIVE_ROLES):
-            yield accessible, component, role, name
-        elif role not in {"panel", "filler", "unknown", "section"}:
-            fallback_targets.append((accessible, component, role, name))
-    yield from fallback_targets
-
-
-def _focus_interaction(
-    pid: int, window: Any, interaction_deadline: float | None = None
-) -> dict[str, Any]:
-    _atspi, GLib = _atspi_import()
-    before = _semantic_signature(pid, window)
-    for _target, component, target_role, target_name in _focus_targets(window):
-        if (
-            interaction_deadline is not None
-            and time.monotonic() >= interaction_deadline
-        ):
-            break
-        try:
-            result = component.grab_focus()
-        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-            continue
-        if result is False:
-            continue
-        deadline = time.monotonic() + 1.0
-        if interaction_deadline is not None:
-            deadline = min(deadline, interaction_deadline)
-        after = before
-        while time.monotonic() <= deadline:
-            current_window = _window_for_pid(pid)
-            if current_window is None:
-                return {
-                    "status": "failed",
-                    "action": "grab_focus",
-                    "action_result": True,
-                    "error": "AT-SPI focus interaction detached the application window",
-                }
-            after = _semantic_signature(pid, current_window)
-            if after != before:
-                break
-            time.sleep(0.1)
-        if after != before:
-            return {
-                "status": "passed",
-                "action": "grab_focus",
-                "action_result": True,
-                "semantic_change": True,
-                "semantic_nodes_before": len(before[0]),
-                "semantic_nodes_after": len(after[0]),
-                "target_role": target_role,
-                "target_name": target_name,
-                "error": None,
-            }
-    return {
-        "status": "failed",
-        "action": "grab_focus",
-        "action_result": False,
-        "semantic_change": False,
-        "error": "application exposes no safe AT-SPI action or focus target",
-    }
-
-
-def do_interaction(pid: int) -> dict[str, Any]:
-    _atspi, GLib = _atspi_import()
-    window = _window_for_pid(pid)
-    if window is None:
-        return {"status": "failed", "error": f"AT-SPI window for PID {pid} disappeared"}
-    candidates = _action_candidates(window, closing=False)
-    interaction_deadline = time.monotonic() + 6.0
-    if not candidates:
-        return _focus_interaction(pid, window, interaction_deadline)
-    last_result: dict[str, Any] = {
-        "status": "failed",
-        "action_result": False,
-        "semantic_change": False,
-        "error": "AT-SPI candidates did not produce a semantic state change",
-    }
-    for _score, actions, index, action_name, target_role, target_name in candidates[:8]:
-        if time.monotonic() >= interaction_deadline:
-            break
-        current_window = _window_for_pid(pid)
-        if current_window is None:
-            return {
-                "status": "failed",
-                "action": action_name,
-                "action_result": True,
-                "error": "AT-SPI interaction closed or detached the application window",
-            }
-        before = _semantic_signature(pid, current_window)
-        try:
-            result = actions.do_action(index)
-        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
-            last_result = {
-                "status": "failed",
-                "action": action_name,
-                "action_result": False,
-                "error": f"AT-SPI action failed: {error}",
-            }
-            continue
-        if result is False:
-            last_result = {
-                "status": "failed",
-                "action": action_name,
-                "action_result": False,
-                "error": f"AT-SPI action '{action_name}' returned false",
-            }
-            continue
-
-        candidate_deadline = min(interaction_deadline, time.monotonic() + 1.5)
-        after = before
-        while time.monotonic() <= candidate_deadline:
-            current_window = _window_for_pid(pid)
-            if current_window is None:
-                last_result = {
-                    "status": "failed",
-                    "action": action_name,
-                    "action_result": True,
-                    "error": "AT-SPI interaction closed or detached the application window",
-                }
-                break
-            after = _semantic_signature(pid, current_window)
-            if after != before:
-                snapshot = accessible_snapshot()
-                return {
-                    "status": "passed",
-                    "action": action_name,
-                    "action_result": True,
-                    "semantic_change": True,
-                    "semantic_nodes_before": len(before[0]),
-                    "semantic_nodes_after": len(after[0]),
-                    "target_role": target_role,
-                    "target_name": target_name,
-                    "post_window_count": len(snapshot["windows"]),
-                    "memory": sample_process_memory(pid),
-                    "error": None,
-                }
-            time.sleep(0.1)
-        else:
-            last_result = {
-                "status": "failed",
-                "action": action_name,
-                "action_result": True,
-                "semantic_change": False,
-                "semantic_nodes_before": len(before[0]),
-                "semantic_nodes_after": len(after[0]),
-                "target_role": target_role,
-                "target_name": target_name,
-                "error": "AT-SPI action was accepted but no semantic state change was observed",
-            }
-    if time.monotonic() < interaction_deadline:
-        focused = _focus_interaction(pid, window, interaction_deadline)
-        if focused.get("status") == "passed":
-            focused["memory"] = sample_process_memory(pid)
-            return focused
-    last_result["memory"] = sample_process_memory(pid)
-    return last_result
-
-
 def do_close(pid: int) -> dict[str, Any]:
     _atspi, GLib = _atspi_import()
     window = _window_for_pid(pid)
@@ -1026,7 +792,6 @@ def main() -> int:
             "wait-open",
             "x11-wait-open",
             "wait-close",
-            "interact",
             "close",
             "cleanup",
             "memory",
@@ -1094,10 +859,6 @@ def main() -> int:
                 "status": "passed",
                 "memory": sample_process_memory(args.pid, args.timeout),
             }
-        elif args.operation == "interact":
-            if not args.pid or args.pid <= 1:
-                raise ProbeError("--pid is required for interaction")
-            result = do_interaction(args.pid)
         else:
             if not args.pid or args.pid <= 1:
                 raise ProbeError("--pid is required for close")

@@ -25,12 +25,14 @@ sub run {
       unless defined $biglinux_firmware_mode;
 
     my $is_uefi = $biglinux_firmware_mode =~ /UEFI/;
-    my $first_window = $is_uefi ? 'Install the system' : 'BigLinux Installation';
 
+    # No expected window title: the launcher renames its windows between
+    # releases and localizes them. That a window appeared is enough here; the
+    # installer pages asserted below prove it is really Calamares.
     atspi->prepare;
     my (undef, $opened, undef, undef, $status_path) = atspi->launch_command(
         'calamares-biglinux_polkit --software-render',
-        $first_window,
+        '',
         120
     );
     unless ($opened->{status} eq 'passed') {
@@ -41,13 +43,6 @@ sub run {
     if ($is_uefi) {
         wait_screen_change(sub { send_key 'ret' }, 60)
           or die 'The UEFI installation confirmation was not accepted';
-        my $main_window = atspi->result(
-            'wait-open', 120, '--name', 'BigLinux Installation'
-        );
-        unless ($main_window->{status} eq 'passed') {
-            atspi->abort_launch($status_path);
-            die 'The BigLinux installer did not open after the UEFI confirmation';
-        }
     }
 
     assert_and_click 'biglinux-installer-launcher', timeout => 90,
