@@ -682,6 +682,45 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  report:
+    name: Validation report (PDF)
+    if: ${{ always() }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the tested sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download every suite's diagnostics
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          # Same attempt only: artifacts persist across re-runs and a stale suite
+          # would be reported as this run's evidence.
+          pattern: openqa-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openqa-artifacts
+
+      - name: Build the report
+        run: |
+          set -euo pipefail
+          # fpdf2 is pure Python, so this needs no system libraries and cannot
+          # make the report depend on a browser being present on the runner.
+          python3 -m pip install --quiet --disable-pip-version-check fpdf2 pillow
+          # The repository check skips these where the libraries are absent, so
+          # this is the one place they actually run.
+          python3 -m unittest discover -s openqa/report -p 'test_build_pdf_report.py'
+          python3 openqa/report/build_pdf_report.py \
+            --artifacts-root "$RUNNER_TEMP/openqa-artifacts" \
+            --output "$RUNNER_TEMP/report/biglinux-iso-validation.pdf"
+          ls -la "$RUNNER_TEMP/report"
+
+      - name: Upload the report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: biglinux-iso-validation-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/report/
+          if-no-files-found: error
+          retention-days: 14
+
   openqa-release-gate:
     name: openQA release gate
     if: ${{ always() }}

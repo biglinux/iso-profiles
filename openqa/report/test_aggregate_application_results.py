@@ -95,7 +95,9 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             }
             shard_root = root / f"shard-{shard_index}"
             shard_root.mkdir()
-            with gzip.open(shard_root / "application-metrics.json.gz", "wt", encoding="utf-8") as stream:
+            with gzip.open(
+                shard_root / "application-metrics.json.gz", "wt", encoding="utf-8"
+            ) as stream:
                 json.dump(payload, stream)
 
     def test_complete_matrix_passes(self):
@@ -129,7 +131,9 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             root = Path(directory)
             self._write_metrics(root)
             (root / "shard-3" / "application-metrics.json.gz").unlink()
-            with self.assertRaisesRegex(ValueError, "expected 4 application metric files"):
+            with self.assertRaisesRegex(
+                ValueError, "expected 4 application metric files"
+            ):
                 AGGREGATOR.validate_shards(
                     sorted(root.rglob("application-metrics.json.gz")), 4, self.policy
                 )
