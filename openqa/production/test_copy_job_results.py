@@ -33,7 +33,11 @@ class CopyJobResultsTests(unittest.TestCase):
                             "screenshot": "applications-1.png",
                             "md5_dirname": "abc/def",
                             "md5_basename": image_basename,
-                        }
+                        },
+                        {
+                            "screenshot": "applications-2.png",
+                            "frametime": ["11.42", "11.46"],
+                        },
                     ]
                 }
             )

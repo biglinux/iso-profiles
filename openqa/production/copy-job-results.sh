@@ -81,6 +81,9 @@ for details_path in sorted(root.glob("details-*.json")):
     for detail in payload.get("details", []):
         if not isinstance(detail, dict) or "screenshot" not in detail:
             continue
+        if "frametime" in detail and "md5_basename" not in detail:
+            # Video-frame references have no content-addressed image file.
+            continue
         values = (
             detail.get("screenshot"),
             detail.get("md5_dirname"),
