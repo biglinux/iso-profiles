@@ -194,12 +194,21 @@ def atspi_status(application: dict[str, Any]) -> str | None:
         or application.get("accessible_window") is None
     ):
         return None
-    if application.get("validation_mode") == "process-start":
+    if application.get("validation_mode") in {"process-start", "process-alive"}:
         return None
     return "passed" if application.get("status") == "passed" else "fail"
 
 
 def validation_badge(application: dict[str, Any]) -> str:
+    if application.get("validation_mode") in {"process-alive", "delegated-open"}:
+        # Named so a reader can tell an application whose window was actually
+        # inspected from one that only proved it kept running.
+        label = (
+            "Processo vivo"
+            if application.get("validation_mode") == "process-alive"
+            else "Aberto por delegação"
+        )
+        return f'<span class="badge badge-softfail">{esc(label)}</span>'
     if application.get("validation_mode") in {"x11-open", "x11-window"}:
         return '<span class="badge badge-softfail">Fallback X11</span>'
     if application.get("validation_mode") == "process-start":
