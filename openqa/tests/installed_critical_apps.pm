@@ -41,7 +41,19 @@ sub _test_application {
         $launch_method = $method;
         $open_seconds = $seconds;
         $launch_pid = $child_pid;
-        die "did not expose an AT-SPI window" unless $opened->{status} eq 'passed';
+        my $validation_mode = 'atspi-open';
+        if ($opened->{status} ne 'passed') {
+            # Not every application publishes an accessible window: mpv draws
+            # its own video surface and exposes nothing to AT-SPI. A window
+            # belonging to the launched process is the evidence, whichever
+            # mechanism reveals it, which is what the live sweep already does.
+            my $x11 = eval { atspi->x11_wait_open($launch_pid, '', 120) };
+            if (ref $x11 eq 'HASH' && $x11->{status} eq 'passed') {
+                $opened = $x11;
+                $validation_mode = 'x11-open';
+            }
+        }
+        die 'did not expose a window of its own' unless $opened->{status} eq 'passed';
 
         # Opening a window that belongs to this launch and closing without a
         # crash is the whole contract. Asserting an AT-SPI action, a specific
@@ -56,8 +68,9 @@ sub _test_application {
           if $termination->{application_crashed};
 
         atspi->record_guest_info("Critical application: $desktop_id", sprintf(
-            'functional_test=%s; window "%s" opened in %.2f s via %s; exit status %s',
+            'functional_test=%s; %s window "%s" opened in %.2f s via %s; exit status %s',
             $functional_test,
+            $validation_mode,
             $opened->{window} // 'untitled',
             $open_seconds,
             $launch_method,

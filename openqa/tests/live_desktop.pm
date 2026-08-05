@@ -20,31 +20,13 @@ sub run {
     wait_screen_change(sub { send_key 'ret' }, 30)
       or die 'The live desktop theme selector did not accept the default theme';
 
-    # The live session briefly renders a black screen while Plasma applies the
-    # selected theme. Wait for observable screen transitions instead of timing
-    # the compositor with fixed sleeps.
-    wait_screen_change(sub { send_key 'ctrl-alt-t' }, 30)
-      or die 'Konsole did not open after the live theme selection';
-
-    # Applying a fixed wallpaper makes the final desktop check independent of
-    # the rotating live-session wallpaper.
-    type_string 'plasma-apply-wallpaperimage ';
-    send_key 'altgr-q';
-    type_string 'usr';
-    send_key 'altgr-q';
-    type_string 'share';
-    send_key 'altgr-q';
-    type_string 'wallpapers';
-    send_key 'altgr-q';
-    type_string 'Big-retro.heic';
-    wait_screen_change(sub { send_key 'ret' }, 60)
-      or die 'The fixed live wallpaper was not applied';
-    wait_screen_change(sub { send_key 'alt-f4' }, 30)
-      or die 'Konsole did not close after applying the live wallpaper';
-    # The earlier language, keyboard, layout, and theme needles are the
-    # rendered-desktop sentinel. Do not repeat a wallpaper-dependent match
-    # here: the live session can rotate the wallpaper between boots.
-    wait_still_screen stilltime => 3, timeout => 60;
+    # The wizard pages above are the rendered-desktop evidence. Nothing applies
+    # a wallpaper here any more: that opened a terminal and typed a path through
+    # the keyboard layout only to stabilise a wallpaper-dependent needle which
+    # no longer exists, and it failed on a perfectly good ISO. Let the session
+    # settle instead; everything after this point works through accessibility
+    # and the serial console.
+    wait_still_screen stilltime => 5, timeout => 120;
 }
 
 1;
