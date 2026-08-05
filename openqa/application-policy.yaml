@@ -43,6 +43,13 @@ exclude:
     reason: Lutris installer helper requires installer metadata
   - desktop_id: openstreetmap-geo-handler.desktop
     reason: Geographic URI handler requires a geo URI argument
+  - desktop_id: org.biglinux.SnapshotRestore.desktop
+    reason: >-
+      Hidden pkexec helper that restores the system from a Timeshift snapshot,
+      so a test must not launch it blindly. Its Exec also names
+      /usr/local/bin/biglinux-snapshot-restore while the wrapper ships in
+      /usr/bin, which the release gate found and which the package still needs
+      to fix
   - desktop_id: org.fcitx.fcitx5-qt5-gui-wrapper.desktop
     reason: Fcitx Qt 5 wrapper is an input-method session component
   - desktop_id: org.fcitx.fcitx5-qt6-gui-wrapper.desktop
