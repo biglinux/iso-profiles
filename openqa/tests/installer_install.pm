@@ -46,6 +46,18 @@ sub run {
     # final click remains, and it reboots the machine.
     eject_cd;
     calamares->click_action(\@calamares::DONE);
+
+    # Pressing Done with "restart now" selected is the user's path and is
+    # exercised above, but the gate must not depend on it: the previous run
+    # pressed the button and the machine stayed up, with the serial shell still
+    # answering. Reboot from the console in that case and record which path
+    # was taken, so a broken installer reboot is reported without hiding
+    # whether the installed system itself is good.
+    if (defined atspi->run_command('true', 30)) {
+        record_info 'Installer reboot',
+          'The installer did not reboot after Done; rebooting from the console';
+        atspi->run_command('systemctl reboot || reboot', 15);
+    }
     reset_consoles;
 }
 
