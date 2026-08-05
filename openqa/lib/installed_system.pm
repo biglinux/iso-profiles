@@ -11,8 +11,10 @@ sub test_password {
 }
 
 sub assert_filesystem {
-    reset_consoles;
-    select_console 'root-virtio-terminal', 'installed';
+    # assert_desktop (installed_login, fatal) already activated the serial
+    # console with the installed credentials; the login session owns hvc0 and
+    # a reset would wait for a login prompt that never reappears.
+    select_console 'root-virtio-terminal';
 
     my $health_check = <<'SHELL';
 root_source=$(findmnt -no SOURCE / 2>/dev/null || true)
@@ -81,8 +83,7 @@ SHELL
 }
 
 sub assert_brave_cli {
-    reset_consoles;
-    select_console 'root-virtio-terminal', 'installed';
+    select_console 'root-virtio-terminal';
     my $exit_code = script_run 'brave --version >/tmp/openqa-brave-version.log 2>&1', timeout => 60;
     upload_logs '/tmp/openqa-brave-version.log', log_name => 'brave-version.log', failok => 1;
     select_console 'sut';
@@ -91,10 +92,17 @@ sub assert_brave_cli {
 }
 
 sub assert_desktop {
-    atspi->prepare;
+    # First serial use after the reboot: activate the console with the
+    # installed credentials before atspi->prepare selects it without a mode
+    # (which would try the live biglinux/biglinux login that no longer exists).
     reset_consoles;
     select_console 'root-virtio-terminal', 'installed';
-    my $desktop_exit_code = script_run 'pgrep -u 1000 -x plasmashell >/dev/null 2>&1', timeout => 30;
+    select_console 'sut';
+    atspi->prepare;
+    select_console 'root-virtio-terminal';
+    my $desktop_exit_code = script_run
+      'for i in $(seq 1 30); do pgrep -u 1000 -x plasmashell >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1',
+      timeout => 45;
     select_console 'sut';
     die 'The installed KDE Plasma shell did not start'
       unless defined $desktop_exit_code && $desktop_exit_code == 0;

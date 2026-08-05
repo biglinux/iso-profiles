@@ -45,10 +45,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: openqa-${{ github.repository }}-${{ github.ref }}-${{ github.run_id }}-${{ inputs.build_id }}
-  cancel-in-progress: false
-
 jobs:
   validate:
     name: openQA ${{ matrix.suite }} (local KVM)
@@ -270,6 +266,7 @@ jobs:
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
           python3 -m unittest discover -s openqa/production -p 'test_*.py'
+          openqa/production/test_verify-kvm-results.sh
           python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py openqa/production/*.py
 
       - name: Install KVM validation tools
@@ -466,7 +463,6 @@ jobs:
           export BIGLINUX_OPENQA_PRODUCTDIR=openqa
           export BIGLINUX_OPENQA_DIAGNOSTICS_DIR="$OPENQA_DIAGNOSTICS_DIR"
           export BIGLINUX_ISO_SHA256
-          export BIGLINUX_APPLICATION_SHARD_COUNT
           if [[ "$SUITE" == applications-* ]]; then
             BIGLINUX_OPENQA_FIRMWARE='' ./openqa/development/schedule-release-gate.sh \
               --applications-shard "$APPLICATION_SHARD_INDEX" "$APPLICATION_SHARD_COUNT"
@@ -608,7 +604,10 @@ jobs:
       - name: Download application shard diagnostics
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          pattern: openqa-applications-*
+          # Pin the pattern to this run attempt: artifacts persist across
+          # re-run attempts and a bare openqa-applications-* would also match
+          # stale shard results and the summary from a previous attempt.
+          pattern: openqa-applications-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/openqa-application-artifacts
           merge-multiple: false
 

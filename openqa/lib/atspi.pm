@@ -8,6 +8,7 @@ use Mojo::Base -strict;
 use JSON::PP qw(decode_json);
 use MIME::Base64 qw(decode_base64);
 use Text::ParseWords qw(shellwords);
+use Time::HiRes 'time';
 use testapi;
 
 my $probe_path = '/tmp/openqa-atspi-probe.py';
@@ -218,10 +219,10 @@ sub _launch_argv {
       unless wait_serial '__OA_GUI_LAUNCH_DONE__', timeout => 15;
 
     my $launch_pid = $class->_read_child_pid($status_path);
-    $session_launch_pids{$launch_pid} = 1;
     die "GUI supervisor did not expose a child PID for '$expected_name'"
-      . ': ' . $class->_read_launch_debug($status_path)
+      . ': ' . _read_launch_debug($status_path)
       unless defined $launch_pid;
+    $session_launch_pids{$launch_pid} = 1;
     my $window_pid = $expected_pid && $expected_pid eq 'pending' ? undef : $expected_pid;
     my $launch_memory = eval { $class->result('memory', 1, '--pid', $launch_pid) };
     my @wait_arguments = ('--name', $expected_name);
@@ -654,22 +655,37 @@ sub _read_exit_code {
     return _read_status_value($status_path, 'exit_code', $timeout);
 }
 
+my $status_read_serial = 0;
+
 sub _read_status_value {
     my ($status_path, $field, $timeout) = @_;
     $timeout //= 60;
     my $attempts = $timeout < 15 ? 5 : 45;
+    # A unique marker per call plus a host wait that outlives the guest poll
+    # loop; otherwise the next back-to-back read could match this call's
+    # leftover "MISSING" output and return the wrong field's value.
+    my $marker = sprintf('__OA_APP_EXIT_DONE_%d_%d__', $$, ++$status_read_serial);
     select_console 'root-virtio-terminal';
     my $command = "code=MISSING; for i in \$(seq 1 $attempts); do candidate=\$(awk -F= '/^$field=/{print \$2; exit}' "
       . _shell_quote($status_path)
       . " 2>/dev/null || true); case \"\$candidate\" in '') sleep 1;; * ) code=\$candidate; break;; esac; done; printf "
-      . _shell_quote('%s\\n' . _marker_format('__OA_APP_EXIT_DONE__') . '\\n')
+      . _shell_quote('%s\\n' . _marker_format($marker) . '\\n')
       . q{ "$code"};
     type_string $command;
     send_key 'ret';
-    my $serial = wait_serial qr/(?:MISSING\r?\n|\r?\n([0-9]+)\r?\n)__OA_APP_EXIT_DONE__/, $timeout;
+    my $serial = wait_serial qr/(?:MISSING\r?\n|\r?\n([0-9]+)\r?\n)\Q$marker\E/, $attempts + 5;
+    unless (defined $serial) {
+        # Interrupt the still-running poll loop so its late output cannot
+        # desynchronize the next serial command.
+        my $recovery_marker = sprintf('__OA_APP_EXIT_RECOVERED_%d_%d__', $$, $status_read_serial);
+        type_string '', terminate_with => 'ETX';
+        type_string 'printf ' . _shell_quote(_marker_format($recovery_marker) . '\\n');
+        send_key 'ret';
+        wait_serial $recovery_marker, no_regex => 1, timeout => 3;
+    }
     select_console 'sut';
-    return undef unless defined $serial && $serial !~ /(?:^|\r?\n)MISSING\r?\n__OA_APP_EXIT_DONE__/;
-    my ($exit_code) = $serial =~ /(?:^|\r?\n)([0-9]+)\r?\n__OA_APP_EXIT_DONE__/;
+    return undef unless defined $serial && $serial !~ /(?:^|\r?\n)MISSING\r?\n\Q$marker\E/;
+    my ($exit_code) = $serial =~ /(?:^|\r?\n)([0-9]+)\r?\n\Q$marker\E/;
     return $exit_code;
 }
 

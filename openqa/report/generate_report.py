@@ -220,7 +220,7 @@ def render_report(
         default="unknown",
     )
     passed = sum(module.result in {"ok", "passed"} for module in modules)
-    failed = sum(module.result == "fail" for module in modules)
+    failed = sum(module.result in {"fail", "failed"} for module in modules)
     total_duration = sum(module.duration_seconds or 0 for module in modules)
     passed_apps = sum(app.get("status") == "passed" for app in applications)
     failed_apps = sum(app.get("status") == "failed" for app in applications)

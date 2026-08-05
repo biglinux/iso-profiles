@@ -106,14 +106,14 @@ fi
 [[ "$job_timeout" =~ ^[1-9][0-9]*$ ]] || die 'invalid BIGLINUX_OPENQA_JOB_TIMEOUT'
 [[ "$casedir" != *$'\n'* && "$scenario_definitions" != *$'\n'* ]] \
     || die 'openQA paths must not contain newlines'
-if [[ "$firmware" == uefi ]]; then
-    [[ "$uefi_pflash_code" = /* && "$uefi_pflash_vars" = /* ]] \
-        || die 'UEFI firmware paths are required for a UEFI plan'
-    [[ "$uefi_pflash_code" != *$'\n'* && "$uefi_pflash_vars" != *$'\n'* ]] \
-        || die 'UEFI firmware paths must not contain newlines'
-fi
 
 if ((dry_run == 0)); then
+    if [[ "$firmware" == uefi ]]; then
+        [[ "$uefi_pflash_code" = /* && "$uefi_pflash_vars" = /* ]] \
+            || die 'UEFI firmware paths are required for a UEFI plan'
+        [[ "$uefi_pflash_code" != *$'\n'* && "$uefi_pflash_vars" != *$'\n'* ]] \
+            || die 'UEFI firmware paths must not contain newlines'
+    fi
     command -v docker >/dev/null || die 'docker is required'
     [[ -n "$password_file" && -r "$password_file" ]] \
         || die 'BIGLINUX_TEST_PASSWORD_FILE must be readable'
@@ -148,7 +148,7 @@ plans.each do |plan|
   if kind == 'applications'
     abort 'application release plan has an invalid shard' unless shard.is_a?(Integer) && shard >= 0 && shard < data['application_shard_count']
   end
-if !requested_shard_index.empty?
+  if !requested_shard_index.empty?
     abort 'application shard count does not match release-gate.yaml' unless requested_shard_count.to_i == data['application_shard_count']
     next unless kind == 'applications' && shard == requested_shard_index.to_i
   else
@@ -158,9 +158,12 @@ if !requested_shard_index.empty?
 end
 RUBY
 ) || die 'release-gate.yaml is invalid'
+# A here-string of the empty selection would still yield one (empty) line and
+# defeat the single-plan guard below.
+[[ -n "$plan_data" ]] || die 'no release plan matched the requested selector'
 mapfile -t plan_lines <<<"$plan_data"
 if ((dry_run == 0 && ${#plan_lines[@]} != 1)); then
-    die "expected one plan for firmware $firmware, got ${#plan_lines[@]}"
+    die "expected one matching plan, got ${#plan_lines[@]}"
 fi
 
 if ((dry_run)); then

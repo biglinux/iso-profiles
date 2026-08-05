@@ -243,6 +243,15 @@ sub _build_application_context {
     my @critical = sort keys %{$policy->{critical}};
     my %known = map { $_->{desktop_id} => 1 } @inventory;
     my @missing_critical = grep { !$known{$_} } @critical;
+    # An alias drops its desktop entry from testing, so its canonical target
+    # must itself exist and be tested; otherwise both silently lose coverage.
+    my %classification_by_id = map { $_->{desktop_id} => $_->{classification} } @inventory;
+    for my $entry (@inventory) {
+        next unless $entry->{classification} eq 'duplicate-alias';
+        die "alias $entry->{desktop_id} points to a missing or untested canonical"
+          . " entry $entry->{canonical}"
+          unless ($classification_by_id{$entry->{canonical}} // '') eq 'launchable';
+    }
     my $context = {
         schema_version => 3,
         iso_filename => get_var('BIGLINUX_ISO_FILENAME', ''),
@@ -332,9 +341,15 @@ sub _test_entry {
             $metric->{pss_mib_peak} // 'not collected');
 
         if ($opened->{status} ne 'passed') {
-            # Terminal and daemon-style entries have no window to observe. A
-            # supervisor child is enough evidence that their command started.
+            # Terminal and daemon-style entries have no window to observe.
+            # The supervisor records the child's exit code: a command that
+            # already died non-zero must not pass on PID evidence alone, while
+            # a still-running daemon (no exit code yet) counts as started.
             if ($metric->{terminal} || _uses_process_only($entry)) {
+                my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
+                die "application exited with code $exit_code before validation"
+                  if defined $exit_code && $exit_code != 0;
+                $metric->{launch_exit_code} = $exit_code;
                 $metric->{validation_mode} = 'process-start';
                 $metric->{interaction} = 'process.started';
                 $metric->{interaction_status} = 'passed';
@@ -417,26 +432,30 @@ sub _write_guest_metrics {
     my @chunks = $encoded =~ /.{1,900}/g;
     my $start_marker = '__OA_METRICS_START__';
     my $ready_marker = '__OA_METRICS_READY__';
+    # Every marker below is typed as octal escapes (_marker_format) so the
+    # tty echo of the command line can never satisfy its own wait_serial; the
+    # literal marker only appears once the command actually succeeded. This
+    # also paces the chunk stream to the guest shell's real progress.
     select_console 'root-virtio-terminal';
-    type_string "rm -f /tmp/application-metrics.json; : > /tmp/application-metrics.json; printf '%s\\n' "
-      . _shell_quote($start_marker);
+    type_string "rm -f /tmp/application-metrics.json && : > /tmp/application-metrics.json && printf "
+      . _shell_quote(_marker_format($start_marker) . '\\n');
     send_key 'ret';
     die 'guest metrics file did not start' unless wait_serial $start_marker, no_regex => 1, timeout => 15;
     for my $index (0 .. $#chunks) {
         my $marker = sprintf('__OA_METRICS_CHUNK_%04d__', $index);
-        type_string "printf '%s' '$chunks[$index]' | base64 --decode >> /tmp/application-metrics.json; printf '%s\\n' "
-          . _shell_quote($marker);
+        type_string "printf '%s' '$chunks[$index]' | base64 --decode >> /tmp/application-metrics.json && printf "
+          . _shell_quote(_marker_format($marker) . '\\n');
         send_key 'ret';
         die "guest metrics chunk $index was not acknowledged"
           unless wait_serial $marker, no_regex => 1, timeout => 15;
     }
-    type_string "test -s /tmp/application-metrics.json && printf '%s\\n' "
-      . _shell_quote($ready_marker);
+    type_string "test -s /tmp/application-metrics.json && printf "
+      . _shell_quote(_marker_format($ready_marker) . '\\n');
     send_key 'ret';
     die 'guest metrics file was not created' unless wait_serial $ready_marker, no_regex => 1, timeout => 15;
     my $compressed_marker = '__OA_METRICS_COMPRESSED__';
-    type_string "gzip -c /tmp/application-metrics.json > /tmp/application-metrics.json.gz && printf '%s\\n' "
-      . _shell_quote($compressed_marker);
+    type_string "gzip -c /tmp/application-metrics.json > /tmp/application-metrics.json.gz && printf "
+      . _shell_quote(_marker_format($compressed_marker) . '\\n');
     send_key 'ret';
     die 'guest metrics compression failed'
       unless wait_serial $compressed_marker, no_regex => 1, timeout => 15;

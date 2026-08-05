@@ -17,7 +17,11 @@ sub init ($self) {
 sub activate_console ($self, $console, $mode = 'live') {
     return unless $console eq 'root-virtio-terminal';
 
-    testapi::wait_serial 'login:', timeout => 60;
+    # Every wait must be checked: continuing to type after a missed prompt
+    # would feed the credentials (including the installed secret) to whatever
+    # owns the tty and echo them into the uploaded serial log.
+    defined testapi::wait_serial('login:', timeout => 60)
+      or die 'serial console did not show a login prompt';
     my ($user, $password) = ('biglinux', 'biglinux');
     if ($mode eq 'installed') {
         $user = testapi::get_required_var('BIGLINUX_TEST_USER');
@@ -26,7 +30,8 @@ sub activate_console ($self, $console, $mode = 'live') {
 
     testapi::type_string $user;
     testapi::send_key 'ret';
-    testapi::wait_serial 'Password:', timeout => 30;
+    defined testapi::wait_serial('Password:', timeout => 30)
+      or die 'serial console did not ask for a password';
     if ($mode eq 'installed') {
         testapi::type_password $password;
     }
@@ -38,13 +43,17 @@ sub activate_console ($self, $console, $mode = 'live') {
     # Wait for the shell integration marker instead of matching the decorated
     # ble.sh prompt. Then replace the interactive shell with a plain Bash so
     # command echo and upload_logs remain deterministic on the serial console.
-    testapi::wait_serial qr/type=shell/, timeout => 60;
+    defined testapi::wait_serial(qr/type=shell/, timeout => 60)
+      or die 'serial login did not reach an interactive shell';
     testapi::type_string "exec env TERM=dumb bash --noprofile --norc\n";
-    testapi::wait_serial qr/bash-[0-9.]+\$ /, timeout => 30;
+    defined testapi::wait_serial(qr/bash-[0-9.]+\$ /, timeout => 30)
+      or die 'plain bash did not take over the serial console';
     my $ready_marker = '__OA_SERIAL_READY__';
     testapi::type_string "export PS1='# '; printf '" . _marker_format($ready_marker) . "\\n'\n";
-    testapi::wait_serial $ready_marker, timeout => 15;
-    testapi::wait_serial '# ', no_regex => 1, timeout => 10;
+    defined testapi::wait_serial($ready_marker, timeout => 15)
+      or die 'serial console shell did not confirm readiness';
+    defined testapi::wait_serial('# ', no_regex => 1, timeout => 10)
+      or die 'serial console prompt did not appear';
 }
 
 sub _marker_format ($marker) {
