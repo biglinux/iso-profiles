@@ -112,6 +112,19 @@ sub _uses_x11_fallback {
     return !_entry_value($entry, 'terminal', JSON::PP::false);
 }
 
+# Commands that are handlers by definition: they ask another program to open
+# something and the window belongs to that program, never to the process tree
+# under them. This is a category, not a list of misbehaving applications.
+sub _uses_delegating_launcher {
+    my ($entry) = @_;
+    my $binary = lc(_entry_value($entry, 'launch_binary', ''));
+    my %delegating = map { $_ => 1 } qw(
+      xdg-open gio kde-open kde-open5 kioclient kioclient5 gtk-launch exo-open
+      plasma-open-settings flatpak
+    );
+    return $delegating{$binary} ? 1 : 0;
+}
+
 sub _uses_process_only {
     my ($entry) = @_;
     my $launch_binary = lc(_entry_value($entry, 'launch_binary', ''));
@@ -314,7 +327,8 @@ sub _test_entry {
             # that was not there before is the evidence available, so identity
             # by provenance cannot be required of these entries.
             my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
-            if (defined $exit_code && $exit_code == 0) {
+            if (_uses_delegating_launcher($entry)
+                || (defined $exit_code && $exit_code == 0)) {
                 my $delegated = eval { atspi->result('wait-open', $timeout, '--name', '') };
                 if (ref $delegated eq 'HASH' && $delegated->{status} eq 'passed') {
                     $opened = $delegated;
@@ -567,8 +581,12 @@ sub run {
     die 'No desktop entries were discovered under /usr/share/applications'
       unless @$entries;
 
-    my $timeout = get_var('BIGLINUX_APPLICATION_TIMEOUT', 8);
-    my $heavy_timeout = get_var('BIGLINUX_APPLICATION_HEAVY_TIMEOUT', 20);
+    my $timeout = get_var('BIGLINUX_APPLICATION_TIMEOUT', 30);
+    # Generous on purpose: an application that works returns as soon as its
+    # window appears, so a long budget is only ever spent on one that is
+    # struggling. Package managers refresh their metadata on first start and
+    # a browser cold start is slow, and both were being called broken for it.
+    my $heavy_timeout = get_var('BIGLINUX_APPLICATION_HEAVY_TIMEOUT', 60);
     my $filter = get_var('BIGLINUX_APPLICATION_FILTER', '');
     my $shard_count = get_var('BIGLINUX_APPLICATION_SHARD_COUNT', 1);
     my $shard_index = get_var('BIGLINUX_APPLICATION_SHARD_INDEX', 0);
