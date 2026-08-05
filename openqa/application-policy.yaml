@@ -11,6 +11,8 @@ exclude:
     reason: AppImage handler requires an AppImage file argument
   - desktop_id: big-executable.desktop
     reason: File handler requires an executable file argument
+  - desktop_id: bigcontrolcenter/cups.desktop
+    reason: Opens the printer administration page with xdg-open, so the window belongs to the browser
   - desktop_id: bigcontrolcenter/qvidcap.desktop
     reason: Video capture utility requires physical V4L2 capture hardware unavailable in CI
   - desktop_id: bigtts.desktop

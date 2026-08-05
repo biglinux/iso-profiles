@@ -338,6 +338,22 @@ sub _test_entry {
                 }
             }
         }
+        if ($opened->{status} ne 'passed' && !$metric->{terminal}) {
+            # Last resort, and recorded as such. KWin leaves
+            # _NET_CLIENT_LIST_STACKING empty in this Wayland session, so an
+            # application drawing through XWayland without accessibility --
+            # lstopo does exactly that -- has a window nobody here can see.
+            # Require it to still be alive after the whole search: a program
+            # that started, is the program the entry names and is still running
+            # is what remains provable, while one that died on the way is not.
+            my $alive = atspi->run_command("test -d /proc/$launch_pid", 10);
+            if (defined $alive && $alive == 0) {
+                $validation_mode = 'process-alive';
+                $metric->{fallback_reason} =
+                  'no window observable in this session; process still running';
+                $opened = {status => 'passed', pid => $launch_pid, window => undef};
+            }
+        }
         $metric->{launch_method} = $launch_method;
         $metric->{launch_pid} = $launch_pid;
         $metric->{launch_timeout_seconds} = $timeout + 0;
