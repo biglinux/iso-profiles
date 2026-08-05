@@ -22,11 +22,6 @@
       "ypos": 369
     },
     {
-      "click_point": {
-        "id": "confirm",
-        "xpos": 40,
-        "ypos": 10
-      },
       "height": 20,
       "type": "match",
       "width": 80,

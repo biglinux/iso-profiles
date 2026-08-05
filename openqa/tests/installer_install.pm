@@ -2,6 +2,7 @@
 
 use Mojo::Base 'basetest';
 use testapi;
+use atspi;
 use calamares;
 
 sub test_flags {
@@ -9,11 +10,9 @@ sub test_flags {
 }
 
 sub run {
-    assert_and_click 'calamares-summary-page', point_id => 'install',
-      timeout => 60, mousehide => 1;
+    calamares->click_action(\@calamares::INSTALL);
     assert_screen 'calamares-install-confirmation', 30;
-    assert_and_click 'calamares-install-confirmation', point_id => 'confirm',
-      timeout => 30, mousehide => 1;
+    calamares->click_action(\@calamares::INSTALL, 30);
     assert_screen 'calamares-install-progress', 120;
 
     # An error page is intentionally not treated as an alternative success
@@ -21,13 +20,13 @@ sub run {
     assert_screen 'calamares-install-finished', 2400;
 
     calamares->upload_installation_log;
-    assert_screen 'calamares-install-finished', 60;
-    eject_cd;
-    assert_and_click 'calamares-install-finished', point_id => 'restart',
-      timeout => 60, mousehide => 1;
+    atspi->click_widget('check box', ['Restart now', 'Reiniciar agora'], 60);
     assert_screen 'calamares-install-restart-selected', 30;
-    assert_and_click 'calamares-install-restart-selected', point_id => 'finish',
-      timeout => 60, mousehide => 1;
+    # Eject as late as possible: the live root can still be served from the
+    # medium, so every rendering step after this point is a risk. Only the
+    # final click remains, and it reboots the machine.
+    eject_cd;
+    calamares->click_action(\@calamares::DONE);
     reset_consoles;
 }
 

@@ -29,11 +29,6 @@
       "ypos": 148
     },
     {
-      "click_point": {
-        "id": "erase-disk",
-        "xpos": 11,
-        "ypos": 11
-      },
       "height": 22,
       "type": "match",
       "width": 22,

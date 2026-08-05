@@ -3,6 +3,7 @@
 use Mojo::Base 'basetest';
 use testapi;
 use atspi;
+use calamares;
 
 sub test_flags {
     return {fatal => 1};
@@ -45,11 +46,10 @@ sub run {
           or die 'The UEFI installation confirmation was not accepted';
     }
 
-    assert_and_click 'biglinux-installer-launcher', timeout => 90,
-      point_id => 'install', mousehide => 1;
+    assert_screen 'biglinux-installer-launcher', 90;
+    calamares->click_action(\@calamares::INSTALL);
     assert_screen 'biglinux-installer-tips', 60;
-    assert_and_click 'biglinux-installer-tips', timeout => 60,
-      point_id => 'continue', mousehide => 1;
+    calamares->click_action(\@calamares::NEXT);
     assert_screen 'biglinux-installer-welcome', 90;
 }
 

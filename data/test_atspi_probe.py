@@ -6,9 +6,9 @@ from pathlib import Path
 from unittest import mock
 
 import atspi_probe
-
 from atspi_probe import (
     _is_transient_window,
+    _label_matches,
     _name_matches,
     _parse_x11_window,
     launch_process_exited,
@@ -189,6 +189,18 @@ class AtspiNullChildrenTest(unittest.TestCase):
             walked = list(atspi_probe._walk(root))
 
         self.assertEqual(walked, [root, child])
+
+
+class WidgetLabelTest(unittest.TestCase):
+    def test_ignores_accelerators_and_padding_in_a_label(self) -> None:
+        self.assertTrue(_label_matches("&Next", ["Next"]))
+        self.assertTrue(_label_matches(" Install Now ", ["Install now"]))
+
+    def test_accepts_any_label_when_none_is_required(self) -> None:
+        self.assertTrue(_label_matches("whatever", []))
+
+    def test_rejects_a_different_control(self) -> None:
+        self.assertFalse(_label_matches("Cancel", ["Next", "Continue"]))
 
 
 class WindowAcceptanceTest(unittest.TestCase):

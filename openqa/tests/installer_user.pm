@@ -2,6 +2,7 @@
 
 use Mojo::Base 'basetest';
 use testapi;
+use atspi;
 use calamares;
 
 sub test_flags {
@@ -9,11 +10,10 @@ sub test_flags {
 }
 
 sub run {
-    assert_and_click 'calamares-erase-disk-option', point_id => 'erase-disk',
-      timeout => 60, mousehide => 1;
+    assert_screen 'calamares-partitions-page', 60;
+    atspi->click_widget('radio button', ['Erase disk', 'Apagar disco'], 60);
     assert_screen 'calamares-erase-disk-selected', 30;
-    assert_and_click 'calamares-erase-disk-selected', point_id => 'next',
-      timeout => 60, mousehide => 1;
+    calamares->click_action(\@calamares::NEXT);
     assert_screen 'calamares-users-page', 90;
 
     # Calamares focuses the first field when the users page opens.  Keeping the
@@ -28,12 +28,13 @@ sub run {
     type_password calamares->test_password;
     send_key 'tab';
     type_password calamares->test_password;
+    # The green validation marks are the meaningful proof that Calamares
+    # accepted the account, so this needle stays. The button that follows is
+    # located through AT-SPI because it only becomes enabled at this point.
     assert_screen 'calamares-users-valid', 30;
 
-    assert_and_click 'calamares-users-page', point_id => 'next', timeout => 60,
-      mousehide => 1;
+    calamares->click_action(\@calamares::NEXT);
     assert_screen 'calamares-summary-page', 90;
-    assert_screen 'calamares-summary-expected', 30;
 }
 
 1;

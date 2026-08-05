@@ -113,7 +113,7 @@ sub kernel_version {
 sub result {
     my ($class, $operation, $timeout, @arguments) = @_;
     die "invalid AT-SPI operation '$operation'"
-      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|close|cleanup|memory|inventory|inventory-chunk)\z/;
+      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|dump-widgets|close|cleanup|memory|inventory|inventory-chunk)\z/;
     die 'invalid AT-SPI timeout' unless defined $timeout && $timeout =~ /\A[0-9]+(?:\.[0-9]+)?\z/;
 
     my @command = (
@@ -208,6 +208,35 @@ sub x11_wait_open {
     die "invalid X11 launch PID '$pid'"
       unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     return $class->result('x11-wait-open', $timeout, '--pid', $pid, '--name', $expected_name // '');
+}
+
+sub wait_widget {
+    my ($class, $role, $labels, $timeout) = @_;
+    die 'AT-SPI widget role is required' unless defined $role && $role ne '';
+    my $label_list = join '|', @{$labels // []};
+    die 'AT-SPI widget labels must not contain a newline' if $label_list =~ /[\r\n]/;
+    return $class->result('wait-widget', $timeout, '--role', $role, '--labels', $label_list);
+}
+
+# Click a control through its accessibility identity: locate it by role and
+# label, then press its real screen rectangle with the pointer. This keeps the
+# input path identical to a user's while making navigation independent of how
+# the active theme paints the control and of where a repaint moves it.
+sub click_widget {
+    my ($class, $role, $labels, $timeout) = @_;
+    my $found = $class->wait_widget($role, $labels, $timeout);
+    die "AT-SPI could not locate the $role to click: "
+      . ($found->{error} // 'unknown reason')
+      unless ref $found eq 'HASH' && $found->{status} eq 'passed';
+    my $widget = $found->{widget};
+    die "AT-SPI returned a $role without usable screen coordinates"
+      unless ref $widget eq 'HASH'
+      && defined $widget->{center_x}
+      && defined $widget->{center_y};
+    mouse_set $widget->{center_x}, $widget->{center_y};
+    mouse_click;
+    mouse_hide;
+    return $widget;
 }
 
 sub _launch_argv {

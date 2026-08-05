@@ -20,18 +20,6 @@
       "width": 620,
       "xpos": 197,
       "ypos": 614
-    },
-    {
-      "click_point": {
-        "id": "next",
-        "xpos": 38,
-        "ypos": 16
-      },
-      "height": 32,
-      "type": "match",
-      "width": 76,
-      "xpos": 840,
-      "ypos": 689
     }
   ],
   "properties": [],

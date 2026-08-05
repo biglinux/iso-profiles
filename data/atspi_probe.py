@@ -621,6 +621,121 @@ def _action_candidates(
     return sorted(candidates, key=lambda item: item[0], reverse=True)
 
 
+_WIDGET_TREE_LIMIT = 1200
+
+
+def _widget_record(accessible: Any) -> dict[str, Any] | None:
+    """Describe one widget with the screen rectangle needed to click it."""
+    Atspi, GLib = _atspi_import()
+    try:
+        role = accessible.get_role_name() or ""
+        name = accessible.get_name() or ""
+        states = accessible.get_state_set()
+        component = accessible.get_component_iface()
+        if component is None:
+            return None
+        extents = component.get_extents(Atspi.CoordType.SCREEN)
+    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+        return None
+    if extents.width <= 0 or extents.height <= 0:
+        return None
+    try:
+        showing = states.contains(Atspi.StateType.SHOWING)
+        sensitive = states.contains(Atspi.StateType.SENSITIVE)
+    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+        showing = sensitive = False
+    return {
+        "role": role,
+        "name": name,
+        "x": extents.x,
+        "y": extents.y,
+        "width": extents.width,
+        "height": extents.height,
+        "center_x": extents.x + extents.width // 2,
+        "center_y": extents.y + extents.height // 2,
+        "showing": bool(showing),
+        "sensitive": bool(sensitive),
+    }
+
+
+def _visible_widgets(expected_pid: int | None) -> list[dict[str, Any]]:
+    allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
+    widgets: list[dict[str, Any]] = []
+    for window, record in _window_records():
+        if allowed_pids is not None and record["pid"] not in allowed_pids:
+            continue
+        for accessible in _walk(window, limit=_WIDGET_TREE_LIMIT):
+            widget = _widget_record(accessible)
+            if widget is None:
+                continue
+            widget["pid"] = record["pid"]
+            widget["window"] = record["name"]
+            widgets.append(widget)
+    return widgets
+
+
+def _label_matches(name: str, labels: list[str]) -> bool:
+    if not labels:
+        return True
+
+    # Compare on letters and digits only so an accelerator marker, trailing
+    # punctuation or padding in a translated label does not decide the match.
+    def normalize(value: str) -> str:
+        return "".join(
+            character for character in value.casefold() if character.isalnum()
+        )
+
+    actual = normalize(name)
+    return any(label and normalize(label) == actual for label in labels)
+
+
+def wait_for_widget(
+    timeout: float,
+    role: str,
+    labels: list[str],
+    expected_pid: int | None = None,
+) -> dict[str, Any]:
+    """Locate a clickable widget by role and label, polling until the timeout.
+
+    The host clicks the returned screen rectangle with the real pointer, so
+    navigation no longer depends on how the theme paints the control.
+    """
+    role_wanted = role.casefold()
+    deadline = time.monotonic() + timeout
+    observed: list[dict[str, Any]] = []
+    while True:
+        observed = _visible_widgets(expected_pid)
+        matches = [
+            widget
+            for widget in observed
+            if widget["role"].casefold() == role_wanted
+            and widget["showing"]
+            and widget["sensitive"]
+            and _label_matches(widget["name"], labels)
+        ]
+        if matches:
+            return {"status": "passed", "widget": matches[0], "matches": len(matches)}
+        if time.monotonic() > deadline:
+            break
+        time.sleep(0.25)
+    described = "; ".join(
+        f"{widget['role']}/{widget['name'] or '?'}"
+        f"{'' if widget['sensitive'] else ' (insensitive)'}"
+        for widget in observed
+        if widget["role"].casefold() == role_wanted
+    )
+    return {
+        "status": "failed",
+        "error": f"no showing and sensitive {role} matching {labels or 'any label'}"
+        f"; observed {role}s: {described or 'none'}",
+    }
+
+
+def dump_widget_tree(expected_pid: int | None) -> dict[str, Any]:
+    """Report every visible widget so a failed navigation can be diagnosed."""
+    return {"status": "passed", "widgets": _visible_widgets(expected_pid)}
+
+
 def do_close(pid: int) -> dict[str, Any]:
     _atspi, GLib = _atspi_import()
     window = _window_for_pid(pid)
@@ -792,6 +907,8 @@ def main() -> int:
             "wait-open",
             "x11-wait-open",
             "wait-close",
+            "wait-widget",
+            "dump-widgets",
             "close",
             "cleanup",
             "memory",
@@ -804,6 +921,8 @@ def main() -> int:
     parser.add_argument("--pid", type=int)
     parser.add_argument("--name")
     parser.add_argument("--index", type=int)
+    parser.add_argument("--role")
+    parser.add_argument("--labels", default="")
     args = parser.parse_args()
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     os.environ.setdefault(
@@ -848,6 +967,17 @@ def main() -> int:
                 args.pid,
                 args.name,
             )
+        elif args.operation == "wait-widget":
+            if not args.role:
+                raise ProbeError("--role is required to locate a widget")
+            result = wait_for_widget(
+                args.timeout,
+                args.role,
+                [label for label in args.labels.split("|") if label],
+                args.pid if args.pid and args.pid > 1 else None,
+            )
+        elif args.operation == "dump-widgets":
+            result = dump_widget_tree(args.pid if args.pid and args.pid > 1 else None)
         elif args.operation == "x11-wait-open":
             result = wait_for_x11_window(args.timeout, args.pid, args.name)
         elif args.operation == "cleanup":
