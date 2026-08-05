@@ -228,5 +228,28 @@ class DesktopEntryLauncherTest(unittest.TestCase):
         self.assertEqual(environment["MESA_LOADER_DRIVER_OVERRIDE"], "llvmpipe")
 
 
+class UnreadableEntryTest(unittest.TestCase):
+    """The installed system ships a desktop file only root may read. Letting it
+    abort the scan hid every other application behind it."""
+
+    def test_an_unreadable_entry_does_not_abort_the_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "good.desktop").write_text(
+                "[Desktop Entry]\nName=Good\nExec=/bin/true\n", encoding="utf-8"
+            )
+            unreadable = root / "locked.desktop"
+            unreadable.write_text(
+                "[Desktop Entry]\nName=Locked\nExec=/bin/true\n", encoding="utf-8"
+            )
+            unreadable.chmod(0o000)
+
+            entries = discover_desktop_entries(root)
+
+        self.assertEqual([entry.name for entry in entries], ["Good", "locked"])
+        # Nothing to launch, so the coverage inventory classifies and explains it.
+        self.assertIsNone(entries[1].exec_line)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,7 +83,14 @@ def _parse_boolean(value: str | None) -> bool:
 def _read_group(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     in_desktop_entry = False
-    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        # A single entry that cannot be read must not cost the whole inventory.
+        # The installed system ships one that only root may read, and letting
+        # that abort the scan hid every other application behind it.
+        return {"__unreadable__": str(error)}
+    for raw_line in content.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -99,6 +106,21 @@ def _read_group(path: Path) -> dict[str, str]:
 
 def parse_desktop_entry(path: Path) -> DesktopEntry:
     values = _read_group(path)
+    unreadable = values.pop("__unreadable__", None)
+    if unreadable is not None:
+        # Reported as an entry with nothing launchable, which the coverage
+        # inventory already classifies and explains.
+        return DesktopEntry(
+            path=path,
+            name=path.stem,
+            entry_type="",
+            exec_line=None,
+            try_exec=None,
+            hidden=False,
+            no_display=False,
+            terminal=False,
+            dbus_activatable=False,
+        )
     return DesktopEntry(
         path=path,
         name=values.get("Name", path.stem),

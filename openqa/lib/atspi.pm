@@ -165,7 +165,10 @@ sub result {
 sub inventory {
     my ($class) = @_;
     my $result = $class->result('inventory', 30);
-    die 'desktop entry inventory did not return chunk metadata'
+    # Carry the probe's own reason: learning that one unreadable desktop file
+    # aborted the scan took decoding the serial log by hand.
+    die 'desktop entry inventory did not return chunk metadata: '
+      . (ref $result eq 'HASH' && $result->{error} ? $result->{error} : 'no reason given')
       unless ref $result eq 'HASH'
       && $result->{status} eq 'passed'
       && defined $result->{chunks}
