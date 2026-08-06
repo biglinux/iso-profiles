@@ -472,9 +472,7 @@ configure_profile() {
         "s|misobasedir=[^ ]* misolabel=[^ ]*|misobasedir=${DISTRONAME} misolabel=${VOL_ID}|g" {} +
 
     find "$PROFILES_ROOT/$DISTRONAME" -name "variable.cfg" -exec sed -i \
-        "s#grub_theme=/boot/grub/themes/[^/]*/theme.txt#grub_theme=/boot/grub/themes/${DISTRONAME}-live/theme.txt#g" {} +
-    find "$PROFILES_ROOT/$DISTRONAME" -name "grub.cfg" -exec sed -i \
-        "s#theme=(\$root)/boot/grub/themes/[^/]*/theme.txt#theme=(\$root)/boot/grub/themes/${DISTRONAME}-live/theme.txt#g" {} +
+        "s#^grub_theme_dir=/boot/grub/themes/[^/]*#grub_theme_dir=/boot/grub/themes/${DISTRONAME}-live#g" {} +
 
     sed -i "s/label=.*/label=${VOL_ID}/" "$PROFILE_PATH_EDITION/profile.conf"
     assert_present "label=${VOL_ID}" "$PROFILE_PATH_EDITION/profile.conf"

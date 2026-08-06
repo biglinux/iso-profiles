@@ -1,0 +1,83 @@
+# BigLinux live GRUB theme
+# Fixed content widths avoid oversized panels on widescreen displays while
+# remaining usable at the minimum configured 800x600 mode.
+title-text: ""
+desktop-color: "#05080d"
+terminal-font: "Terminus Bold 22"
+terminal-box: "terminal_*.png"
+terminal-border: "18"
+terminal-left: "9%"
+terminal-top: "22%"
+terminal-width: "82%"
+terminal-height: "68%"
+
+# The logo and timeout ring share the same mathematical centre.
++ circular_progress {
+    id = "__timeout__"
+    left = 50%-84
+    top = 5%
+    width = 168
+    height = 168
+    center_bitmap = "timeout_center.png"
+    tick_bitmap = "timeout_tick.png"
+    num_ticks = 48
+    ticks_disappear = true
+    start_angle = "-90 deg"
+}
+
++ image {
+    left = 50%-50
+    top = 5%+43
+    width = 101
+    height = 82
+    file = "xivastudio.png"
+}
+
++ label {
+    top = 23%
+    left = 50%-390
+    width = 780
+    align = "left"
+    text = "COMPATIBILITY OPTIONS"
+    color = "#8c949e"
+    font = "Terminus Regular 16"
+}
+
++ boot_menu {
+    left = 50%-390
+    top = 27%
+    width = 780
+    height = 330
+
+    item_font = "Terminus Regular 16"
+    item_color = "#e6e9ec"
+    selected_item_color = "#ffffff"
+
+    icon_width = 22
+    icon_height = 22
+    item_icon_space = 8
+    item_height = 27
+    item_padding = 3
+    item_spacing = 2
+
+    selected_item_pixmap_style = "select_*.png"
+    menu_pixmap_style = "boot_menu_*.png"
+}
+
++ image {
+    top = 100%-50
+    left = 50%-240
+    width = 480
+    height = 42
+    file = "info.png"
+}
+
++ label {
+    top = 4%
+    left = 100%-390
+    width = 360
+    align = "right"
+    text = "BIGLINUX LIVE • UEFI • x86_64"
+    color = "#00bde3"
+    font = "Terminus Bold 22"
+}

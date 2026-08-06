@@ -22,13 +22,17 @@ sed -i '/autologin=/s/autologin=.*/autologin=xivastudio/' biglinux/xivastudio/li
 # profile carries is overwritten. The two seds that used to sit here targeted
 # 'misolabel=biglinux' (the file says BIGLINUXLIVE) and a boot/grub/kernels.cfg
 # that does not exist, so both were silent no-ops.
-sed -i 's/file = "biglinux-grub.png"/file = "xivastudio.png"/' biglinux/xivastudio/live-overlay/usr/share/grub/themes/manjaro-live/theme.txt
+find biglinux/xivastudio/live-overlay/usr/share/grub/themes/manjaro-live \
+  -maxdepth 1 -name 'theme*.txt' -exec \
+  sed -i 's/file = "biglinux-grub.png"/file = "xivastudio.png"/' {} +
 # build-iso.sh repoints variable.cfg at <distro>-live/theme.txt, so the live
 # menu loads biglinux-live even for this edition. The image has to be there
 # before the theme references it.
 cp biglinux/xivastudio/live-overlay/usr/share/grub/themes/manjaro-live/xivastudio.png \
   biglinux/xivastudio/live-overlay/usr/share/grub/themes/biglinux-live/xivastudio.png
-sed -i 's/file = "biglinux-grub.png"/file = "xivastudio.png"/' biglinux/xivastudio/live-overlay/usr/share/grub/themes/biglinux-live/theme.txt
+find biglinux/xivastudio/live-overlay/usr/share/grub/themes/biglinux-live \
+  -maxdepth 1 -name 'theme*.txt' -exec \
+  sed -i 's/file = "biglinux-grub.png"/file = "xivastudio.png"/' {} +
 sed -i '/ExecStart=/s/biglinux/xivastudio/' biglinux/xivastudio/live-overlay/usr/lib/systemd/system/getty@.service
 sed -i '/hostname=/s/hostname=.*/hostname="xivastudio"/' biglinux/xivastudio/profile.conf
 sed -i '/username=/s/username=.*/username="xivastudio"/' biglinux/xivastudio/profile.conf
