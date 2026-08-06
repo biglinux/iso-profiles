@@ -525,10 +525,6 @@ jobs:
           docker system df >"$OPENQA_DIAGNOSTICS_DIR/docker-disk-after.txt" 2>&1 || collection_status=1
           sudo chown -R "$(id -u):$(id -g)" "$OPENQA_DIAGNOSTICS_DIR" \
             || collection_status=1
-          if ! BIGLINUX_OPENQA_RESULTS_DIR="$OPENQA_DIAGNOSTICS_DIR/results" \
-              openqa/production/verify-archive-screenshots.sh; then
-            collection_status=1
-          fi
           exit "$collection_status"
 
       - name: Verify archived QEMU KVM evidence

@@ -51,8 +51,21 @@ find "$destination/testresults" -maxdepth 1 -type f -name 'details-*.json' \
     exit 1
 }
 
+# The archive client asks for a screenshot per step number, and openQA answers
+# 403 for the steps that never had one. Those replies land as .png files holding
+# an Apache error page. Nothing references them, so drop them here rather than
+# shipping error pages named like evidence.
+discarded=0
+while IFS= read -r -d '' image; do
+    [[ "$(od -An -tx1 -N8 -- "$image" | tr -d '[:space:]')" == 89504e470d0a1a0a ]] && continue
+    rm -f -- "$image"
+    discarded=$((discarded + 1))
+done < <(find "$destination/testresults" -type f -name '*.png' -print0)
+
 # Every screenshot the details name has to be beside them, otherwise the report
-# and the artifact describe evidence nobody can look at.
+# and the artifact describe evidence nobody can look at. This runs after the
+# discard above, so a details-named screenshot that arrived as an error page is
+# reported as missing instead of passing as a file.
 missing=0
 while IFS= read -r screenshot; do
     [[ -s "$destination/testresults/$screenshot" ]] && continue
@@ -78,5 +91,6 @@ PY_END
     exit 1
 }
 
-printf 'Archived openQA job %s with %s screenshots\n' "$job_id" \
-    "$(find "$destination/testresults" -maxdepth 1 -name '*.png' | wc -l)"
+printf 'Archived openQA job %s with %s screenshots, %s error pages discarded\n' \
+    "$job_id" "$(find "$destination/testresults" -maxdepth 1 -name '*.png' | wc -l)" \
+    "$discarded"
