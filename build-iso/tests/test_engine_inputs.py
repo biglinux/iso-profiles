@@ -72,9 +72,22 @@ def test_the_defaults_are_the_documented_ones(profiles):
     assert values["MANJARO_BRANCH"] == "stable"
     assert values["BIGLINUX_BRANCH"] == "stable"
     assert values["BIGCOMMUNITY_BRANCH"] == "stable"
-    assert values["BUILD_MIRROR"] == "http://mirrors.manjaro.org/repo/"
+    assert values["BUILD_MIRROR"] == "http://mirrors.manjaro.org/repo"
     assert values["BIGLINUX_REPO_HOST"] == "repo.biglinux.com.br"
     assert values["COMMUNITY_REPO_HOST"] == "repo.communitybig.org"
+
+
+@pytest.mark.parametrize(
+    "given",
+    ["http://mirror.example.org/repo/", "http://mirror.example.org/repo///"],
+)
+def test_a_trailing_slash_is_stripped_from_the_build_mirror(profiles, given):
+    # manjaro-tools appends `/$branch/$repo/$arch`, so a trailing slash here
+    # becomes `repo//stable/core/...`. Behind a CDN that empty path segment caches
+    # a database of its own, which goes stale and makes the build resolve package
+    # versions the mirror no longer serves.
+    _, values, _ = run_stages(profiles, EDITION="kde", BUILD_MIRROR=given)
+    assert values["BUILD_MIRROR"] == "http://mirror.example.org/repo"
 
 
 def test_the_edition_can_come_from_the_first_argument(profiles):

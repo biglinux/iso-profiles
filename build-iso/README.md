@@ -164,7 +164,7 @@ release build:
 | `WORK_PATH` | `<checkout>/output` | where the ISO ends up |
 | `DISTRONAME` | detected | `biglinux` or `bigcommunity`, from the profile dirs |
 | `PROFILES_ROOT` | the checkout | build profiles living in another checkout |
-| `BUILD_MIRROR` | `http://mirrors.manjaro.org/repo/` | the one mirror the whole Manjaro package set comes from |
+| `BUILD_MIRROR` | `http://mirrors.manjaro.org/repo` | the one mirror the whole Manjaro package set comes from; trailing slashes are stripped |
 | `BIGLINUX_REPO_HOST` | `repo.biglinux.com.br` | host of the BigLinux repositories the **build** installs from |
 | `COMMUNITY_REPO_HOST` | `repo.communitybig.org` | same for the community repositories; bigcommunity only |
 | `MESA_TKG` | `false` | swap mesa for the TKG builds, on `latest` / `xanmod*` only (see `configure_profile`) |
@@ -305,5 +305,6 @@ shellcheck -x build-iso/*.sh       # must be clean
 |:---|:---|
 | **Build dies on disk space** | The chroots need ~15 GB under `/var/lib/manjaro-tools`, plus the ISO under `/var/cache/manjaro-tools`. On GitHub the workflow already mounts the runner's big `/mnt` disk there. |
 | **Packages older than expected** | The entire Manjaro package set comes from `BUILD_MIRROR` — `mkchroot` rewrites the mirrorlist down to that single URL. If that mirror lags, everything lags. Point `BUILD_MIRROR` at a fresh one. |
+| **`404` retrieving a package pacman just resolved** | The database and the package files disagreed: the database named a version the mirror no longer serves. The known cause was a trailing slash in `BUILD_MIRROR`, which turned every URL into `repo//stable/…` — behind a CDN, an empty path segment is a cache key of its own, and the `core.db` cached under it was weeks old. `read_inputs` strips trailing slashes now; check the `--> mirror:` line of the build log for any other `//`. |
 | **xanmod version in the ISO name** | Only knowable *after* the build, so it is read back from the `.pkgs` list, producing names like `…_xanmod71.iso`. Not a bug, just chronology. |
 | **Black screen in the live session** | See `patch-live-setup.sh` above. The build is supposed to *fail* rather than produce one — so if you are looking at a black screen, somebody bypassed the engine. |
