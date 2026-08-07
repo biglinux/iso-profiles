@@ -69,8 +69,10 @@ jobs:
           rm -rf "$commonBase"
           mkdir -p "$commonBase"
 
-          # Settings are ours outright: copied, not merged.
-          cp "$common/profile.conf" "$common/user-repos.conf" "$commonBase/"
+          # Settings are ours outright: copied, not merged. No user-repos.conf:
+          # build-iso.sh declares the build's repositories itself, and manjaro-tools
+          # concatenates the two, which registered [biglinux-stable] twice.
+          cp "$common/profile.conf" "$commonBase/"
 
           # Overlays keep the directory names manjaro-tools expects.
           cp -r "$common/overlays/root/"    "$commonBase/root-overlay"

@@ -97,7 +97,16 @@ read_inputs() {
     # mkchroot replaces the mirrorlist Include with this one Server, so it decides the
     # whole Manjaro package set. Unset, manjaro-tools picks mirror.easyname.at, which
     # lags behind stable.
-    BUILD_MIRROR="${BUILD_MIRROR:-http://mirrors.manjaro.org/repo/}"
+    #
+    # manjaro-tools appends `/$branch/$repo/$arch` to this value, so a trailing
+    # slash produces `repo//stable/core/...`. Behind a CDN that empty path segment
+    # is a cache key of its own, holding a copy of core.db nothing refreshes: the
+    # build resolves package versions that were current weeks ago and then 404s
+    # fetching them, an hour in. Normalised here so no caller can reintroduce it.
+    BUILD_MIRROR="${BUILD_MIRROR:-http://mirrors.manjaro.org/repo}"
+    while [[ "$BUILD_MIRROR" == */ ]]; do
+        BUILD_MIRROR="${BUILD_MIRROR%/}"
+    done
 
     # Overridable so a fork builds from its own repositories.
     BIGLINUX_REPO_HOST="${BIGLINUX_REPO_HOST:-repo.biglinux.com.br}"
@@ -319,9 +328,13 @@ append_build_repos() {
         repo_section "$config_file" "bigiborg-${UNSTABLE_REPO_NAME:-}" \
             "https://$UNSTABLE_REPO_MIRROR"
     fi
+    # The handful of packages held back from stable. Both distributions build
+    # with it; until it was here, biglinux got it from the profile's
+    # user-repos.conf instead -- see configure_build_repos for why that had to
+    # stop.
+    repo_section "$config_file" biglinux-update-stable \
+        "https://$BIGLINUX_REPO_HOST/update-stable"
     if [[ "$DISTRONAME" == "bigcommunity" ]]; then
-        repo_section "$config_file" biglinux-update-stable \
-            "https://$BIGLINUX_REPO_HOST/update-stable"
         append_community_repos "$config_file"
     fi
     if [[ "$BIGLINUX_BRANCH" == "testing" ]]; then
@@ -341,6 +354,14 @@ configure_build_repos() {
         sed -i -e '/ParallelDownloads/s/#//' \
             -e '/ParallelDownloads/s/ParallelDownloads =.*/ParallelDownloads = 10/' "$conf"
     done
+
+    # manjaro-tools hands pacman `cat pacman-<arch>.conf user-repos.conf`, so a
+    # repository the profile names as well as this function does is registered
+    # twice: `could not register 'biglinux-stable' database`, mid-build, with the
+    # profile's copy silently dropped. append_build_repos is the one owner of the
+    # build's repository list, and the profiles are a disposable clone, so the
+    # file goes rather than the two being kept in step forever.
+    rm -f "$PROFILE_PATH_EDITION/user-repos.conf"
 
     # Development builds trade compression for speed; releases keep the
     # manjaro-tools default (level 20). Block size 1024K for both.

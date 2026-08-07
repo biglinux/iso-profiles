@@ -63,6 +63,16 @@ def test_the_build_mirror_is_configured_not_patched():
     assert "manjaro-tools.conf" in ENGINE
 
 
+def test_the_profiles_user_repos_conf_is_removed_before_the_build():
+    # manjaro-tools hands pacman `cat pacman-<arch>.conf user-repos.conf`, and
+    # append_build_repos already wrote that first file: any repository named in
+    # both is registered twice and the second copy is dropped. Nothing in this
+    # checkout ships the file any more, but the community profiles still do, so
+    # the engine removes it rather than trusting every profile repository.
+    assert 'rm -f "$PROFILE_PATH_EDITION/user-repos.conf"' in ENGINE
+    assert not list(SCRIPTS.parent.glob("*/*/user-repos.conf"))
+
+
 def test_the_build_checkout_is_trusted_for_git_inside_the_container():
     # GitHub Actions mounts the checkout with the runner's owner, while this
     # engine runs as root in the build container.  buildiso validates the
