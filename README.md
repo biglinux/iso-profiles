@@ -173,7 +173,6 @@ sources/
 │   ├── Live-add    Live-remove     live session only
 │   ├── Mhwd-add    Mhwd-remove     driver packages
 │   ├── profile.conf                hostname, live user, services
-│   ├── user-repos.conf             BigLinux pacman repositories
 │   └── overlays/root/ desktop/ live/   files shipped as-is
 └── editions/
     ├── kde/                      Desktop-add + special-commands.sh
@@ -317,9 +316,15 @@ tree and the generated tree use different names for the same thing.
 <details>
 <summary><b>Where do the pacman repositories come from?</b></summary>
 
-From `user-repos.conf`. A profile-level `pacman-default.conf` is **never read**,
-which is precisely why this repository does not ship one — an unread config file
-is worse than no config file, because people keep editing it and expecting
-results.
+From [`build-iso/build-iso.sh`](build-iso/build-iso.sh), and nowhere else. Its
+`append_build_repos` writes them into the pacman config `buildiso` uses, in
+priority order, and `set-biglinux-branch.sh` puts the matching list in the ISO's
+own `pacman.conf` so the installed system updates from what it was built with.
+
+The profiles ship no `user-repos.conf` and no `pacman-default.conf`. The second
+is **never read** by manjaro-tools at all, and the first *is* — it gets
+concatenated onto the config the engine just wrote, which registered
+`[biglinux-stable]` twice and had pacman drop one copy mid-build. The engine
+removes any it finds. An unread config file is bad; a half-read one is worse.
 
 </details>
