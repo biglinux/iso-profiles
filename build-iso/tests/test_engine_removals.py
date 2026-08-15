@@ -1,13 +1,25 @@
 # Edition-specific package removals.
 #
-# A profile drops a package from a list it does not own by shipping
-# <List>-remove next to it. bigcommunity/gnome does exactly that for vim and
-# biglinux-zsh-config, and the packages shipped anyway once the build moved to
-# this engine, which had no removal stage at all.
+# A profile drops a package by shipping <List>-remove next to its package list,
+# and that means two things, because a package arrives two ways:
+#
+#   1. apply_profile_removals edits the Packages-* file, so the package is
+#      never asked for, and stages the list in root-overlay.
+#   2. mkiso_build_iso_cleanups reads the staged list inside the chroot and
+#      runs pacman -Rdd, which is the only half that can remove a package
+#      pulled in as a dependency.
+#
+# Half two is why bigcommunity/gnome and cinnamon shipped vim: nothing lists
+# it, Packages-Root lists `vi`, its only provider ex-vi-compat depends on vim.
+# Editing the lists alone changes nothing there, which is exactly the state
+# this engine was in.
 #
 # apply_profile_removals only reads PROFILE_PATH_EDITION, so the tests build a
-# profile directory and call the stage directly.
+# profile directory and call the stage directly. The cleanup half is extracted
+# from the text the engine appends to manjaro-tools and run against a chroot
+# stub, so no container and no root are needed.
 
+import re
 import subprocess
 
 import pytest
@@ -143,3 +155,132 @@ def test_a_removal_without_a_target_is_skipped(tmp_path, missing):
     run_removals(profile)
 
     assert not (profile / "Packages-Desktop").exists()
+
+
+#--- the staging half ---------------------------------------------------------
+
+STAGING = "root-overlay/var/lib/packages-remove"
+
+
+def test_every_list_is_staged_for_the_chroot(tmp_path):
+    profile = make_profile(
+        tmp_path,
+        {"Packages-Desktop": "firefox\n"},
+        {"Desktop-remove": "vim\n", "Root-remove": "biglinux-zsh-config\n"},
+    )
+
+    run_removals(profile)
+
+    staged = profile / STAGING
+    assert (staged / "Desktop-remove").read_text(encoding="utf-8") == "vim\n"
+    assert (staged / "Root-remove").read_text(encoding="utf-8") == "biglinux-zsh-config\n"
+
+
+def test_a_list_without_a_package_file_is_staged_anyway(tmp_path):
+    # The case that matters: nothing lists vim, so there is no Packages-* line
+    # to edit, and the post-install removal is the only thing that can act.
+    profile = make_profile(tmp_path, {}, {"Desktop-remove": "vim\n"})
+
+    run_removals(profile)
+
+    assert (profile / STAGING / "Desktop-remove").exists()
+
+
+#--- the post-install half ----------------------------------------------------
+
+
+def cleanups_function():
+    """The mkiso_build_iso_cleanups text the engine appends to manjaro-tools."""
+    source = ENGINE.read_text(encoding="utf-8")
+    body = re.search(r"cat >>\"\$image\" <<'CLEANUPS'\n(.*?)\nCLEANUPS\n", source, re.DOTALL)
+    assert body, "the CLEANUPS heredoc moved"
+    return body.group(1)
+
+
+def run_cleanups(tmp_path, installed, lists):
+    """Run the cleanup over a fake image root, with chroot and pacman stubbed.
+
+    The stub answers `pacman -Qi` from *installed* and appends every removal to
+    a log, which is what the assertions read.
+    """
+    image = tmp_path / "image"
+    staged = image / "var/lib/packages-remove"
+    staged.mkdir(parents=True)
+    for name, text in lists.items():
+        (staged / name).write_text(text, encoding="utf-8")
+    log = tmp_path / "removed.log"
+
+    script = f"""
+        chroot() {{
+            shift            # the image path
+            shift            # pacman
+            case "$1" in
+                -Qi) grep -qx "$2" "{tmp_path}/installed" ;;
+                -Rdd) printf '%s\\n' "$3" >> "{log}" ;;
+            esac
+        }}
+        {cleanups_function()}
+        mkiso_build_iso_cleanups "{image}"
+    """
+    (tmp_path / "installed").write_text("\n".join(installed) + "\n", encoding="utf-8")
+    log.touch()
+    proc = subprocess.run(
+        ["bash", "-c", script], check=False, capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    return log.read_text(encoding="utf-8").split(), image
+
+
+def test_a_dependency_is_removed_after_the_install(tmp_path):
+    # Nothing lists vim; it arrives through vi -> ex-vi-compat -> vim. This is
+    # the step that takes it back out, and the reason the ISO shipped it.
+    removed, _image = run_cleanups(
+        tmp_path,
+        installed=["vim", "vim-runtime", "ex-vi-compat", "firefox"],
+        lists={"Desktop-remove": "ex-vi-compat\nvim\nvim-runtime\n"},
+    )
+
+    assert removed == ["ex-vi-compat", "vim", "vim-runtime"]
+
+
+def test_a_package_that_is_not_installed_is_left_alone(tmp_path):
+    # Each list is applied to every image, so most lines match nothing in any
+    # given one. pacman -Rdd on a missing package would fail the build.
+    removed, _image = run_cleanups(
+        tmp_path,
+        installed=["firefox"],
+        lists={"Desktop-remove": "vim\nmesa-demos\n"},
+    )
+
+    assert removed == []
+
+
+def test_comments_and_modifiers_are_understood_in_the_chroot(tmp_path):
+    removed, _image = run_cleanups(
+        tmp_path,
+        installed=["vim"],
+        lists={"Desktop-remove": "# editors\n\nvim >extra\n"},
+    )
+
+    assert removed == ["vim"]
+
+
+def test_the_lists_do_not_reach_the_iso(tmp_path):
+    # They are build instructions staged in root-overlay; leaving them behind
+    # ships /var/lib/packages-remove on the installed system.
+    _removed, image = run_cleanups(
+        tmp_path, installed=["vim"], lists={"Desktop-remove": "vim\n"}
+    )
+
+    assert not (image / "var/lib/packages-remove").exists()
+
+
+def test_the_cleanup_runs_on_the_installed_images_too(tmp_path):
+    # The live image alone is not enough: what the user installs comes from
+    # rootfs and desktopfs, which is where a removed package must stay removed.
+    source = ENGINE.read_text(encoding="utf-8")
+
+    assert "make_image_root()" in source
+    assert "make_image_desktop()" in source
+    assert source.count('mkiso_build_iso_cleanups "${path}"') == 2

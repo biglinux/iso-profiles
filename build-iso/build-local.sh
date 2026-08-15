@@ -52,12 +52,18 @@ kernel="${2:-lts}"
 [[ -n "$edition" ]] || usage 1
 
 # Same detection the engine does, to pick the default container image.
+#
+# The registry is spelled out. A short name is resolved through podman's
+# unqualified-search-registries, and a host without a containers-registries.conf
+# has none: podman then refuses the name outright ("did not resolve to an alias")
+# instead of trying Docker Hub. Docker would have assumed Docker Hub, so this
+# failed on podman only.
 if [[ -d "$profilesRoot/bigcommunity" ]]; then
     distroname=bigcommunity
-    image="${image:-talesam/community-build:latest}"
+    image="${image:-docker.io/talesam/community-build:latest}"
 else
     distroname=biglinux
-    image="${image:-xivastudio/biglinux_build_package:latest}"
+    image="${image:-docker.io/xivastudio/biglinux_build_package:latest}"
 fi
 
 if command -v podman &>/dev/null; then
@@ -90,7 +96,12 @@ cp -a "$profilesRoot" "$tmpDir/iso-profiles"
 
 echo "==> Building $distroname/$edition (kernel=$kernel) with $engine using $image"
 echo "==> The first build downloads a lot; expect 1-2 hours in total."
-"$engine" run --rm --privileged \
+# --user 0:0 because both build images declare USER builduser, and the engine
+# needs root: it patches manjaro-tools under /usr/lib and chroots into the
+# images it builds. Without it the build stops at the engine's first check,
+# after pulling the whole image. The GitHub workflow gets root from the
+# container job, and gitrepo passes the same flag.
+"$engine" run --rm --privileged --user 0:0 \
     -v "$tmpDir/iso-profiles:/build/iso-profiles" \
     -v "$outputDir:/build/output" \
     -e EDITION="$edition" \

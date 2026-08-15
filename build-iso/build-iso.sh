@@ -399,6 +399,38 @@ add_image_cleanups() {
 mkiso_build_iso_cleanups() {
     local cpath="$1"
 
+    # Post-install removal, the other half of what a *-remove file means.
+    #
+    # Filtering the package lists only stops a package that the profile asks
+    # for by name. Most of what these files name arrives as a dependency:
+    # Packages-Root lists `vi`, the only provider is ex-vi-compat, and it
+    # depends on vim -- so gnome and cinnamon shipped vim no matter what their
+    # Desktop-remove said. pacman -Rdd is what removes it, after the install,
+    # ignoring the dependency that pulled it in. Same as the previous
+    # generator (talesam/build-iso), which is where this was lost.
+    #
+    # A missing package is normal, not an error: each list is applied to every
+    # image, and a package removed from the rootfs is already gone in the
+    # desktopfs built on top of it.
+    local remove_dir="$cpath/var/lib/packages-remove"
+    if [[ -d "$remove_dir" ]]; then
+        local remove_file package
+        for remove_file in "$remove_dir"/*-remove; do
+            [[ -f "$remove_file" ]] || continue
+            echo "[CLEANUP] applying $(basename "$remove_file")"
+            while read -r package _; do
+                [[ -n "$package" && "$package" != \#* ]] || continue
+                if chroot "$cpath" pacman -Qi "$package" &> /dev/null; then
+                    echo "[CLEANUP] removing $package"
+                    chroot "$cpath" pacman -Rdd --noconfirm "$package" &> /dev/null ||
+                        echo "[CLEANUP] could not remove $package"
+                fi
+            done < "$remove_file"
+        done
+        # The lists are build instructions; they must not reach the ISO.
+        rm -rf "$remove_dir"
+    fi
+
     rm -rf "$cpath/usr/share/doc"/* 2> /dev/null
 
     local libreoffice_path="$cpath/usr/lib/libreoffice/share/config"
@@ -459,19 +491,34 @@ patch_manjaro_tools() {
 # Drop the packages an edition opts out of.
 #
 # A profile may ship Root-remove, Live-remove, Mhwd-remove or Desktop-remove:
-# one package name per line, deleted from the matching Packages-* file. This is
-# how an edition drops a package from a list it does not own -- the bigcommunity
-# editions share Packages-{Root,Live,Mhwd} through symlinks into shared/, and
-# Packages-Desktop can be assembled from another edition's.
+# one package name per line. This is how an edition drops a package from a list
+# it does not own -- the bigcommunity editions share Packages-{Root,Live,Mhwd}
+# through symlinks into shared/, and Packages-Desktop can be assembled from
+# another edition's.
 #
-# The previous generators (talesam/build-iso's mkiso-build) did this and the
-# profiles still rely on it; the removals were lost when the build moved here,
-# so bigcommunity/gnome kept shipping vim and biglinux-zsh-config.
+# Two steps, because a package can arrive two ways:
+#
+#   1. Here, out of the matching Packages-* file, so it is never asked for.
+#   2. In the chroot, after the install, by mkiso_build_iso_cleanups -- which
+#      is the step that catches a package pulled in as a dependency, and the
+#      only reason `vim` ever leaves the image.
+#
+# The lists travel to step 2 inside root-overlay, the way the previous
+# generator (talesam/build-iso) carried them. Both halves were lost when the
+# build moved into this engine; only the first one is visible in a profile, so
+# restoring it alone still shipped vim.
 apply_profile_removals() {
     local remove_file target list
+    local staging="$PROFILE_PATH_EDITION/root-overlay/var/lib/packages-remove"
+
     for remove_file in Root-remove Live-remove Mhwd-remove Desktop-remove; do
         list="$PROFILE_PATH_EDITION/$remove_file"
         [[ -f "$list" ]] || continue
+
+        # Every list is staged, including one whose Packages-* file does not
+        # exist: what it names may still be installed as a dependency.
+        msg "Staging $remove_file for post-install removal"
+        install -Dm644 "$list" "$staging/$remove_file"
 
         target="$PROFILE_PATH_EDITION/Packages-${remove_file%-remove}"
         if [[ ! -f "$target" ]]; then
@@ -492,9 +539,9 @@ apply_profile_removals() {
         # and blank lines in the removal list are ignored, and the comparison
         # is between strings, so a `+` in a package name is a `+`.
         #
-        # awk also reports what it did: a removal that silently matched nothing
-        # is how these packages came back unnoticed in the first place, and a
-        # list naming a package the target no longer has is stale.
+        # awk also reports what it did. A package the list does not carry is
+        # the normal case, not an error: it is either a dependency, which only
+        # the post-install step can remove, or a line nobody needs any more.
         # -v, not a trailing assignment: BEGIN runs before argument
         # assignments, and an empty `out` there is a fatal awk error.
         awk -v out="$target.new" 'BEGIN { printf "" > out }
@@ -509,7 +556,7 @@ apply_profile_removals() {
              END {
                  for (package in drop)
                      if (!(package in hit))
-                         printf "    %s: not in the list\n", package > "/dev/stderr"
+                         printf "    %s: not in the list, left to the post-install removal\n", package > "/dev/stderr"
              }' "$list" "$target"
         mv "$target.new" "$target"
     done
