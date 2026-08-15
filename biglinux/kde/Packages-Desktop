@@ -1,4 +1,5 @@
 ## BigLinux
+big-parental-controls
 qbittorrent
 big-preload
 kfind
@@ -67,10 +68,6 @@ kscreenlocker
 ksshaskpass
 kwallet-pam
 kwayland-integration
-qt6-virtualkeyboard  # Virtual keyboard support for kwin-wayland
-fcitx5 # To fix problem in browsers in US Intl like 'c to ç
-fcitx5-qt
-fcitx5-gtk
 # # # kwrited
 plasma-desktop
 plasma-nm
@@ -165,7 +162,6 @@ xorg-mkfontscale
 xf86-input-elographics
 xf86-input-evdev
 xf86-input-libinput
-
 
 ## Misc
 

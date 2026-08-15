@@ -1,3 +1,6 @@
+# Dbus
+#dbus-daemon-units
+
 # Base
 base
 
@@ -230,7 +233,7 @@ gvfs-smb
 gvfs-wsdd
 gvfs-onedrive
 gvfs-dnssd
-gvfs-google
+#gvfs-google
 mtpfs
 udiskie
 udisks2
@@ -358,7 +361,7 @@ cups-browsed # Pre-2012 network printer auto-discovery
 manjaro-printer
 #lib32-libcups
 ipp-usb
-splix
+#splix
 sane-airscan
 ## Optional dependencies for hplip
 # BigLinux
@@ -414,7 +417,6 @@ smartmontools
 #udev
 usbasp-udev
 trezor-udev
-usbasp-udev
 numworks-udev
 apple-superdrive-udev
 nx-udev
@@ -448,7 +450,6 @@ ccid # Generic USB CCID/ICCD card readers
 
 
 #AUR
-make
 automake
 autoconf
 libtool

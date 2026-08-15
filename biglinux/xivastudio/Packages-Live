@@ -1,3 +1,4 @@
+kcrash
 calamares
 gparted
 grub-theme-live-manjaro
@@ -11,7 +12,7 @@ timeshift
 calamares
 calamares-biglinux
 biglinux-livecd
-biglinux-grub-restore 
+biglinux-grub-restore
 memtest86+
 memtest86+-efi
 biglinux-livecd-key

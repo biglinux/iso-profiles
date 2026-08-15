@@ -1,68 +1,3 @@
-# Dbus
-#dbus-daemon-units
-
-# Base
-base
-
-# Manjaro
-acpi
-acpid
-amd-ucode
-b43-fwcutter
-btrfs-progs
-cpupower
-cronie
-cryptsetup
-device-mapper
-diffutils
-dmraid
-dnsmasq
-dosfstools
-e2fsprogs
-ecryptfs-utils
-efibootmgr
-exfatprogs
-f2fs-tools
-grub
-install-grub
-inetutils
-intel-ucode
-jfsutils
-KERNEL
-less
-wireless-regdb
-linux-firmware
-logrotate
-lvm2
-man-db
-man-pages
-manjaro-release
-manjaro-system
-mdadm
-mhwd
-mhwd-db
-mkinitcpio-openswap
-nano
-networkmanager
-nfs-utils
-ntfs-3g
-os-prober
-perl
-rsync
-s-nail
-sbctl
-sof-firmware
-sudo
-sysfsutils
-texinfo
-update-grub
-usbutils
-vi
-wget
-which
-wireless-regdb
-wpa_supplicant
-xfsprogs
 # Base
 >i686 archlinux32-keyring
 >multilib gcc-libs-multilib
@@ -116,12 +51,14 @@ hdparm
 
   # boot
     grub-theme-biglinux
+    plymouth-theme-biglinux
     timeshift
     grub-btrfs-timeshift
     grub-btrfs
     big-first-boot
 
   # tweaks
+    biglinux-name
     biglinux-l18n
     faster-mkinitcpio
     biglinux-improve-compatibility
@@ -247,6 +184,7 @@ kldap
 
 ## Sound/Audio/Video
 # BigLinux
+  biglinux-meta-audio-config
   # pipewire-jack-dropin  # REMOVER ?
   biglinux-noise-reduction-pipewire
 alsa-firmware
@@ -382,8 +320,10 @@ powertop
 
 ## Desktop Utils
 # BigLinux
+  biglinux-mime
   auto-tweaks-browser
   sync-kde-and-gtk-places
+  pipewire-biglinux-config
   biglinux-webapps
   bigbashview
   biglinux-bash-config
