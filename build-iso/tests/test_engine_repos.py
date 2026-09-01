@@ -10,6 +10,7 @@
 # earliest section that has it, so these tests assert the sequence, not just the
 # presence, of each repository.
 
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -177,3 +178,128 @@ def test_the_installed_biglinux_stable_points_at_the_stable_directory(tmp_path):
 def test_the_installed_system_declares_no_repository_twice(tmp_path):
     listed, _ = installed_sections(tmp_path, BIGLINUX_BRANCH="testing", BIGCOMMUNITY_BRANCH="testing")
     assert len(listed) == len(set(listed))
+
+
+# The installed pacman.conf and set-biglinux-branch.sh, in the order the build
+# runs them.
+#
+# These two were never exercised together. set-biglinux-branch.sh inserts
+# [biglinux-testing] immediately above [biglinux-stable] and exits 1 when that
+# section is missing, so once the profile stopped shipping it, every testing
+# build aborted -- while stable builds passed, because the script is a no-op
+# there. One ordering covers both.
+
+
+def profile_with_symlinked_pacman_conf(tmp_path):
+    """Build the layout the community profiles use: overlays symlink to shared."""
+    profiles = tmp_path / "profiles"
+    edition = profiles / "bigcommunity" / "gnome"
+    shared = profiles / "shared"
+    shared.mkdir(parents=True)
+    (shared / "pacman.conf").write_text("[options]\nHoldPkg = pacman glibc\n", encoding="utf-8")
+    for overlay in ("root", "live"):
+        etc = edition / f"{overlay}-overlay" / "etc"
+        etc.mkdir(parents=True)
+        (etc / "pacman.conf").symlink_to(Path("../../../../shared/pacman.conf"))
+    return profiles, edition
+
+
+def configure_profile_repositories(tmp_path, **env):
+    """Run the repository half of configure_profile, in build order."""
+    profiles, edition = profile_with_symlinked_pacman_conf(tmp_path)
+    shared = profiles / "shared" / "pacman.conf"
+    script = (
+        f'source "{ENGINE}"\n'
+        f'append_installed_repos "{shared}"\n'
+        f'assert_present \'^\\[biglinux-stable\\]\' "{shared}"\n'
+        f'bash "{SCRIPTS}/set-biglinux-branch.sh"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "DISTRONAME": "bigcommunity",
+            "BIGLINUX_BRANCH": "stable",
+            "BIGCOMMUNITY_BRANCH": "stable",
+            "BIGLINUX_REPO_HOST": "repo.biglinux.com.br",
+            "COMMUNITY_REPO_HOST": "repo.communitybig.org",
+            "PROFILE_PATH_EDITION": str(edition),
+            **env,
+        },
+    )
+    written = shared.read_text(encoding="utf-8")
+    # [options] is the header the fixture starts from, not a repository.
+    listed = [
+        line.strip("[]")
+        for line in written.splitlines()
+        if line.startswith("[") and line.strip("[]") != "options"
+    ]
+    return proc, listed, written
+
+
+def test_a_testing_build_no_longer_aborts_for_a_missing_anchor(tmp_path):
+    # The reported failure: "no [biglinux-stable] section to insert above".
+    proc, listed, _ = configure_profile_repositories(tmp_path, BIGLINUX_BRANCH="testing")
+    assert proc.returncode == 0, proc.stderr
+    assert "no [biglinux-stable] section to insert above" not in proc.stderr
+    assert "biglinux-testing" in listed
+
+
+def test_the_branch_script_does_not_add_a_second_testing_section(tmp_path):
+    # Both write [biglinux-testing]; declaring it twice is a database pacman
+    # refuses to register.
+    _proc, listed, _ = configure_profile_repositories(tmp_path, BIGLINUX_BRANCH="testing")
+    assert listed.count("biglinux-testing") == 1
+    assert listed.count("biglinux-stable") == 1
+
+
+def test_testing_still_outranks_stable_after_both_run(tmp_path):
+    _proc, listed, _ = configure_profile_repositories(tmp_path, BIGLINUX_BRANCH="testing")
+    assert listed.index("biglinux-testing") < listed.index("biglinux-stable")
+
+
+def test_a_stable_build_keeps_working(tmp_path):
+    proc, listed, _ = configure_profile_repositories(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "biglinux-testing" not in listed
+    assert listed == ["community-stable", "community-extra", "biglinux-stable"]
+
+
+def test_both_testing_branches_together(tmp_path):
+    proc, listed, _ = configure_profile_repositories(
+        tmp_path, BIGLINUX_BRANCH="testing", BIGCOMMUNITY_BRANCH="testing"
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert listed == [
+        "community-testing",
+        "community-stable",
+        "community-extra",
+        "biglinux-testing",
+        "biglinux-stable",
+    ]
+
+
+def test_the_live_overlay_sees_the_same_repositories(tmp_path):
+    # The overlays are symlinks to shared/pacman.conf, which is why writing it
+    # once is enough -- if that ever changes, this fails.
+    profiles, edition = profile_with_symlinked_pacman_conf(tmp_path)
+    shared = profiles / "shared" / "pacman.conf"
+    subprocess.run(
+        ["bash", "-c", f'source "{ENGINE}"\nappend_installed_repos "{shared}"\n'],
+        check=True,
+        capture_output=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "DISTRONAME": "bigcommunity",
+            "BIGLINUX_BRANCH": "stable",
+            "BIGCOMMUNITY_BRANCH": "stable",
+            "BIGLINUX_REPO_HOST": "repo.biglinux.com.br",
+            "COMMUNITY_REPO_HOST": "repo.communitybig.org",
+        },
+    )
+    for overlay in ("root", "live"):
+        conf = edition / f"{overlay}-overlay" / "etc" / "pacman.conf"
+        assert "[biglinux-stable]" in conf.read_text(encoding="utf-8")

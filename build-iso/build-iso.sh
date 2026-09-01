@@ -582,12 +582,6 @@ apply_profile_removals() {
 }
 
 configure_profile() {
-    # Ship the branch actually being built (see each script's header).
-    if [[ "$DISTRONAME" == "biglinux" ]]; then
-        bash "$scriptDir/set-manjaro-branch.sh"
-    fi
-    bash "$scriptDir/set-biglinux-branch.sh"
-
     # The installed system of a community ISO gets its repositories from the
     # shared pacman.conf, when the profile layout ships one.
     #
@@ -596,6 +590,12 @@ configure_profile() {
     # configuration ever got it -- so every community ISO since then installed
     # without the repository its BigLinux packages are updated from. The
     # assertions below are why that cannot happen again quietly.
+    #
+    # This runs before set-biglinux-branch.sh, which inserts [biglinux-testing]
+    # immediately above [biglinux-stable] and fails when that section is absent.
+    # Writing the repositories first gives that script the anchor it looks for;
+    # on a testing build it then finds its own section already in place and says
+    # so instead of inserting a second copy.
     if [[ "$DISTRONAME" == "bigcommunity" && -f "$PROFILES_ROOT/shared/pacman.conf" ]]; then
         msg "Adding community and BigLinux repositories to shared/pacman.conf"
         append_installed_repos "$PROFILES_ROOT/shared/pacman.conf"
@@ -603,6 +603,12 @@ configure_profile() {
         assert_present '^\[community-extra\]' "$PROFILES_ROOT/shared/pacman.conf"
         assert_present '^\[biglinux-stable\]' "$PROFILES_ROOT/shared/pacman.conf"
     fi
+
+    # Ship the branch actually being built (see each script's header).
+    if [[ "$DISTRONAME" == "biglinux" ]]; then
+        bash "$scriptDir/set-manjaro-branch.sh"
+    fi
+    bash "$scriptDir/set-biglinux-branch.sh"
 
     # Off by default; the TKG mesa swap of the old latest/xanmod ISOs. The local
     # generator (gitrepo / Build ISO GUI) never does this, so it stays behind a
