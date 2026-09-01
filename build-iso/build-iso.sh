@@ -330,6 +330,28 @@ append_community_repos() {
     repo_section "$config_file" community-extra "https://$COMMUNITY_REPO_HOST/extra"
 }
 
+# A BigCommunity system installs BigLinux packages, so the installed system
+# needs these as much as the build does -- see configure_profile. Testing is
+# conditional; stable always answers, and comes last because everything above
+# it falls back to it.
+append_biglinux_repos() {
+    local config_file="$1"
+    if [[ "$BIGLINUX_BRANCH" == "testing" ]]; then
+        repo_section "$config_file" biglinux-testing "https://$BIGLINUX_REPO_HOST/testing"
+    fi
+    repo_section "$config_file" biglinux-stable "https://$BIGLINUX_REPO_HOST/stable"
+}
+
+# The repositories the *installed* system resolves packages from, in the same
+# order the build uses. Separate from append_build_repos because the build also
+# needs the development mirror and update-stable, which the profile's own
+# pacman.conf already ships.
+append_installed_repos() {
+    local config_file="$1"
+    append_community_repos "$config_file"
+    append_biglinux_repos "$config_file"
+}
+
 # Appended highest priority first: pacman prefers the earliest section that has
 # the package, so this order is why testing wins and stable still answers.
 append_build_repos() {
@@ -348,10 +370,7 @@ append_build_repos() {
     if [[ "$DISTRONAME" == "bigcommunity" ]]; then
         append_community_repos "$config_file"
     fi
-    if [[ "$BIGLINUX_BRANCH" == "testing" ]]; then
-        repo_section "$config_file" biglinux-testing "https://$BIGLINUX_REPO_HOST/testing"
-    fi
-    repo_section "$config_file" biglinux-stable "https://$BIGLINUX_REPO_HOST/stable"
+    append_biglinux_repos "$config_file"
 }
 
 configure_build_repos() {
@@ -571,9 +590,18 @@ configure_profile() {
 
     # The installed system of a community ISO gets its repositories from the
     # shared pacman.conf, when the profile layout ships one.
+    #
+    # Both families belong here. The profile stopped shipping [biglinux-stable]
+    # on the understanding that this engine wrote it, but only the build
+    # configuration ever got it -- so every community ISO since then installed
+    # without the repository its BigLinux packages are updated from. The
+    # assertions below are why that cannot happen again quietly.
     if [[ "$DISTRONAME" == "bigcommunity" && -f "$PROFILES_ROOT/shared/pacman.conf" ]]; then
-        msg "Adding community repositories to shared/pacman.conf"
-        append_community_repos "$PROFILES_ROOT/shared/pacman.conf"
+        msg "Adding community and BigLinux repositories to shared/pacman.conf"
+        append_installed_repos "$PROFILES_ROOT/shared/pacman.conf"
+        assert_present '^\[community-stable\]' "$PROFILES_ROOT/shared/pacman.conf"
+        assert_present '^\[community-extra\]' "$PROFILES_ROOT/shared/pacman.conf"
+        assert_present '^\[biglinux-stable\]' "$PROFILES_ROOT/shared/pacman.conf"
     fi
 
     # Off by default; the TKG mesa swap of the old latest/xanmod ISOs. The local
