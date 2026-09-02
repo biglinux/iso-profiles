@@ -475,6 +475,40 @@ CLEANUPS
     assert_present 'mkiso_build_iso_cleanups' "$iso"
 }
 
+# Keep the distribution's own DISTRIB_RELEASE and DISTRIB_CODENAME.
+#
+# manjaro-tools' configure_lsb_release rewrites those two lines in the chroot
+# with ${dist_release} and ${dist_codename}, which default to the *build
+# host's* /etc/lsb-release (util.sh: get_release, get_codename). So a
+# BigCommunity ISO built on a Manjaro host shipped Manjaro's release and
+# codename -- `26.1.1 / Bian-May` in place of the `1.7.0 / Powerful` that
+# community-release installs -- and comm-release displayed them to the user.
+# The previous generator (talesam/build-iso) guarded against this; the guard
+# was lost in the move to this script.
+#
+# Upstream's version is kept under another name and still used when no
+# installed package owns /etc/lsb-release: there is no distribution identity
+# to preserve then, and manjaro-tools' value is as good as any.
+keep_release_identity() {
+    local image="$1"
+
+    assert_present '^configure_lsb_release(){' "$image"
+    sed -i 's/^configure_lsb_release(){/mkiso_upstream_configure_lsb_release(){/' "$image"
+
+    cat >>"$image" <<'LSB'
+
+# Added by BigLinux build-iso.sh
+configure_lsb_release() {
+    if grep -qxF 'etc/lsb-release' "$1/var/lib/pacman/local/"*/files 2> /dev/null; then
+        msg2 "Configuring lsb-release: kept, an installed package owns it"
+        return 0
+    fi
+    mkiso_upstream_configure_lsb_release "$@"
+}
+LSB
+    assert_present '^configure_lsb_release() {' "$image"
+}
+
 patch_manjaro_tools() {
     local iso=/usr/lib/manjaro-tools/util-iso.sh
     local image=/usr/lib/manjaro-tools/util-iso-image.sh
@@ -500,6 +534,7 @@ patch_manjaro_tools() {
     assert_present 'kms plymouth' /usr/share/manjaro-tools/mkinitcpio.conf
 
     add_image_cleanups "$image" "$iso"
+    keep_release_identity "$image"
 
     # manjaro-live-setup must produce a usable live home (see the script).
     bash "$scriptDir/patch-live-setup.sh"
