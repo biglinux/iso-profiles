@@ -492,21 +492,40 @@ CLEANUPS
 keep_release_identity() {
     local image="$1"
 
-    assert_present '^configure_lsb_release(){' "$image"
-    sed -i 's/^configure_lsb_release(){/mkiso_upstream_configure_lsb_release(){/' "$image"
+    # manjaro-tools renamed this function from configure_lsb_release to
+    # configure_lsb (5c97abe). Wrapping a name that is no longer there aborted
+    # the build the first time a container picked up the newer package, so the
+    # name is discovered rather than assumed -- and both keep working, because
+    # which one a build gets depends on the container image, not on this script.
+    local upstream=""
+    local candidate
+    for candidate in configure_lsb configure_lsb_release; do
+        if grep -q "^${candidate}(){" "$image"; then
+            upstream="$candidate"
+            break
+        fi
+    done
+    [[ -n "$upstream" ]] \
+        || die "no configure_lsb or configure_lsb_release to wrap in: $image"
+    msg "Preserving the distribution release identity through ${upstream}"
 
-    cat >>"$image" <<'LSB'
+    sed -i "s/^${upstream}(){/mkiso_upstream_${upstream}(){/" "$image"
+
+    # Unquoted heredoc: the function name is interpolated, so every runtime
+    # expansion below has to be escaped to survive into the file.
+    cat >>"$image" <<LSB
 
 # Added by BigLinux build-iso.sh
-configure_lsb_release() {
-    if grep -qxF 'etc/lsb-release' "$1/var/lib/pacman/local/"*/files 2> /dev/null; then
+${upstream}() {
+    if grep -qxF 'etc/lsb-release' "\$1/var/lib/pacman/local/"*/files 2> /dev/null; then
         msg2 "Configuring lsb-release: kept, an installed package owns it"
         return 0
     fi
-    mkiso_upstream_configure_lsb_release "$@"
+    mkiso_upstream_${upstream} "\$@"
 }
 LSB
-    assert_present '^configure_lsb_release() {' "$image"
+    assert_present "^${upstream}() {" "$image"
+    assert_present "^mkiso_upstream_${upstream}(){" "$image"
 }
 
 patch_manjaro_tools() {

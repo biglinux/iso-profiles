@@ -13,6 +13,9 @@
 
 import re
 import subprocess
+from pathlib import Path
+
+import pytest
 
 from conftest import SCRIPTS
 
@@ -67,14 +70,14 @@ def make_chroot(tmp_path, *, owned):
     return chroot
 
 
-def configure(image, chroot):
-    """Call the patched configure_lsb_release the way manjaro-tools does."""
+def configure(image, chroot, entry="configure_lsb_release"):
+    """Call the patched wrapper the way manjaro-tools does."""
     script = f"""
         msg2() {{ printf '%s\\n' "$1"; }}
         dist_release=26.1.1
         dist_codename=Bian-May
         source "{image}"
-        configure_lsb_release "{chroot}"
+        {entry} "{chroot}"
     """
     proc = subprocess.run(
         ["bash", "-c", script], check=False, capture_output=True, text=True,
@@ -130,3 +133,74 @@ def test_the_patch_runs_during_the_build(tmp_path):
     source = ENGINE.read_text(encoding="utf-8")
 
     assert re.search(r"^\s+keep_release_identity \"\$image\"$", source, re.MULTILINE)
+
+
+# manjaro-tools renamed the function.
+#
+# The stub above carries the historic name, so these tests kept passing while
+# the real package moved on: a container with manjaro-tools 5c97abe aborted the
+# build with "expected '^configure_lsb_release(){'". The wrapper now discovers
+# whichever name is present, and both are exercised here so neither can regress
+# unnoticed.
+
+CURRENT_UPSTREAM = """\
+configure_lsb(){
+    msg2 "Configuring lsb-release"
+    sed -i -e "s/^.*DISTRIB_RELEASE.*/DISTRIB_RELEASE=${dist_release}/" $1/etc/lsb-release
+    sed -i -e "s/^.*DISTRIB_CODENAME.*/DISTRIB_CODENAME=${dist_codename}/" $1/etc/lsb-release
+}
+"""
+
+
+def test_the_current_upstream_name_is_wrapped(tmp_path):
+    proc, image = patch(tmp_path, CURRENT_UPSTREAM)
+
+    assert proc.returncode == 0, proc.stderr
+    text = image.read_text(encoding="utf-8")
+    assert "mkiso_upstream_configure_lsb(){" in text
+    assert "configure_lsb() {" in text
+
+
+def test_a_packaged_lsb_release_is_left_alone_under_the_current_name(tmp_path):
+    _proc, image = patch(tmp_path, CURRENT_UPSTREAM)
+    chroot = make_chroot(tmp_path, owned=True)
+
+    _proc, text = configure(image, chroot, entry="configure_lsb")
+
+    assert text == DISTRO_LSB
+    assert "Bian-May" not in text
+
+
+def test_an_unowned_lsb_release_still_gets_the_manjaro_values(tmp_path):
+    # With no package owning the file there is no identity to preserve, so
+    # upstream's behaviour has to survive the rename too.
+    _proc, image = patch(tmp_path, CURRENT_UPSTREAM)
+    chroot = make_chroot(tmp_path, owned=False)
+
+    _proc, text = configure(image, chroot, entry="configure_lsb")
+
+    assert "26.1.1" in text
+    assert "Bian-May" in text
+
+
+def test_a_missing_function_fails_loudly(tmp_path):
+    # Better a named failure here than a silent one that ships the host's
+    # release inside the ISO.
+    proc, _image = patch(tmp_path, "configure_something_else(){\n    :\n}\n")
+
+    assert proc.returncode != 0
+    assert "no configure_lsb or configure_lsb_release" in proc.stderr
+
+
+def test_the_real_manjaro_tools_function_is_recognised(tmp_path):
+    # The check the stubs cannot make: if manjaro-tools is installed here, its
+    # actual function name must be one this engine knows how to wrap.
+    installed = Path("/usr/lib/manjaro-tools/util-iso-image.sh")
+    if not installed.is_file():
+        pytest.skip("manjaro-tools is not installed on this host")
+
+    text = installed.read_text(encoding="utf-8")
+    assert re.search(r"^configure_lsb(_release)?\(\)\{", text, re.MULTILINE), (
+        "manjaro-tools renamed the lsb-release function again; teach "
+        "keep_release_identity the new name"
+    )
