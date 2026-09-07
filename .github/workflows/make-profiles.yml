@@ -128,11 +128,23 @@ jobs:
           rm -rf "$manjaroProfiles" "$commonBase"
 
       - name: Update github
+        shell: bash
         run: |
+          set -euo pipefail
           git add --all
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          if [ -n "$(git commit -m "new profile" -a | grep "nothing to commit")" ];then exit 0; fi
+          # A clean index is a no-op; a failed commit is not. Keep the commit
+          # outside a conditional/pipeline so errexit propagates its failure.
+          if git diff --cached --quiet; then
+              echo "No profile changes to commit."
+              exit 0
+          else
+              status=$?
+              # git diff returns 1 for changes, but >1 for an actual error.
+              [[ "$status" -eq 1 ]] || exit "$status"
+          fi
+          git commit -m "new profile"
 
       - name: Push changes
         uses: ad-m/github-push-action@v1
