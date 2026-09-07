@@ -100,3 +100,46 @@ def test_the_selectors_reach_the_engine_as_environment(exec_tmp_path):
     assert "MANJARO_BRANCH=testing" in arguments
     assert "BIGLINUX_BRANCH=testing" in arguments
     assert "WORK_PATH=/build/output" in arguments
+
+
+def test_the_image_carries_its_registry(exec_tmp_path):
+    # podman resolves a short name through unqualified-search-registries, and a
+    # host with no containers-registries.conf has none: it refused
+    # "talesam/community-build:latest" outright rather than trying Docker Hub,
+    # so a local build died before pulling anything. Docker assumes Docker Hub,
+    # which is why this only ever failed under podman.
+    checkout = _make_checkout(exec_tmp_path)
+    (checkout / "bigcommunity" / "cinnamon").mkdir(parents=True)
+    bin_dir, record_file = _fake_podman(exec_tmp_path)
+
+    result = _run(checkout, bin_dir, record_file, "cinnamon")
+
+    assert result.returncode == 0, result.stderr
+    arguments = record_file.read_text(encoding="utf-8").splitlines()
+    images = [value for value in arguments if "community-build" in value]
+    assert images == ["docker.io/talesam/community-build:latest"]
+
+
+def test_an_explicit_image_is_used_as_given(exec_tmp_path):
+    checkout = _make_checkout(exec_tmp_path)
+    bin_dir, record_file = _fake_podman(exec_tmp_path)
+
+    result = _run(checkout, bin_dir, record_file, "-i", "localhost/my-build:dev", "kde")
+
+    assert result.returncode == 0, result.stderr
+    assert "localhost/my-build:dev" in record_file.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_container_runs_as_root(exec_tmp_path):
+    # Both build images declare USER builduser and the engine refuses to run as
+    # anyone else ("must run as root"), so a local build failed at the first
+    # check, after pulling several GB.
+    checkout = _make_checkout(exec_tmp_path)
+    bin_dir, record_file = _fake_podman(exec_tmp_path)
+
+    result = _run(checkout, bin_dir, record_file, "kde")
+
+    assert result.returncode == 0, result.stderr
+    arguments = record_file.read_text(encoding="utf-8").splitlines()
+    assert "--user" in arguments
+    assert arguments[arguments.index("--user") + 1] == "0:0"

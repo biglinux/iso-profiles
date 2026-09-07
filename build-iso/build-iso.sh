@@ -68,6 +68,16 @@ repo_section() {
         "$name" "$url_base" >>"$config_file"
 }
 
+# The container reads this file; mkchroot replaces it in the chroots with the
+# single BUILD_MIRROR Server. Writing BUILD_MIRROR here too gives the whole
+# build one package source. `$repo` and `$arch` are pacman's variables.
+write_build_mirrorlist() {
+    local mirrorlist="${1:-/etc/pacman.d/mirrorlist}"
+    install -dm755 "$(dirname "$mirrorlist")"
+    printf '## Written by build-iso.sh: the build mirror, so that the container\n## and the ISO chroots resolve packages from the same source.\nServer = %s/%s/$repo/$arch\n' \
+        "$BUILD_MIRROR" "$MANJARO_BRANCH" >"$mirrorlist"
+}
+
 #--- inputs -------------------------------------------------------------------
 
 # Every input, with its default. Reading these into globals is a function rather
@@ -228,12 +238,13 @@ resolve_kernel() {
 #--- container preparation ----------------------------------------------------
 
 prepare_host() {
-    # Before the first download, or the ranking helps nothing: the container's
-    # own package traffic is all above. The ISO package set is decided by
-    # BUILD_MIRROR, not by this.
-    if command -v pacman-mirrors &>/dev/null; then
-        pacman-mirrors --fasttrack 5 2>/dev/null || true
-    fi
+    # Before the first download. This used to be `pacman-mirrors --fasttrack 5`,
+    # which ranked five mirrors for the container while the chroots installed
+    # from BUILD_MIRROR: two package sources in one build, so a database synced
+    # from a mirror the CDN has not caught up with resolves versions the build
+    # then fails to fetch. One source answers both.
+    msg "Building from the mirror: $BUILD_MIRROR"
+    write_build_mirrorlist
 
     msg "Updating the container and installing build tools"
     if [[ "$DISTRONAME" == "bigcommunity" ]] \
@@ -319,6 +330,28 @@ append_community_repos() {
     repo_section "$config_file" community-extra "https://$COMMUNITY_REPO_HOST/extra"
 }
 
+# A BigCommunity system installs BigLinux packages, so the installed system
+# needs these as much as the build does -- see configure_profile. Testing is
+# conditional; stable always answers, and comes last because everything above
+# it falls back to it.
+append_biglinux_repos() {
+    local config_file="$1"
+    if [[ "$BIGLINUX_BRANCH" == "testing" ]]; then
+        repo_section "$config_file" biglinux-testing "https://$BIGLINUX_REPO_HOST/testing"
+    fi
+    repo_section "$config_file" biglinux-stable "https://$BIGLINUX_REPO_HOST/stable"
+}
+
+# The repositories the *installed* system resolves packages from, in the same
+# order the build uses. Separate from append_build_repos because the build also
+# needs the development mirror and update-stable, which the profile's own
+# pacman.conf already ships.
+append_installed_repos() {
+    local config_file="$1"
+    append_community_repos "$config_file"
+    append_biglinux_repos "$config_file"
+}
+
 # Appended highest priority first: pacman prefers the earliest section that has
 # the package, so this order is why testing wins and stable still answers.
 append_build_repos() {
@@ -337,10 +370,7 @@ append_build_repos() {
     if [[ "$DISTRONAME" == "bigcommunity" ]]; then
         append_community_repos "$config_file"
     fi
-    if [[ "$BIGLINUX_BRANCH" == "testing" ]]; then
-        repo_section "$config_file" biglinux-testing "https://$BIGLINUX_REPO_HOST/testing"
-    fi
-    repo_section "$config_file" biglinux-stable "https://$BIGLINUX_REPO_HOST/stable"
+    append_biglinux_repos "$config_file"
 }
 
 configure_build_repos() {
@@ -388,6 +418,38 @@ add_image_cleanups() {
 mkiso_build_iso_cleanups() {
     local cpath="$1"
 
+    # Post-install removal, the other half of what a *-remove file means.
+    #
+    # Filtering the package lists only stops a package that the profile asks
+    # for by name. Most of what these files name arrives as a dependency:
+    # Packages-Root lists `vi`, the only provider is ex-vi-compat, and it
+    # depends on vim -- so gnome and cinnamon shipped vim no matter what their
+    # Desktop-remove said. pacman -Rdd is what removes it, after the install,
+    # ignoring the dependency that pulled it in. Same as the previous
+    # generator (talesam/build-iso), which is where this was lost.
+    #
+    # A missing package is normal, not an error: each list is applied to every
+    # image, and a package removed from the rootfs is already gone in the
+    # desktopfs built on top of it.
+    local remove_dir="$cpath/var/lib/packages-remove"
+    if [[ -d "$remove_dir" ]]; then
+        local remove_file package
+        for remove_file in "$remove_dir"/*-remove; do
+            [[ -f "$remove_file" ]] || continue
+            echo "[CLEANUP] applying $(basename "$remove_file")"
+            while read -r package _; do
+                [[ -n "$package" && "$package" != \#* ]] || continue
+                if chroot "$cpath" pacman -Qi "$package" &> /dev/null; then
+                    echo "[CLEANUP] removing $package"
+                    chroot "$cpath" pacman -Rdd --noconfirm "$package" &> /dev/null ||
+                        echo "[CLEANUP] could not remove $package"
+                fi
+            done < "$remove_file"
+        done
+        # The lists are build instructions; they must not reach the ISO.
+        rm -rf "$remove_dir"
+    fi
+
     rm -rf "$cpath/usr/share/doc"/* 2> /dev/null
 
     local libreoffice_path="$cpath/usr/lib/libreoffice/share/config"
@@ -411,6 +473,59 @@ CLEANUPS
 }' "$iso"
     assert_present 'mkiso_build_iso_cleanups "$1"' "$image"
     assert_present 'mkiso_build_iso_cleanups' "$iso"
+}
+
+# Keep the distribution's own DISTRIB_RELEASE and DISTRIB_CODENAME.
+#
+# manjaro-tools' configure_lsb_release rewrites those two lines in the chroot
+# with ${dist_release} and ${dist_codename}, which default to the *build
+# host's* /etc/lsb-release (util.sh: get_release, get_codename). So a
+# BigCommunity ISO built on a Manjaro host shipped Manjaro's release and
+# codename -- `26.1.1 / Bian-May` in place of the `1.7.0 / Powerful` that
+# community-release installs -- and comm-release displayed them to the user.
+# The previous generator (talesam/build-iso) guarded against this; the guard
+# was lost in the move to this script.
+#
+# Upstream's version is kept under another name and still used when no
+# installed package owns /etc/lsb-release: there is no distribution identity
+# to preserve then, and manjaro-tools' value is as good as any.
+keep_release_identity() {
+    local image="$1"
+
+    # manjaro-tools renamed this function from configure_lsb_release to
+    # configure_lsb (5c97abe). Wrapping a name that is no longer there aborted
+    # the build the first time a container picked up the newer package, so the
+    # name is discovered rather than assumed -- and both keep working, because
+    # which one a build gets depends on the container image, not on this script.
+    local upstream=""
+    local candidate
+    for candidate in configure_lsb configure_lsb_release; do
+        if grep -q "^${candidate}(){" "$image"; then
+            upstream="$candidate"
+            break
+        fi
+    done
+    [[ -n "$upstream" ]] \
+        || die "no configure_lsb or configure_lsb_release to wrap in: $image"
+    msg "Preserving the distribution release identity through ${upstream}"
+
+    sed -i "s/^${upstream}(){/mkiso_upstream_${upstream}(){/" "$image"
+
+    # Unquoted heredoc: the function name is interpolated, so every runtime
+    # expansion below has to be escaped to survive into the file.
+    cat >>"$image" <<LSB
+
+# Added by BigLinux build-iso.sh
+${upstream}() {
+    if grep -qxF 'etc/lsb-release' "\$1/var/lib/pacman/local/"*/files 2> /dev/null; then
+        msg2 "Configuring lsb-release: kept, an installed package owns it"
+        return 0
+    fi
+    mkiso_upstream_${upstream} "\$@"
+}
+LSB
+    assert_present "^${upstream}() {" "$image"
+    assert_present "^mkiso_upstream_${upstream}(){" "$image"
 }
 
 patch_manjaro_tools() {
@@ -438,6 +553,7 @@ patch_manjaro_tools() {
     assert_present 'kms plymouth' /usr/share/manjaro-tools/mkinitcpio.conf
 
     add_image_cleanups "$image" "$iso"
+    keep_release_identity "$image"
 
     # manjaro-live-setup must produce a usable live home (see the script).
     bash "$scriptDir/patch-live-setup.sh"
@@ -445,19 +561,108 @@ patch_manjaro_tools() {
 
 #--- profile configuration ----------------------------------------------------
 
+# Drop the packages an edition opts out of.
+#
+# A profile may ship Root-remove, Live-remove, Mhwd-remove or Desktop-remove:
+# one package name per line. This is how an edition drops a package from a list
+# it does not own -- the bigcommunity editions share Packages-{Root,Live,Mhwd}
+# through symlinks into shared/, and Packages-Desktop can be assembled from
+# another edition's.
+#
+# Two steps, because a package can arrive two ways:
+#
+#   1. Here, out of the matching Packages-* file, so it is never asked for.
+#   2. In the chroot, after the install, by mkiso_build_iso_cleanups -- which
+#      is the step that catches a package pulled in as a dependency, and the
+#      only reason `vim` ever leaves the image.
+#
+# The lists travel to step 2 inside root-overlay, the way the previous
+# generator (talesam/build-iso) carried them. Both halves were lost when the
+# build moved into this engine; only the first one is visible in a profile, so
+# restoring it alone still shipped vim.
+apply_profile_removals() {
+    local remove_file target list
+    local staging="$PROFILE_PATH_EDITION/root-overlay/var/lib/packages-remove"
+
+    for remove_file in Root-remove Live-remove Mhwd-remove Desktop-remove; do
+        list="$PROFILE_PATH_EDITION/$remove_file"
+        [[ -f "$list" ]] || continue
+
+        # Every list is staged, including one whose Packages-* file does not
+        # exist: what it names may still be installed as a dependency.
+        msg "Staging $remove_file for post-install removal"
+        install -Dm644 "$list" "$staging/$remove_file"
+
+        target="$PROFILE_PATH_EDITION/Packages-${remove_file%-remove}"
+        if [[ ! -f "$target" ]]; then
+            msg "$remove_file: no $(basename "$target") to edit, skipping"
+            continue
+        fi
+
+        # The shared lists are symlinks into shared/. Editing through the link
+        # would remove the package from every edition that shares the file, so
+        # the edition gets its own copy first.
+        if [[ -L "$target" ]]; then
+            cp --remove-destination "$(readlink -f "$target")" "$target"
+        fi
+
+        msg "Applying $remove_file to $(basename "$target")"
+        # Matching the first field, not the whole line, so that a package
+        # carrying a manjaro-tools modifier (`vim >extra`) goes too. Comments
+        # and blank lines in the removal list are ignored, and the comparison
+        # is between strings, so a `+` in a package name is a `+`.
+        #
+        # awk also reports what it did. A package the list does not carry is
+        # the normal case, not an error: it is either a dependency, which only
+        # the post-install step can remove, or a line nobody needs any more.
+        # -v, not a trailing assignment: BEGIN runs before argument
+        # assignments, and an empty `out` there is a fatal awk error.
+        awk -v out="$target.new" 'BEGIN { printf "" > out }
+             NR==FNR {
+                 sub(/#.*/, "")
+                 gsub(/^[ \t]+|[ \t]+$/, "")
+                 if ($0 != "") drop[$0] = 1
+                 next
+             }
+             ($1 in drop) { hit[$1] = 1; next }
+             { print > out }
+             END {
+                 for (package in drop)
+                     if (!(package in hit))
+                         printf "    %s: not in the list, left to the post-install removal\n", package > "/dev/stderr"
+             }' "$list" "$target"
+        mv "$target.new" "$target"
+    done
+}
+
 configure_profile() {
+    # The installed system of a community ISO gets its repositories from the
+    # shared pacman.conf, when the profile layout ships one.
+    #
+    # Both families belong here. The profile stopped shipping [biglinux-stable]
+    # on the understanding that this engine wrote it, but only the build
+    # configuration ever got it -- so every community ISO since then installed
+    # without the repository its BigLinux packages are updated from. The
+    # assertions below are why that cannot happen again quietly.
+    #
+    # This runs before set-biglinux-branch.sh, which inserts [biglinux-testing]
+    # immediately above [biglinux-stable] and fails when that section is absent.
+    # Writing the repositories first gives that script the anchor it looks for;
+    # on a testing build it then finds its own section already in place and says
+    # so instead of inserting a second copy.
+    if [[ "$DISTRONAME" == "bigcommunity" && -f "$PROFILES_ROOT/shared/pacman.conf" ]]; then
+        msg "Adding community and BigLinux repositories to shared/pacman.conf"
+        append_installed_repos "$PROFILES_ROOT/shared/pacman.conf"
+        assert_present '^\[community-stable\]' "$PROFILES_ROOT/shared/pacman.conf"
+        assert_present '^\[community-extra\]' "$PROFILES_ROOT/shared/pacman.conf"
+        assert_present '^\[biglinux-stable\]' "$PROFILES_ROOT/shared/pacman.conf"
+    fi
+
     # Ship the branch actually being built (see each script's header).
     if [[ "$DISTRONAME" == "biglinux" ]]; then
         bash "$scriptDir/set-manjaro-branch.sh"
     fi
     bash "$scriptDir/set-biglinux-branch.sh"
-
-    # The installed system of a community ISO gets its repositories from the
-    # shared pacman.conf, when the profile layout ships one.
-    if [[ "$DISTRONAME" == "bigcommunity" && -f "$PROFILES_ROOT/shared/pacman.conf" ]]; then
-        msg "Adding community repositories to shared/pacman.conf"
-        append_community_repos "$PROFILES_ROOT/shared/pacman.conf"
-    fi
 
     # Off by default; the TKG mesa swap of the old latest/xanmod ISOs. The local
     # generator (gitrepo / Build ISO GUI) never does this, so it stays behind a
@@ -478,6 +683,10 @@ configure_profile() {
             *) msg "MESA_TKG ignored: no TKG mesa build for kernel selector $KERNEL" ;;
         esac
     fi
+
+    # After the package lists have been assembled (MESA_TKG above appends to
+    # Packages-Root) and before the kernel placeholders are filled.
+    apply_profile_removals
 
     msg "Setting live media ids (misobasedir=$DISTRONAME misolabel=$VOL_ID)"
     find "$PROFILES_ROOT/$DISTRONAME" -name "kernels.cfg" -exec sed -i \
