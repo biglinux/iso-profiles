@@ -22,13 +22,41 @@ from pathlib import Path
 
 args = sys.argv[1:]
 assert args[0] == "exec", args
+mount_root = Path(os.environ["FAKE_ARCHIVE_ROOT"])
+with open(os.environ["FAKE_DOCKER_LOG"], "a", encoding="utf-8") as log:
+    log.write(" ".join(args) + chr(10))
+
+
+def host_path(container_path):
+    # The fake mount maps <results_mount>/<job id> onto FAKE_ARCHIVE_ROOT/<job
+    # id>, so drop everything up to and including the mount point.
+    relative = container_path.split("/biglinux-results/", 1)[-1]
+    return mount_root.joinpath(*relative.strip("/").split("/"))
+
+
+# The script deletes through the container because openQA archives as root.
+if "rm" in args:
+    target = host_path(args[-1])
+    if target.exists():
+        target.unlink()
+    raise SystemExit(0)
+if "find" in args:
+    root = host_path(args[args.index("find") + 1])
+    if root.exists():
+        for path in sorted(root.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            else:
+                path.rmdir()
+    raise SystemExit(0)
+
 assert "archive" in args, args
 destination = Path(os.environ["FAKE_ARCHIVE_ROOT"], args[-1].rsplit("/", 1)[-1])
 results = destination / "testresults"
 results.mkdir(parents=True, exist_ok=True)
-(results / "vars.json").write_text("{}\\n", encoding="utf-8")
+(results / "vars.json").write_text("{}" + chr(10), encoding="utf-8")
 (results / "details-applications.json").write_text(
-    json.dumps({"details": [{"screenshot": "applications-1.png"}]}) + "\\n",
+    json.dumps({"details": [{"screenshot": "applications-1.png"}]}) + chr(10),
     encoding="utf-8",
 )
 # openQA answers 403 for step numbers that never had a screenshot, and the
@@ -36,7 +64,8 @@ results.mkdir(parents=True, exist_ok=True)
 ERROR_PAGE = b"<html><head><title>403 Forbidden</title></head></html>"
 (results / "applications-2.png").write_bytes(ERROR_PAGE)
 if os.environ.get("FAKE_WRITE_SCREENSHOT") == "1":
-    (results / "applications-1.png").write_bytes(b"\\x89PNG\\r\\n\\x1a\\ncontent")
+    (results / "applications-1.png").write_bytes(
+        bytes([137, 80, 78, 71, 13, 10, 26, 10]) + b"content")
 elif os.environ.get("FAKE_SCREENSHOT_IS_ERROR_PAGE") == "1":
     (results / "applications-1.png").write_bytes(ERROR_PAGE)
 """
@@ -48,6 +77,7 @@ class CopyJobResultsTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.archive_root = self.root / "results"
         self.archive_root.mkdir()
+        self.docker_log = self.root / "docker-calls.log"
         self.fake_docker = self.root / "docker"
         self.fake_docker.write_text(FAKE_DOCKER, encoding="utf-8")
         self.fake_docker.chmod(0o755)
@@ -61,6 +91,7 @@ class CopyJobResultsTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["DOCKER_BIN"] = str(self.fake_docker)
         environment["FAKE_ARCHIVE_ROOT"] = str(self.archive_root)
+        environment["FAKE_DOCKER_LOG"] = str(self.docker_log)
         environment["FAKE_WRITE_SCREENSHOT"] = "1" if screenshot else "0"
         environment["FAKE_SCREENSHOT_IS_ERROR_PAGE"] = "1" if error_page else "0"
         return subprocess.run(
@@ -81,6 +112,16 @@ class CopyJobResultsTests(unittest.TestCase):
         # The unreferenced error page is dropped rather than shipped as evidence.
         self.assertFalse(screenshot.with_name("applications-2.png").exists())
         self.assertIn("1 error pages discarded", result.stdout)
+        # openQA archives into the mounted results directory as root, so the
+        # runner user cannot delete what it wrote: the removals have to happen
+        # inside the container. A GitHub run lost a whole collection step to
+        # "rm: cannot remove ...: Permission denied" for a job that had passed.
+        calls = self.docker_log.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(
+            any(call.startswith("exec ") and " rm " in f" {call} " for call in calls),
+            calls,
+        )
+        self.assertTrue(any(" find " in f" {call} " for call in calls), calls)
 
     def test_fails_when_a_named_screenshot_arrived_as_an_error_page(self) -> None:
         result = self.run_script(
