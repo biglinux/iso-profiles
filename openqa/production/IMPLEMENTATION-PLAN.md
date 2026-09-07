@@ -222,6 +222,30 @@ curl -sI -H 'Accept: application/vnd.oci.image.index.v1+json' \
 over the read-only file the previous run left, and failed with `Permissão
 negada` before the plan started. It uses `install` now.
 
+### What the first real GitHub runs found
+
+Two dispatches on this branch, and each one found a defect that no local run
+could have found:
+
+| Run | Where it stopped | Cause |
+| --- | --- | --- |
+| 34119636509 | every openQA job, immediately | `isotovideo died: Failed to check out <sha> in '/workspace'` - the workspace copy excluded `.git`, and the production gate pins `TEST_GIT_REFSPEC` to the run's commit and checks it out inside `CASEDIR`. A local plan pins no refspec. |
+| 34123679945 | `live_desktop`, application shards | the language filter was typed at the default speed and the runner dropped a keystroke: the search box read `Bazil`, nothing matched, and `Return` activated nothing |
+
+Both runs did confirm the parts that used to fail: the ISO built, "Validate
+pinned openQA image" passed with the new pin, "Validate repository sources"
+passed with the three new guards, KVM was proved, and the uploaded
+`scheduled-product-*.json` carries `_SECRET_BIGLINUX_TEST_PASSWORD:
+"[redacted]"`.
+
+The typing fix is worth reading as a pattern rather than a tweak: without an
+accessibility tree, a keyboard-driven page needs a step whose success is
+observable. Typing the filter and pressing `Return` is not observable; pressing
+`Return` **and the screen changing** is. So the language step now clears the
+box, types slowly (`max_interval => 20`), waits for the debounced filter, and
+retries up to three times, treating "the screen did not change" as "the filter
+matched nothing".
+
 The remaining work for the GitHub side is unchanged:
 
 Before calling the implementation ready, record a successful GitHub Actions run

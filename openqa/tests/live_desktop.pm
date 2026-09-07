@@ -48,19 +48,37 @@ sub run {
     # entry, "Portuguese - Brazil", so the selection cannot depend on where the
     # tile happens to be. Typed in ASCII on purpose: the accented name would
     # have to survive the VNC keymap.
-    wait_screen_change(sub { type_string 'Brazil' }, 15)
-      or die 'the wizard did not filter its language list while typing';
-
-    # Wait for the filter to settle before activating anything. It runs on a
-    # 50 ms debounce and moves the selection to the first match from an idle
-    # callback (LanguageView._trigger_filter_update), so a Return sent right
-    # after the last keystroke activates the *unfiltered* first tile - the
-    # boot-time locale suggestion. Job 16 selected English exactly that way,
-    # and the next page's assertion caught it: with English there is only the
-    # "US" layout, the keyboard page has nothing to ask, and the run arrived at
-    # the desktop layout page still in English.
-    wait_still_screen stilltime => 2, timeout => 15;
-    wait_screen_change(sub { send_key 'ret' }, 30)
+    # Two things have to be true before Return is pressed, and each one cost a
+    # failed run to learn:
+    #
+    # The filter has to have been typed correctly. At the default typing speed
+    # a GitHub runner dropped a keystroke and the box read "Bazil": no language
+    # matched, Return activated nothing, and the run sat on the language page
+    # until the next assertion failed. max_interval is 1-250 with lower meaning
+    # slower.
+    #
+    # The filter also has to have been applied. It runs on a 50 ms debounce and
+    # moves the selection to the first match from an idle callback
+    # (LanguageView._trigger_filter_update), so a Return sent right after the
+    # last keystroke activates the *unfiltered* first tile - the boot-time
+    # locale suggestion. Job 16 selected English that way.
+    #
+    # The retry is what makes this self-correcting without an accessibility
+    # tree: a filter matching nothing leaves the screen unchanged when Return
+    # is pressed, and that is observable.
+    my $language_chosen = 0;
+    for (1 .. 3) {
+        # BackSpace reaches the search box from anywhere in the window, so this
+        # clears whatever a previous attempt typed.
+        send_key 'backspace' for 1 .. 12;
+        wait_still_screen stilltime => 1, timeout => 15;
+        type_string 'Brazil', max_interval => 20;
+        wait_still_screen stilltime => 2, timeout => 15;
+        next unless wait_screen_change(sub { send_key 'ret' }, 20);
+        $language_chosen = 1;
+        last;
+    }
+    $language_chosen
       or die 'the wizard did not accept the language chosen by search';
 
     # Every remaining page selects its first item when it appears
