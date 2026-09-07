@@ -13,17 +13,35 @@ set -euo pipefail
 # the printing stack come from, so look here before concluding a package is
 # missing from Desktop-add.
 #
-# `sed -n '/## Section/,/^$/p'` prints from the section header down to the first
-# blank line, which is how upstream separates its sections.
+# Sections run from an exact header down to the first blank line (including
+# whitespace-only lines). Validate every section before appending any of them:
+# a renamed header must not silently produce an incomplete desktop profile.
 upstreamDesktop=manjaro-iso-profiles/manjaro/kde/Packages-Desktop
 generatedDesktop=biglinux/kde/Packages-Desktop
 
-{
-    sed -n '/## Printing/,/^$/p' "$upstreamDesktop"
-    sed -n '/## Xorg Server and Graphics/,/^$/p' "$upstreamDesktop"
-    sed -n '/## Xorg Input Drivers/,/^$/p' "$upstreamDesktop"
-    sed -n '/## Misc/,/^$/p' "$upstreamDesktop"
-} >> "$generatedDesktop"
+sections=(
+    "## Printing"
+    "## Xorg Server and Graphics"
+    "## Xorg Input Drivers"
+    "## Misc"
+)
+sectionContents=()
+for section in "${sections[@]}"; do
+    content=$(sed -n "/^${section}[[:space:]]*$/,/^[[:space:]]*$/p" "$upstreamDesktop")
+    if [[ -z "$content" ]]; then
+        printf 'ERROR: missing section "%s" in %s\n' "$section" "$upstreamDesktop" >&2
+        exit 1
+    fi
+    # Upstream legitimately leaves Misc empty. The three essential sections
+    # must still carry package entries, not just a header and comments.
+    if [[ "$section" != "## Misc" ]] && ! grep -q '^[[:space:]]*[^#[:space:]]' <<< "$content"; then
+        printf 'ERROR: no packages in section "%s" in %s\n' "$section" "$upstreamDesktop" >&2
+        exit 1
+    fi
+    sectionContents+=("$content")
+done
+# Command substitution strips trailing newlines; restore the section separator.
+printf '%s\n\n' "${sectionContents[@]}" >> "$generatedDesktop"
 
 # Came in with "## Xorg Input Drivers" above and is not wanted: the void driver
 # claims input devices and nothing uses it. Anchored so it cannot match a

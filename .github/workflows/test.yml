@@ -1,0 +1,36 @@
+name: Test profile tooling
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          for script in build-iso/*.sh sources/editions/*/special-commands.sh; do
+              bash -n "$script"
+          done
+
+      - name: Run the test suite
+        shell: bash
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install pytest
+          .venv/bin/python -m pytest -q -ra build-iso/tests/

@@ -617,8 +617,11 @@ apply_profile_removals() {
         # the post-install step can remove, or a line nobody needs any more.
         # -v, not a trailing assignment: BEGIN runs before argument
         # assignments, and an empty `out` there is a fatal awk error.
+        # Match the input file, not record counters: with a zero-byte
+        # removal list, NR==FNR also holds throughout the package file and
+        # would silently replace it with an empty list.
         awk -v out="$target.new" 'BEGIN { printf "" > out }
-             NR==FNR {
+             FILENAME == ARGV[1] {
                  sub(/#.*/, "")
                  gsub(/^[ \t]+|[ \t]+$/, "")
                  if ($0 != "") drop[$0] = 1
