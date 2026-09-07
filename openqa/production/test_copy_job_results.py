@@ -55,8 +55,14 @@ destination = Path(os.environ["FAKE_ARCHIVE_ROOT"], args[-1].rsplit("/", 1)[-1])
 results = destination / "testresults"
 results.mkdir(parents=True, exist_ok=True)
 (results / "vars.json").write_text("{}" + chr(10), encoding="utf-8")
+# "area" is what tells the script the step compared the screen against a
+# needle, which is the evidence a reviewer cannot do without. A step that only
+# recorded the screen carries no area.
+detail = {"screenshot": "applications-1.png"}
+if os.environ.get("FAKE_SCREENSHOT_WAS_COMPARED", "1") == "1":
+    detail["area"] = [{"x": 0, "y": 0, "w": 10, "h": 10, "result": "ok"}]
 (results / "details-applications.json").write_text(
-    json.dumps({"details": [{"screenshot": "applications-1.png"}]}) + chr(10),
+    json.dumps({"details": [detail]}) + chr(10),
     encoding="utf-8",
 )
 # openQA answers 403 for step numbers that never had a screenshot, and the
@@ -86,7 +92,11 @@ class CopyJobResultsTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def run_script(
-        self, *arguments: str, screenshot: bool = True, error_page: bool = False
+        self,
+        *arguments: str,
+        screenshot: bool = True,
+        error_page: bool = False,
+        compared: bool = True,
     ):
         environment = os.environ.copy()
         environment["DOCKER_BIN"] = str(self.fake_docker)
@@ -94,6 +104,7 @@ class CopyJobResultsTests(unittest.TestCase):
         environment["FAKE_DOCKER_LOG"] = str(self.docker_log)
         environment["FAKE_WRITE_SCREENSHOT"] = "1" if screenshot else "0"
         environment["FAKE_SCREENSHOT_IS_ERROR_PAGE"] = "1" if error_page else "0"
+        environment["FAKE_SCREENSHOT_WAS_COMPARED"] = "1" if compared else "0"
         return subprocess.run(
             [str(SCRIPT), *arguments],
             capture_output=True,
@@ -133,7 +144,7 @@ class CopyJobResultsTests(unittest.TestCase):
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Screenshot named by the details is missing", result.stderr)
+        self.assertIn("Screenshot compared by a step is missing", result.stderr)
 
     def test_fails_when_a_named_screenshot_was_not_fetched(self) -> None:
         result = self.run_script(
@@ -141,7 +152,26 @@ class CopyJobResultsTests(unittest.TestCase):
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Screenshot named by the details is missing", result.stderr)
+        self.assertIn("Screenshot compared by a step is missing", result.stderr)
+
+    def test_counts_recorded_screenshots_openqa_did_not_serve(self) -> None:
+        # openQA answers 403 for most steps that only recorded the screen, and
+        # the archive client stores the error page under the name it asked for.
+        # The applications module records over a thousand such steps, so
+        # failing on them would fail every release for evidence openQA never
+        # offered. Only a screenshot a step *compared* is evidence.
+        result = self.run_script(
+            "openqa-test",
+            "1",
+            str(self.archive_root / "1"),
+            screenshot=False,
+            error_page=True,
+            compared=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("1 recorded screenshots openQA did not serve", result.stdout)
+        self.assertNotIn("is missing", result.stderr)
 
     def test_rejects_invalid_job_id(self) -> None:
         result = self.run_script("openqa-test", "0", str(self.archive_root / "0"))

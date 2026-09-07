@@ -71,15 +71,25 @@ while IFS= read -r -d '' image; do
     discarded=$((discarded + 1))
 done < <(find "$destination/testresults" -type f -name '*.png' -print0)
 
-# Every screenshot the details name has to be beside them, otherwise the report
-# and the artifact describe evidence nobody can look at. This runs after the
-# discard above, so a details-named screenshot that arrived as an error page is
-# reported as missing instead of passing as a file.
+# A screenshot that a step *compared* is evidence: the report shows the match
+# areas over it, and without the file nobody can check the comparison. Those
+# have to be here. A step that only recorded the screen is different - openQA
+# answers 403 for many of them, and the archive client stores the error page
+# under the name it asked for. The applications module records over a thousand
+# such steps, so failing on them would fail every release for evidence openQA
+# never offered. This runs after the discard above, so an error page counts as
+# missing rather than passing as a file.
 missing=0
-while IFS= read -r screenshot; do
+unserved=0
+while IFS= read -r line; do
+    screenshot=${line#* }
     [[ -s "$destination/testresults/$screenshot" ]] && continue
-    echo "Screenshot named by the details is missing: $screenshot" >&2
-    missing=$((missing + 1))
+    if [[ "$line" == compared\ * ]]; then
+        echo "Screenshot compared by a step is missing: $screenshot" >&2
+        missing=$((missing + 1))
+    else
+        unserved=$((unserved + 1))
+    fi
 done < <(python3 - "$destination/testresults" <<'PY_END'
 import json
 import sys
@@ -91,15 +101,21 @@ for details in sorted(Path(sys.argv[1]).glob("details-*.json")):
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Invalid openQA details file {details}: {error}")
     for detail in payload.get("details", []):
-        if isinstance(detail, dict) and isinstance(detail.get("screenshot"), str):
-            print(detail["screenshot"])
+        if not isinstance(detail, dict):
+            continue
+        screenshot = detail.get("screenshot")
+        if not isinstance(screenshot, str):
+            continue
+        # "area" is present when the step compared the screen against a needle.
+        kind = "compared" if detail.get("area") else "recorded"
+        print(f"{kind} {screenshot}")
 PY_END
 )
 ((missing == 0)) || {
-    echo "Archived result for openQA job $job_id is missing $missing screenshots" >&2
+    echo "Archived result for openQA job $job_id is missing $missing compared screenshots" >&2
     exit 1
 }
 
-printf 'Archived openQA job %s with %s screenshots, %s error pages discarded\n' \
+printf 'Archived openQA job %s with %s screenshots, %s error pages discarded, %s recorded screenshots openQA did not serve\n' \
     "$job_id" "$(find "$destination/testresults" -maxdepth 1 -name '*.png' | wc -l)" \
-    "$discarded"
+    "$discarded" "$unserved"

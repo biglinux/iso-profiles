@@ -265,6 +265,16 @@ own deadline - with `break` and a status variable rather than `exit`, because
 `_run_guest_command` runs the command in the login shell and an `exit` there
 closes the console for every module that follows.
 
+One more, and it is the reason the collection step kept failing after the
+removals were fixed: `copy-job-results.sh` required every screenshot the module
+details name to be present. openQA answers 403 for most steps that only
+*recorded* the screen - 35 of 67 named screenshots in one application shard -
+and the archive client stores the error page under the name it asked for. The
+applications module records over a thousand such steps, so the rule failed
+every release for evidence openQA never offered. A screenshot a step
+**compared** against a needle is still required: without the file nobody can
+check the comparison the report draws. The rest are counted and reported.
+
 The remaining work for the GitHub side is unchanged:
 
 Before calling the implementation ready, record a successful GitHub Actions run
