@@ -246,6 +246,25 @@ box, types slowly (`max_interval => 20`), waits for the debounced filter, and
 retries up to three times, treating "the screen did not change" as "the filter
 matched nothing".
 
+Run 34130169469 got every module to run and exposed four more defects, none of
+which a local plan could have shown:
+
+| Defect | Why local runs never saw it |
+| --- | --- |
+| the gate rejected `softfailed`, so a plan in which every module passed still failed the job | `installed_security` softfails by design; the scheduler only accepted `passed`, which made Phase E and the gate contradict each other |
+| `become_root` typed the uid check before sudo had exited, and sudo read it as another password attempt | the local shell is fast enough that sudo had always returned first |
+| the failed-escalation cleanup used `send_key 'ctrl-c'`, which kills the virtio backend (`Virtio terminal ... do not support send_key`) | escalation never failed locally, so the cleanup path never ran |
+| `copy-job-results.sh` deleted the archived error-page screenshots from the runner, but openQA writes them as root | that script only runs in the workflow |
+
+And one that a local run did reproduce once it was written: the process-exit
+wait was an unbounded `while` loop with a 15-second serial budget. When an
+application took longer to close, the loop kept running in the guest's
+foreground and read the next typed command instead of the shell, so one slow
+close cascaded into three failed modules. It is now bounded in the guest by its
+own deadline - with `break` and a status variable rather than `exit`, because
+`_run_guest_command` runs the command in the login shell and an `exit` there
+closes the console for every module that follows.
+
 The remaining work for the GitHub side is unchanged:
 
 Before calling the implementation ready, record a successful GitHub Actions run

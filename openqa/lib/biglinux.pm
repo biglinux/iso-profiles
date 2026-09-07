@@ -120,6 +120,8 @@ sub become_root {
       : 'biglinux';
     my $prompt_marker = '__OA_SUDO_PASSWORD__';
     my $prompt_format = _marker_format($prompt_marker);
+    my $done_marker = '__OA_SUDO_DONE__';
+    my $done_format = _marker_format($done_marker);
 
     for (1 .. 2) {
         # Never type the password without seeing sudo ask for it. Typing it
@@ -132,10 +134,18 @@ sub become_root {
         # The prompt is built by printf so the echo of the command itself
         # carries the octal escapes rather than the marker: only sudo's own
         # prompt matches.
-        testapi::type_string "sudo -k; sudo -S -p \"\$(printf '$prompt_format')\" -v\n";
+        testapi::type_string "sudo -k; sudo -S -p \"\$(printf '$prompt_format')\" -v"
+          . "; printf '$done_format\\n'\n";
         next unless defined testapi::wait_serial($prompt_marker, timeout => 30);
         testapi::type_password $password;
         testapi::send_key 'ret';
+        # Wait for sudo to exit before typing anything else. It prints nothing
+        # on success, so without this marker the next command is typed while
+        # sudo is still reading stdin and becomes another password attempt: on
+        # a GitHub runner that swallowed the uid check twice and turned a
+        # non-blocking module into a failed one. The marker is printed whether
+        # sudo succeeded or not, so the check below always gets to run.
+        next unless defined testapi::wait_serial($done_marker, timeout => 60);
         return 1 if $is_root->();
     }
 
@@ -143,8 +153,11 @@ sub become_root {
     # wrong password keeps asking, and every command typed after it becomes
     # another attempt: on job 17 the next module found the shell eating its
     # input and died on an unrelated AT-SPI timeout.
-    testapi::send_key 'ctrl-c';
-    testapi::type_string "\n";
+    # A control character, not send_key: the virtio terminal backend dies with
+    # "Virtio terminal and svirt serial terminal do not support send_key" for
+    # anything it cannot map, and that turned a failed escalation into a dead
+    # backend and an incomplete job on a GitHub runner.
+    testapi::type_string "\003\n";
     testapi::wait_serial('# ', no_regex => 1, timeout => 15);
     return 0;
 }

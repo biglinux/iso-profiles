@@ -37,7 +37,15 @@ results_mount=${BIGLINUX_OPENQA_RESULTS_MOUNT:-/var/lib/openqa/biglinux-results}
     exit 2
 }
 
-rm -rf -- "$destination"
+# Through the container, not from here: openQA archives into the mounted
+# results directory as root, so a previous run leaves files this user
+# cannot delete. On a GitHub runner that failed the whole collection step
+# for a job whose plan had passed.
+purge_in_container() {
+    "$docker_bin" exec "$container" find "$results_mount/$job_id" \
+        -mindepth 1 -delete 2>/dev/null || true
+}
+purge_in_container
 "$docker_bin" exec "$container" openqa-cli archive --host http://localhost \
     --with-thumbnails "$job_id" "$results_mount/$job_id"
 
@@ -58,7 +66,8 @@ find "$destination/testresults" -maxdepth 1 -type f -name 'details-*.json' \
 discarded=0
 while IFS= read -r -d '' image; do
     [[ "$(od -An -tx1 -N8 -- "$image" | tr -d '[:space:]')" == 89504e470d0a1a0a ]] && continue
-    rm -f -- "$image"
+    "$docker_bin" exec "$container" \
+        rm -f -- "$results_mount/$job_id/${image#"$destination/"}"
     discarded=$((discarded + 1))
 done < <(find "$destination/testresults" -type f -name '*.png' -print0)
 

@@ -410,8 +410,8 @@ sub terminate_window {
     if ($close->{status} eq 'passed') {
         select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command(
-            "while test -d /proc/$pid && ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do sleep 1; done",
-            $keyboard_fallback ? 10 : 15,
+            _wait_for_exit_command($pid, $keyboard_fallback ? 17 : 27),
+            $keyboard_fallback ? 20 : 30,
         );
         $process_gone = defined $wait_exit && $wait_exit == 0;
     }
@@ -422,8 +422,8 @@ sub terminate_window {
             my $quit_status = _run_guest_command($graceful_quit, 10);
             if (defined $quit_status && $quit_status == 0) {
                 $wait_exit = _run_guest_command(
-                    "while test -d /proc/$pid && ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do sleep 1; done",
-                    10,
+                    _wait_for_exit_command($pid, 17),
+                    20,
                 );
                 $process_gone = defined $wait_exit && $wait_exit == 0;
                 $close->{action} = 'graceful.' . $graceful_quit
@@ -439,8 +439,8 @@ sub terminate_window {
         send_key 'alt-f4';
         select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command(
-            "while test -d /proc/$pid && ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do sleep 1; done",
-            10,
+            _wait_for_exit_command($pid, 17),
+            20,
         );
         $process_gone = defined $wait_exit && $wait_exit == 0;
     }
@@ -452,8 +452,8 @@ sub terminate_window {
         send_key 'ctrl-q';
         select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command(
-            "while test -d /proc/$pid && ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do sleep 1; done",
-            10,
+            _wait_for_exit_command($pid, 17),
+            20,
         );
         $process_gone = defined $wait_exit && $wait_exit == 0;
     }
@@ -546,7 +546,7 @@ sub terminate_x11_window {
     my ($class, $status_path, $launch_pid, $entry, $window_pid) = @_;
     die "invalid X11 launch PID '$launch_pid'"
       unless defined $launch_pid && $launch_pid =~ /\A[0-9]+\z/ && $launch_pid > 1;
-    my $wait_command = "while test -d /proc/$launch_pid && ! grep -q '^State:[[:space:]]*Z' /proc/$launch_pid/status 2>/dev/null; do sleep 1; done";
+    my $wait_command = _wait_for_exit_command($launch_pid, 17);
     my $close_action = 'keyboard.alt-f4';
     select_console 'user-virtio-terminal';
     my $native_close = _native_close_command($entry, $launch_pid);
@@ -554,7 +554,7 @@ sub terminate_x11_window {
     my $wait_exit;
     if (defined $native_close) {
         my $native_status = _run_guest_command($native_close, 5);
-        $wait_exit = _run_guest_command($wait_command, 10)
+        $wait_exit = _run_guest_command($wait_command, 20)
           if defined $native_status && $native_status == 0;
         $close_action = 'x11.wmctrl-close'
           if defined $wait_exit && $wait_exit == 0;
@@ -563,14 +563,14 @@ sub terminate_x11_window {
         select_console 'sut';
         send_key 'alt-f4';
         select_console 'user-virtio-terminal';
-        $wait_exit = _run_guest_command($wait_command, 10);
+        $wait_exit = _run_guest_command($wait_command, 20);
     }
     my $process_gone = defined $wait_exit && $wait_exit == 0;
     if (!$process_gone) {
         select_console 'sut';
         send_key 'ctrl-q';
         select_console 'user-virtio-terminal';
-        $wait_exit = _run_guest_command($wait_command, 10);
+        $wait_exit = _run_guest_command($wait_command, 20);
         $process_gone = defined $wait_exit && $wait_exit == 0;
         $close_action = 'keyboard.ctrl-q' if $process_gone;
     }
@@ -677,6 +677,26 @@ sub upload_guest_file {
     return $class->run_command($command, 120);
 }
 
+sub _wait_for_exit_command {
+    my ($pid, $seconds) = @_;
+    # The loop bounds itself in the guest. Without a deadline it keeps running
+    # in the foreground after the host's serial wait expires, and every command
+    # typed afterwards is read by the loop instead of the shell: one slow
+    # application close cascaded into three failed modules on a GitHub runner,
+    # where an application that closes in two seconds here took longer than
+    # the 15 second budget. A non-zero status on the deadline is what the
+    # callers already expect from "the process is still there".
+    #
+    # "break" and a status variable, never "exit": _run_guest_command wraps the
+    # command in braces and runs it in the login shell, so an exit here closes
+    # the serial console and every module after it dies on a dead console.
+    return "deadline=\$((\$(date +%s) + $seconds)); timed_out=0; "
+      . "while test -d /proc/$pid "
+      . "&& ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do "
+      . "if test \"\$(date +%s)\" -ge \"\$deadline\"; then timed_out=1; break; fi; "
+      . "sleep 1; done; test \"\$timed_out\" -eq 0";
+}
+
 sub _run_guest_command {
     my ($command, $timeout) = @_;
     my $marker = sprintf('__OA_COMMAND_DONE_%d_%d__', $$, int(time * 1000) % 1_000_000);
@@ -696,7 +716,10 @@ sub _run_guest_command {
         type_string '', terminate_with => 'ETX';
         type_string 'printf ' . _shell_quote(_marker_format($recovery_marker) . '\\n');
         send_key 'ret';
-        wait_serial $recovery_marker, no_regex => 1, timeout => 3;
+        # Generous on purpose: this only runs after a command already
+        # overran, and failing to interrupt it leaves the console unusable
+        # for every module that follows.
+        wait_serial $recovery_marker, no_regex => 1, timeout => 15;
         return undef;
     }
     my ($status) = $serial =~ $status_regex;
