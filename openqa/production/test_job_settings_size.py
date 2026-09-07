@@ -17,14 +17,12 @@ unrelated failures, so the rule is pinned here rather than remembered.
 from __future__ import annotations
 
 import re
-import subprocess
 import unittest
 from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCHEDULER = REPOSITORY / "openqa/development/schedule-release-gate.sh"
 POLICY = REPOSITORY / "openqa/application-policy.yaml"
-CANONICALISER = REPOSITORY / "openqa/production/aggregate_policy.py"
 
 # PostgreSQL's limit for an indexed value, which is what a job setting is.
 INDEX_ROW_LIMIT = 2704
@@ -39,12 +37,15 @@ class JobSettingsSizeTests(unittest.TestCase):
         self.assertIn("BIGLINUX_APPLICATION_POLICY_HASH=$policy_hash", scheduler)
 
     def test_the_policy_would_not_fit_in_a_setting_anyway(self) -> None:
-        canonical = subprocess.run(
-            ["python3", str(CANONICALISER), str(POLICY)],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        import json
+
+        import yaml
+
+        with POLICY.open(encoding="utf-8") as stream:
+            policy = yaml.safe_load(stream)
+        canonical = json.dumps(
+            policy, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         # If this ever shrinks below the limit again, the rule above still
         # stands: the next entry would put it back over.
         self.assertGreater(len(canonical.encode("utf-8")), 1000, canonical[:200])

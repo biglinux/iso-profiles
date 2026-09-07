@@ -15,11 +15,10 @@ from typing import Any
 CLASSIFICATIONS = {"launchable", "excluded", "duplicate-alias", "invalid"}
 
 
-# One canonicalisation, shared with openqa/lib/application_policy.pm, which is
-# how a test can verify the policy in its checkout against the hash the
-# scheduler computed.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aggregate_policy import canonical_json  # noqa: E402
+def canonical_json(value: Any) -> str:
+    # The form the scheduler hashes in Ruby and openqa/lib/application_policy.pm
+    # reproduces in Perl. test_policy_canonical_form.py proves the three agree.
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def shard_for(desktop_id: str, shard_count: int) -> int:

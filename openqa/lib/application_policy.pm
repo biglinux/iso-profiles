@@ -5,6 +5,7 @@ package application_policy;
 use Mojo::Base -strict, -signatures;
 use testapi ();
 use JSON::PP ();
+use Encode ();
 
 # The policy is read from the checkout rather than from a job setting.
 #
@@ -14,36 +15,34 @@ use JSON::PP ();
 # "index row size 2808 exceeds btree version 4 maximum 2704". A file has no
 # such limit, and the checkout is already pinned by TEST_GIT_REFSPEC.
 #
-# Provenance is kept by the hash the scheduler computed: the same canonical
-# JSON the aggregator recomputes. The canonicalisation lives in exactly one
-# place - openqa/production/aggregate_policy.py - so the scheduler, this
-# reader and the aggregator cannot drift apart.
+# Provenance is kept by the hash the scheduler computed over the canonical
+# JSON form of the policy, which the aggregator recomputes. Three
+# implementations of that form now exist - Ruby in the scheduler, Python in the
+# aggregator, Perl here - and openqa/production/test_policy_canonical_form.py
+# proves they agree byte for byte.
 sub load ($class) {
     my $casedir = testapi::get_var('CASEDIR', '/workspace');
     my $policy_path = "$casedir/openqa/application-policy.yaml";
-    my $reader_path = "$casedir/openqa/production/aggregate_policy.py";
     die "the application policy is missing at $policy_path" unless -f $policy_path;
-    die "the policy reader is missing at $reader_path" unless -f $reader_path;
 
-    my @command = ('python3', $reader_path, $policy_path);
-    open my $stream, '-|', @command
-      or die "could not run the policy reader: $!";
-    my $canonical = do { local $/; <$stream> };
-    close $stream;
-    die 'the policy reader failed' if $? != 0 || !defined $canonical || $canonical eq '';
-    chomp $canonical;
+    require YAML::PP;
+    require Digest::SHA;
+    my $policy = eval { YAML::PP->new(boolean => 'JSON::PP')->load_file($policy_path) };
+    die "the application policy is not valid YAML: $@" unless ref $policy eq 'HASH';
+
+    # The same canonical form the scheduler hashes and the aggregator
+    # recomputes: keys sorted, no spaces. Parsed in Perl rather than shelled
+    # out to Python, because the worker image ships YAML::PP and no PyYAML.
+    my $canonical = JSON::PP->new->canonical(1)->utf8(0)->encode($policy);
 
     my $expected = testapi::get_var('BIGLINUX_APPLICATION_POLICY_HASH', '');
     die 'BIGLINUX_APPLICATION_POLICY_HASH is required to verify the policy'
       if $expected eq '';
-    require Digest::SHA;
-    my $actual = Digest::SHA::sha256_hex($canonical);
+    my $actual = Digest::SHA::sha256_hex(Encode::encode('UTF-8', $canonical));
     die "the application policy in $casedir does not match the scheduled hash: "
       . "expected $expected, read $actual"
       unless $actual eq $expected;
 
-    my $policy = eval { JSON::PP::decode_json($canonical) };
-    die "the application policy is not valid JSON: $@" unless ref $policy eq 'HASH';
     return $policy;
 }
 
