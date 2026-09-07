@@ -102,6 +102,8 @@ exclude:
     reason: Plasma session helper is invoked only during session shutdown
   - desktop_id: org.kde.plasma-interactiveconsole.desktop
     reason: Plasma service entry has no executable command
+  - desktop_id: org.kde.plasma.keyboard.desktop
+    reason: Wayland virtual keyboard (X-KDE-Wayland-VirtualKeyboard) is started by the compositor through the input-method protocol, so it exits immediately when launched standalone
   - desktop_id: org.kde.plasmashell.desktop
     reason: Plasma shell is already running and managed by the desktop session
   - desktop_id: org.kde.plasmawindowed.desktop
