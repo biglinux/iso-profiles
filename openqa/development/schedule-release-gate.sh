@@ -230,8 +230,12 @@ api_post_args=(
     "BIGLINUX_OPENQA_BUILD=$openqa_build"
     "BIGLINUX_OPENQA_TEST_GIT_REFSPEC=$test_git_refspec"
     "BIGLINUX_NEEDLES_GIT_HASH=$needles_git_hash"
+    # The hash travels, the policy does not: openQA indexes every job setting,
+    # and PostgreSQL refuses an index row over 2704 bytes. The canonical policy
+    # JSON was already 2.7 KB, so one more entry broke job creation for every
+    # job in the run - "index row size 2808 exceeds btree version 4 maximum".
+    # The tests read the policy from CASEDIR and check it against this hash.
     "BIGLINUX_APPLICATION_POLICY_HASH=$policy_hash"
-    "BIGLINUX_APPLICATION_POLICY_JSON=$policy_json"
     QEMU_NO_KVM=0
     WORKER_CLASS=biglinux-kvm
     "BUILD=$plan_build"

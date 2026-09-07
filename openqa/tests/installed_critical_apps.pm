@@ -4,6 +4,7 @@ use Mojo::Base 'basetest';
 use JSON::PP qw(decode_json);
 use testapi;
 use atspi;
+use application_policy;
 
 sub test_flags {
     return {fatal => 1};
@@ -18,12 +19,9 @@ sub _desktop_id {
 }
 
 sub _critical_policy {
-    my $raw = get_var('BIGLINUX_APPLICATION_POLICY_JSON', '');
-    die 'BIGLINUX_APPLICATION_POLICY_JSON is required for installed critical applications'
-      unless defined $raw && $raw ne '';
-    my $policy = eval { decode_json($raw) };
-    die "BIGLINUX_APPLICATION_POLICY_JSON is invalid: $@"
-      unless ref $policy eq 'HASH' && ref $policy->{critical} eq 'ARRAY';
+    my $policy = application_policy->load;
+    die 'the application policy has no critical section'
+      unless ref $policy->{critical} eq 'ARRAY';
     return $policy->{critical};
 }
 

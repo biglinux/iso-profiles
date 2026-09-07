@@ -3,6 +3,7 @@
 use Mojo::Base 'basetest';
 use testapi;
 use atspi;
+use application_policy;
 use Digest::SHA qw(sha256_hex);
 use JSON::PP qw(encode_json);
 use Math::BigInt;
@@ -153,12 +154,7 @@ sub _desktop_id {
 }
 
 sub _application_policy {
-    my $raw = get_var('BIGLINUX_APPLICATION_POLICY_JSON', '');
-    die 'BIGLINUX_APPLICATION_POLICY_JSON is required for application coverage'
-      unless defined $raw && $raw ne '';
-    my $policy = eval { JSON::PP::decode_json($raw) };
-    die "BIGLINUX_APPLICATION_POLICY_JSON is invalid: $@"
-      unless ref $policy eq 'HASH';
+    my $policy = application_policy->load;
     die 'application policy version must be 1'
       unless $policy->{version} && $policy->{version} == 1;
     for my $section (qw(exclude aliases critical)) {
