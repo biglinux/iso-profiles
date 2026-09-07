@@ -213,15 +213,19 @@ Resource limits worth respecting on a workstation:
   `start-gate-local.sh` refuses to start on the existing name.
 
 The container copies the read-only `/workspace-source` mount to `/workspace`
-once, at startup, with `rsync --archive --delete` and without `./output` or
-`.git`. Editing the tests between two plans on the **same** container therefore
-changes nothing. Re-sync before scheduling again, or restart the container:
+once, at startup, with `rsync --archive --delete` and without `./output`.
+Editing the tests between two plans on the **same** container therefore changes
+nothing. Re-sync before scheduling again, or restart the container:
 
 ```bash
-docker exec biglinux-openqa-gate rsync -a --delete \
-  --exclude '/output/' --exclude '/.git/' \
+docker exec biglinux-openqa-gate rsync -a --delete --exclude '/output/' \
   --chown=_openqa-worker:_openqa-worker /workspace-source/ /workspace/
 ```
+
+`.git` must stay in the copy: the production gate pins `TEST_GIT_REFSPEC` to the
+run's commit and openQA checks it out inside `CASEDIR`, so a `/workspace`
+without a repository fails every job with `isotovideo died: Failed to check out
+<sha> in '/workspace'`. A local plan pins no refspec and never notices.
 
 `./output` is excluded for a reason worth knowing: `build-local.sh` used to keep
 its chroots under it, and copying unpacked root filesystems with device nodes

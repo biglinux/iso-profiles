@@ -34,9 +34,13 @@ if [[ -d /workspace-source ]]; then
     # "cannot create special file ... Operation not permitted" and takes the
     # container down before the web UI is up. --delete also keeps a long-lived
     # local container honest about files removed since it started.
+    #
+    # .git stays: openQA checks TEST_GIT_REFSPEC out inside CASEDIR, so a
+    # /workspace without a repository fails every job with "isotovideo died:
+    # Failed to check out <sha> in '/workspace'". Excluding it passed locally,
+    # where no refspec is pinned, and failed every job on GitHub.
     rsync --archive --delete \
         --exclude '/output/' \
-        --exclude '/.git/' \
         --chown=_openqa-worker:_openqa-worker \
         /workspace-source/ /workspace/
 fi
