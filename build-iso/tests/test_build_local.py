@@ -57,11 +57,12 @@ def _fake_podman(root, *, also_docker=False):
     return bin_dir, root / "podman-args"
 
 
-def _run(checkout, bin_dir, record_file, *args, rootless=False):
+def _run(checkout, bin_dir, record_file, *args, rootless=False, env=None):
     environment = dict(os.environ)
     environment["PATH"] = f"{bin_dir}{os.pathsep}{environment['PATH']}"
     environment["RECORD_FILE"] = str(record_file)
     environment["FAKE_ROOTLESS"] = "true" if rootless else "false"
+    environment.update(env or {})
     return subprocess.run(
         ["bash", "build-iso/build-local.sh", *args],
         cwd=checkout,
@@ -248,6 +249,23 @@ def test_the_chroot_work_directories_are_mounted_off_overlayfs(exec_tmp_path):
     mounted = [value for value in arguments if ":" in value]
     assert any(value.endswith(":/var/lib/manjaro-tools/buildiso") for value in mounted), mounted
     assert any(value.endswith(":/var/cache/manjaro-tools/iso") for value in mounted), mounted
+
+
+def test_the_work_directory_stays_out_of_the_checkout(exec_tmp_path):
+    # The chroots contain device nodes, and the openQA gate copies the whole
+    # checkout into its container: a work directory under ./output makes that
+    # copy fail and takes the gate down with it.
+    checkout = _make_checkout(exec_tmp_path)
+    bin_dir, record_file = _fake_podman(exec_tmp_path)
+    cache = exec_tmp_path / "cache-home"
+
+    result = _run(checkout, bin_dir, record_file, "kde", env={"XDG_CACHE_HOME": str(cache)})
+
+    assert result.returncode == 0, result.stderr
+    arguments = record_file.read_text(encoding="utf-8").splitlines()
+    mounted = [value for value in arguments if ":/var/" in value]
+    assert any(value.startswith(f"{cache}/biglinux-build-iso/") for value in mounted), mounted
+    assert not any(str(checkout) in value for value in mounted), mounted
 
 
 def test_the_work_directory_can_be_placed_elsewhere(exec_tmp_path):

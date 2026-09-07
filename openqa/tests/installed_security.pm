@@ -63,7 +63,11 @@ dbnever=$(grep -cE '^[[:space:]]*SigLevel.*DatabaseNever' /etc/pacman.conf 2>/de
 httpmirror=$(grep -rhE '^[[:space:]]*Server[[:space:]]*=[[:space:]]*http:' /etc/pacman.d/ 2>/dev/null | grep -c . || true)
 kptr=$(sysctl -n kernel.kptr_restrict 2>/dev/null || echo unknown)
 dmesgr=$(sysctl -n kernel.dmesg_restrict 2>/dev/null || echo unknown)
-audit=$(grep -o 'audit=[01]' /proc/cmdline 2>/dev/null | head -1 || echo unset)
+# "|| echo unset" on a pipeline never fires: the status is head's, not grep's,
+# so a kernel command line without an audit= setting used to report an empty
+# value that read like a measurement rather than an absence.
+audit=$(grep -oE 'audit=[01]' /proc/cmdline 2>/dev/null | head -1)
+audit=${audit:-unset}
 apparmor=$(grep -c 'security=apparmor' /proc/cmdline 2>/dev/null || true)
 luks=none
 if lsblk -no FSTYPE 2>/dev/null | grep -q crypto_LUKS; then

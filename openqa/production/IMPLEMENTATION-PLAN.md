@@ -144,6 +144,45 @@ and chmods only `results`, so the container could not traverse the OVMF
 directory as `_openqa-worker`; the variable store also has to be writable by
 that user rather than by the invoking one.
 
+### First cross-build comparison
+
+`build-iso/build-local.sh` produced `biglinux_2026-09-07_k618.iso` (5.1 GiB, 13
+minutes with `-r https://linorg.usp.br/manjaro`), and a BIOS plan against it
+passed all twelve modules with `installed_security` softfailed. Comparing its
+posture with the released `2026-08-19` ISO is what this module exists for:
+
+| Measured | 2026-08-19 | 2026-09-07 |
+| --- | --- | --- |
+| effective `NOPASSWD` grants | 2 | 2 |
+| listening beyond loopback | 8 (`smbd`, Avahi, `kdeconnectd`) | 6 or 8, see below |
+| firewall filtering | none | none |
+| `audit=` on the kernel command line | `audit=0` | absent |
+| pending updates on a fresh install | 200 | 295 |
+
+The `audit=` row also exposed a measurement bug: `grep ... | head -1 || echo
+unset` never reports "unset", because the pipeline's exit status is `head`'s.
+An absent setting printed an empty value that read like a measurement. With
+that fixed, the 2026-09-07 ISO reports `audit=unset`, so the AppArmor warning
+correctly stops firing.
+
+The listening count is the one item that moves between runs of the same ISO: it
+was 6 on one run and 8 on the next, because `kdeconnectd` binds its two
+sockets when the desktop session gets there, which is sometimes after the
+probe. The port list in the uploaded log is the part to read; the count is a
+trend, not a constant.
+
+The build itself needed two more fixes, both found the hard way:
+
+- `build-local.sh` kept its chroots in `./output/.buildiso-work`, inside the
+  checkout the gate mounts. `start-container.sh` copied that with `cp -a`, hit
+  the device nodes in the unpacked root filesystems, and the container died
+  before the web UI answered. The work directory now defaults to
+  `${XDG_CACHE_HOME:-$HOME/.cache}/biglinux-build-iso`, and the container copy
+  is an `rsync` that excludes `./output` and `.git`.
+- the Manjaro mirror flag takes a base URL, not a pacman template: passing
+  `.../$repo/$arch` is rejected, and a mirror that answers on its front page
+  can still 404 every database.
+
 The remaining work for the GitHub side is unchanged:
 
 Before calling the implementation ready, record a successful GitHub Actions run

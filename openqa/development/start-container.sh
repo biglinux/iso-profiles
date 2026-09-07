@@ -28,8 +28,17 @@ groupmod --gid "$KVM_GID" --non-unique kvm
 usermod --append --groups kvm _openqa-worker
 if [[ -d /workspace-source ]]; then
     install -d -m 0755 /workspace
-    cp -a /workspace-source/. /workspace/
-    chown -R _openqa-worker:_openqa-worker /workspace
+    # Copy the test sources, not everything that happens to sit in the
+    # checkout. A local ISO build leaves unpacked root filesystems under
+    # ./output, device nodes included, and "cp -a" over those fails with
+    # "cannot create special file ... Operation not permitted" and takes the
+    # container down before the web UI is up. --delete also keeps a long-lived
+    # local container honest about files removed since it started.
+    rsync --archive --delete \
+        --exclude '/output/' \
+        --exclude '/.git/' \
+        --chown=_openqa-worker:_openqa-worker \
+        /workspace-source/ /workspace/
 fi
 export skip_suse_specifics=1
 export skip_suse_tests=1

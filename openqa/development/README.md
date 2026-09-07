@@ -213,15 +213,22 @@ Resource limits worth respecting on a workstation:
   `start-gate-local.sh` refuses to start on the existing name.
 
 The container copies the read-only `/workspace-source` mount to `/workspace`
-once, at startup. Editing the tests between two plans on the **same** container
-therefore changes nothing, and a deleted file is worse than an unchanged one:
-`cp -a` never removes it, so a needle you just dropped keeps matching. Re-sync
-before scheduling again, or restart the container:
+once, at startup, with `rsync --archive --delete` and without `./output` or
+`.git`. Editing the tests between two plans on the **same** container therefore
+changes nothing. Re-sync before scheduling again, or restart the container:
 
 ```bash
-docker exec biglinux-openqa-gate \
-  rsync -a --delete --chown=_openqa-worker:_openqa-worker /workspace-source/ /workspace/
+docker exec biglinux-openqa-gate rsync -a --delete \
+  --exclude '/output/' --exclude '/.git/' \
+  --chown=_openqa-worker:_openqa-worker /workspace-source/ /workspace/
 ```
+
+`./output` is excluded for a reason worth knowing: `build-local.sh` used to keep
+its chroots under it, and copying unpacked root filesystems with device nodes
+into the container fails with `cannot create special file ... Operation not
+permitted` and kills the container before the web UI answers. The work
+directory now defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/biglinux-build-iso`
+instead, and the copy skips the output directory either way.
 
 ## How the agent uses it
 

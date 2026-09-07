@@ -18,7 +18,8 @@
 #   -o <dir>      output directory (default: ./output)
 #   -i <image>    container image (default depends on the distribution)
 #   -r <url>      package mirror used by the build (default: the engine's)
-#   -w <dir>      chroot/cache work directory (default: <output>/.buildiso-work)
+#   -w <dir>      chroot/cache work directory
+#                 (default: ${XDG_CACHE_HOME:-$HOME/.cache}/biglinux-build-iso)
 #
 set -euo pipefail
 
@@ -104,7 +105,12 @@ mkdir -p "$outputDir"
 # upperdir") after the packages are already downloaded. The GitHub job avoids it
 # by mounting the runner's scratch disk over these two paths; do the same here,
 # from a directory on the host filesystem.
-workDir=${workDir:-$outputDir/.buildiso-work}
+# Deliberately outside the checkout. These directories hold unpacked root
+# filesystems, device nodes included, and the openQA gate copies the whole
+# checkout into its container: with the work directory under ./output, that
+# copy fails with "cannot create special file ... Operation not permitted" and
+# the container dies before the web UI comes up.
+workDir=${workDir:-${XDG_CACHE_HOME:-$HOME/.cache}/biglinux-build-iso}
 mkdir -p "$workDir/buildiso" "$workDir/cache"
 outputDir=$(cd "$outputDir" && pwd)
 
