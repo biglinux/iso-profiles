@@ -78,6 +78,20 @@ the new image before the pin is updated, and expect
 [`../scenario-definitions.yaml`](../scenario-definitions.yaml) to need changes
 if the schema moved.
 
+**The pin also expires on its own.** The openSUSE devel registry keeps about
+five tags for this image and garbage-collects the rest, so a pin that worked
+for weeks starts answering `404` and every openQA job fails at "Validate pinned
+openQA image" before a single test runs - which is what happened to all three
+August runs on this branch. A workstation does not notice, because its Docker
+cache still holds the image. Check the pin still resolves before dispatching a
+gate, and raise it on a schedule rather than when a release discovers it:
+
+```bash
+tag=$(cut -d: -f2 <openqa/openqa-image.txt | cut -d@ -f1)
+curl -sI -H 'Accept: application/vnd.oci.image.index.v1+json' \
+  "https://registry.opensuse.org/v2/devel/openqa/containers/opensuse/openqa-single-instance/manifests/$tag" | head -1
+```
+
 ## Inputs and artifacts
 
 The reusable workflow receives `candidate_artifact`, `iso_filename`, `version`,

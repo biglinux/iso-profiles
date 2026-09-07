@@ -146,12 +146,13 @@ if [[ "$firmware" == uefi ]]; then
     done
     [[ -n "$uefi_code" && -n "$uefi_vars" ]] \
         || die 'no non-Secure-Boot OVMF code/vars pair was found; install edk2-ovmf'
-    cp -- "$uefi_code" "$state_dir/ovmf/OVMF_CODE.fd"
-    cp -- "$uefi_vars" "$state_dir/ovmf/OVMF_VARS.fd"
-    chmod 0444 -- "$state_dir/ovmf/OVMF_CODE.fd"
-    # os-autoinst writes the variable store while the guest runs, and it does
-    # so as _openqa-worker rather than as the invoking user.
-    chmod 0666 -- "$state_dir/ovmf/OVMF_VARS.fd"
+    # "install" rather than "cp": it replaces the target instead of writing
+    # through it, so a second UEFI run does not fail on the read-only firmware
+    # the first one left behind, and it sets the mode in the same step. The
+    # variable store has to be writable by _openqa-worker, which os-autoinst
+    # runs as, rather than by the invoking user.
+    install -m 0444 -- "$uefi_code" "$state_dir/ovmf/OVMF_CODE.fd"
+    install -m 0666 -- "$uefi_vars" "$state_dir/ovmf/OVMF_VARS.fd"
 fi
 
 kvm_gid=$(stat --format '%g' /dev/kvm)

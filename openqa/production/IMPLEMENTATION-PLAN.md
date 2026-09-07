@@ -183,6 +183,45 @@ The build itself needed two more fixes, both found the hard way:
   `.../$repo/$arch` is rejected, and a mirror that answers on its front page
   can still 404 every database.
 
+### Why every GitHub run failed, and it was not the tests
+
+The last three `Build ISO` runs on this branch failed in August, and reading
+their job steps through the public API shows every openQA job dying at the same
+place: step 4, **"Validate pinned openQA image"**. Not a test, not the ISO -
+the pin itself:
+
+```
+registry.opensuse.org/.../openqa-single-instance:5.1784641659.4.14.164@sha256:c8ac19...
+```
+
+Both the digest and the tag now answer `404`. The openSUSE devel registry keeps
+five tags for this image and rotates them, so the pin this repository trusted
+has been garbage-collected upstream. Local runs never noticed because the image
+was already in the workstation's Docker cache - which is exactly how a dead pin
+survives unnoticed until a CI runner has to pull it.
+
+The pin is now `5.1788175640.07173.14.211@sha256:3dd009...` (openQA
+5.1788175640.07173bb1, os-autoinst 5.1787772129.e7dc5f2), and it was raised the
+way the production README demands rather than as a routine bump: a full BIOS
+plan and a full UEFI plan against `biglinux_2026-08-19_k618`, both green with
+`installed_security` softfailed. The experimental
+`SCENARIO_DEFINITIONS_YAML` schema did not move, so
+`openqa/scenario-definitions.yaml` needed no change.
+
+Because the registry keeps only five tags, this will happen again. The pin has
+to be raised on a schedule rather than when a release run discovers it, and the
+digest is worth checking before every dispatch:
+
+```bash
+curl -sI -H 'Accept: application/vnd.oci.image.index.v1+json' \
+  "https://registry.opensuse.org/v2/devel/openqa/containers/opensuse/openqa-single-instance/manifests/$(cut -d: -f2 <openqa/openqa-image.txt | cut -d@ -f1)" \
+  | head -1
+```
+
+`start-gate-local.sh` also could not prepare UEFI twice: it copied the firmware
+over the read-only file the previous run left, and failed with `Permissão
+negada` before the plan started. It uses `install` now.
+
 The remaining work for the GitHub side is unchanged:
 
 Before calling the implementation ready, record a successful GitHub Actions run
