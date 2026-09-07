@@ -230,12 +230,26 @@ class FakeActions:
         return self.performed
 
 
+class FakeComponent:
+    def __init__(self, *, focusable=True):
+        self._focusable = focusable
+        self.focus_requests = 0
+
+    def grab_focus(self):
+        self.focus_requests += 1
+        return self._focusable
+
+
 class FakeWidget:
-    def __init__(self, actions):
+    def __init__(self, actions, component=None):
         self._actions = actions
+        self._component = component
 
     def get_action_iface(self):
         return self._actions
+
+    def get_component_iface(self):
+        return self._component
 
 
 class RichTextLabelTest(unittest.TestCase):
@@ -313,7 +327,7 @@ class WidgetActivationTest(unittest.TestCase):
     """Navigation activates a control through its own accessibility action,
     never through the reported rectangle, which is window-relative."""
 
-    def _pair(self, name, actions):
+    def _pair(self, name, actions, component=None):
         record = {
             "role": "button",
             "name": name,
@@ -322,7 +336,7 @@ class WidgetActivationTest(unittest.TestCase):
             "center_x": 873,
             "center_y": 675,
         }
-        return FakeWidget(actions), record
+        return FakeWidget(actions, component), record
 
     def test_performs_the_click_action(self) -> None:
         actions = FakeActions(["click"])
@@ -345,16 +359,54 @@ class WidgetActivationTest(unittest.TestCase):
         self.assertEqual(result["action"], "press")
         self.assertEqual(actions.done, ["press"])
 
-    def test_reports_a_control_that_exposes_no_usable_action(self) -> None:
+    def test_focuses_a_control_that_exposes_no_usable_action(self) -> None:
+        # Calamares' finished page reports its "Done" button with an empty
+        # action list, which failed a release job after a complete and correct
+        # installation. Focus is the other thing AT-SPI can do to a control,
+        # and it leaves the press to the caller instead of to a coordinate.
         actions = FakeActions(["show-menu"])
+        component = FakeComponent()
         with mock.patch.object(
-            atspi_probe, "_visible_widgets", return_value=[self._pair("Next", actions)]
+            atspi_probe,
+            "_visible_widgets",
+            return_value=[self._pair("Next", actions, component)],
+        ):
+            result = atspi_probe.activate_widget(0, "button", ["Next"])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["action"], "focus")
+        self.assertEqual(result["activation"], "keyboard")
+        self.assertEqual(component.focus_requests, 1)
+        self.assertEqual(actions.done, [])
+
+    def test_reports_a_control_that_neither_acts_nor_focuses(self) -> None:
+        actions = FakeActions(["show-menu"])
+        component = FakeComponent(focusable=False)
+        with mock.patch.object(
+            atspi_probe,
+            "_visible_widgets",
+            return_value=[self._pair("Next", actions, component)],
         ):
             result = atspi_probe.activate_widget(0, "button", ["Next"])
 
         self.assertEqual(result["status"], "failed")
-        self.assertIn("no usable accessibility action", result["error"])
+        self.assertIn("neither an accessibility action nor focus", result["error"])
         self.assertIn("show-menu", result["error"])
+
+    def test_prefers_an_action_over_focus(self) -> None:
+        # Focus plus a key press is the fallback, never the first choice: a
+        # focused control that swallows Return would look activated.
+        actions = FakeActions(["click"])
+        component = FakeComponent()
+        with mock.patch.object(
+            atspi_probe,
+            "_visible_widgets",
+            return_value=[self._pair("Next", actions, component)],
+        ):
+            result = atspi_probe.activate_widget(0, "button", ["Next"])
+
+        self.assertEqual(result["action"], "click")
+        self.assertEqual(component.focus_requests, 0)
 
 
 class WindowAcceptanceTest(unittest.TestCase):

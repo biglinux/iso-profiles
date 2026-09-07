@@ -805,12 +805,15 @@ def activate_widget(
     labels: list[str],
     expected_pid: int | None = None,
 ) -> dict[str, Any]:
-    """Activate a control through its own accessibility action.
+    """Activate a control through its own accessibility action, or focus it.
 
     Deliberately not a pointer click: AT-SPI reports widget extents relative to
     the window rather than to the screen, so clicking the reported rectangle
     lands on whatever sits one title bar higher. Asking the control to act on
     itself removes the coordinate system from the problem entirely.
+
+    A control with no action is focused instead, and the answer says so with
+    "activation": "keyboard" - the caller has to send the key that presses it.
     """
     # No AT-SPI import here: GLib.Error is a RuntimeError, so the calls below
     # are already covered, and importing would make this function unusable
@@ -841,6 +844,25 @@ def activate_widget(
                         "matches": len(matches),
                     }
             record["actions"] = names
+        for accessible, record in matches:
+            # Not every control offers an action. Calamares' finished page
+            # exposes its "Done" button with an empty action list, and a
+            # release cannot hinge on that. Focus is the other thing AT-SPI can
+            # do to a control, and it keeps coordinates out of the problem: the
+            # caller presses Return, which is the path a keyboard user has.
+            try:
+                component = accessible.get_component_iface()
+                focused = bool(component and component.grab_focus())
+            except (RuntimeError, AttributeError, TypeError, OSError):
+                continue
+            if focused:
+                return {
+                    "status": "passed",
+                    "widget": record,
+                    "action": "focus",
+                    "activation": "keyboard",
+                    "matches": len(matches),
+                }
         if matches:
             described = "; ".join(
                 f"{record['name'] or '?'} actions={record.get('actions', [])}"
@@ -848,7 +870,7 @@ def activate_widget(
             )
             return {
                 "status": "failed",
-                "error": f"no usable accessibility action on {role} "
+                "error": f"neither an accessibility action nor focus reached {role} "
                 f"matching {labels or 'any label'}: {described}",
             }
         if time.monotonic() > deadline:

@@ -280,6 +280,14 @@ sub activate_widget {
     die "AT-SPI could not activate the $role: "
       . ($activated->{error} // 'unknown reason')
       unless ref $activated eq 'HASH' && $activated->{status} eq 'passed';
+    # A control with no accessibility action was focused instead, so the press
+    # still has to happen. Calamares' finished page reports its "Done" button
+    # with an empty action list, which failed a release job after a complete
+    # and correct installation.
+    if (($activated->{activation} // '') eq 'keyboard') {
+        select_console 'sut';
+        send_key 'ret';
+    }
     return $activated;
 }
 
