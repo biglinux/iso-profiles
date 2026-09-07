@@ -47,6 +47,105 @@ this implementation.
 
 ## Required evidence
 
+### Local evidence recorded on 2026-09-07
+
+A full `release` plan (BIOS) passed on this hardware against
+`biglinux_2026-08-19_k618.iso`, all eleven modules green: live desktop,
+application audit, installer launch, partitions, users, installation, installed
+boot, login, health, critical applications and Brave. Local job id 10, run in
+the disposable container started by `openqa/development/start-gate-local.sh`
+with KVM and the digest-pinned image.
+
+Job 18 is the one that matters: twelve modules, eleven passed, and
+`installed_security` softfailed as designed with eight measured items, taken by
+a probe that proved it was running as uid 0. Every item reproduces a finding
+from the manual audit of the same ISO:
+
+| Measured | Value on job 18 |
+| --- | --- |
+| effective `NOPASSWD` grants | 2 (`Xbig`, `biglinux-backlight-restore`) |
+| services listening beyond loopback | 8 (`smbd` 139/445, Avahi 5353, `kdeconnectd` 1716) |
+| effective firewall filtering | none: `ufw` unit enabled, `ufw status` inactive, `INPUT` policy `ACCEPT` |
+| unsigned repository databases | `SigLevel = Required DatabaseNever` |
+| plain-HTTP mirrors | 1 |
+| `kptr_restrict` / `dmesg_restrict` | 0 / 0 |
+| AppArmor with `audit=0` | enforcing, denials discarded |
+| pending updates on a fresh install | 200 |
+
+It took five runs to get numbers worth reading, and every correction was to the
+measurement rather than to the ISO:
+
+- it first asked `systemctl is-enabled`, which answers `enabled` on every
+  install because `ufw` is in `enable_systemd`, while the machine still
+  forwards every packet. It now reads `ufw status`, the `INPUT` policy and the
+  nftables ruleset, and reports whether anything filters.
+- the whole probe then ran **as the desktop user**. The console was named
+  `root-virtio-terminal` but `biglinux.pm` logs in as `biglinux`, and the
+  forced `PS1='# '` completed the illusion. Unprivileged, `grep -s NOPASSWD
+  /etc/sudoers` hides its permission error and returns 0, and `ufw`,
+  `iptables` and `nft` all return nothing - a system that could not be read
+  was reported as clean. The console is now named `user-virtio-terminal`, the
+  module escalates through `biglinux->become_root`, and it refuses to report
+  any root-only item unless the probe answers uid 0.
+
+- and the `NOPASSWD` count included the commented `%wheel ALL=(ALL:ALL)
+  NOPASSWD: ALL` example that ships in `/etc/sudoers`, reporting three grants
+  on a system that has two.
+
+`luks=none` is correct rather than unmeasured: this plan installs an
+unencrypted disk.
+
+Making the probe privileged exposed two credential leaks, both fixed here:
+
+| Leak | Cause | Fix |
+| --- | --- | --- |
+| the test password appeared in the uploaded serial log | `become_root` typed it as soon as it issued `sudo`, so the bytes reached the tty before sudo started reading and the line discipline echoed them - sudo then read the *next* typed line as the password and failed | wait for sudo's own prompt, built through `printf` so the command echo cannot match it, and type nothing when it never appears |
+| the test password sat in `scheduled-product-*.json` | openQA hides `_SECRET_*` in its web UI but returns it verbatim from the scheduled-product API, and the diagnostics directory is uploaded as a job artifact | `schedule-release-gate.sh` redacts every `_SECRET_*` value before the file is kept |
+
+A failed escalation also has to leave the console usable: sudo keeps asking
+after a wrong password and swallows whatever is typed next, which is why job 17
+lost `installed_critical_apps` to an unrelated AT-SPI timeout.
+
+Getting there required six defects to be fixed, all of them in the gate rather
+than in the ISO, and worth listing because they show what this evidence is
+actually worth:
+
+| Defect | Effect while it lasted |
+| --- | --- |
+| `calamares.pm` had non-ASCII literals without `use utf8` | the probe was asked for a button named `Pr\udcf3ximo`; the installer could never advance in Portuguese |
+| `@DONE` was missing "Concluído" | the installation finished and the module still failed |
+| serial login expected `Password:`, the installed system asks `Senha:` | a perfectly installed system looked like a boot failure |
+| five needles from 2026-08-04 no longer matched | one of them clicked "English, United States" instead of Portuguese |
+| `build-local.sh` preferred rootless podman | no ISO could be built locally at all |
+| `build-local.sh` did not mount the chroot work directories | the build died on overlayfs after downloading every package |
+
+### The approval criterion, met locally
+
+The gate is called good when the same ISO passes both firmware plans twice in a
+row without a code change between the runs. That happened on 2026-09-07 with
+`biglinux_2026-08-19_k618`:
+
+| Job | Plan | Modules | Result |
+| --- | --- | --- | --- |
+| 2 | `release_uefi` | 11 | every module passed, `installed_security` softfailed by design |
+| 3 | `release_uefi` | 11 | identical |
+| 4 | `release_bios` | 12 | identical |
+| 5 | `release_bios` | 12 | identical |
+
+Jobs 2/3 and 4/5 are consecutive runs of the same checkout. The UEFI runs also
+close the firmware evidence that was previously untested locally: the installed
+system reports `efi=1`, `/boot/efi` mounted, and `efibootmgr` listing a
+`BootCurrent` entry.
+
+The UEFI plan had never run on this machine, and the first attempt failed
+before booting: `qemu-img: Could not open '/run/ovmf/OVMF_CODE.fd': Permission
+denied`. `start-gate-local.sh` creates its state directory under `umask 077`
+and chmods only `results`, so the container could not traverse the OVMF
+directory as `_openqa-worker`; the variable store also has to be writable by
+that user rather than by the invoking one.
+
+The remaining work for the GitHub side is unchanged:
+
 Before calling the implementation ready, record a successful GitHub Actions run
 with both firmware jobs and all four application shards. The artifacts must show:
 
@@ -71,7 +170,14 @@ actionlint
 python3 -m unittest discover -s data -p 'test_*.py'
 python3 -m unittest discover -s openqa/data -p 'test_*.py'
 python3 -m unittest discover -s openqa/report -p 'test_*.py'
+(cd build-iso && python3 -m pytest tests -q)
 ```
+
+The workflow's "Validate repository sources" step adds three checks that no
+local command covers: every non-ASCII Perl module declares `use utf8`, no needle
+file or tag is left without the other side, and no new `assert_screen`,
+`assert_and_click` or `check_screen` appears outside the two modules allowed to
+use pixels.
 
 Run these commands from the checked-out branch. A missing dependency is a
 validation limitation, not a pass.

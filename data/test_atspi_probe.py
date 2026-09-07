@@ -197,6 +197,15 @@ class WidgetLabelTest(unittest.TestCase):
         self.assertTrue(_label_matches("&Next", ["Next"]))
         self.assertTrue(_label_matches(" Install Now ", ["Install now"]))
 
+    def test_folds_diacritics_so_a_translated_label_still_matches(self) -> None:
+        # The installer names this button "Concluído"; a caller that spells it
+        # without the accent, or a translation that adds one, must still match.
+        self.assertEqual(_normalize_label("Concluído"), "concluido")
+        self.assertTrue(_label_matches("Próximo", ["Proximo"]))
+        self.assertTrue(_label_matches("Avancar", ["Avançar"]))
+        # Folding accents must not turn different words into the same one.
+        self.assertFalse(_label_matches("Concluído", ["Concluir"]))
+
     def test_accepts_any_label_when_none_is_required(self) -> None:
         self.assertTrue(_label_matches("whatever", []))
 

@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -681,18 +682,23 @@ _MARKUP_TAG = re.compile(r"<[^>]*>")
 
 
 def _normalize_label(value: str) -> str:
-    """Reduce a label to letters and digits, ignoring any markup around it.
+    """Reduce a label to unaccented letters and digits, ignoring markup.
 
     Calamares names some controls with their whole rich-text description, for
     example "<strong>Erase disk</strong><br/>This will delete all data...", so
     the tags have to go before anything can be compared. Dropping punctuation
     and spacing also means an accelerator marker or a translator's padding
     cannot decide the match.
+
+    Diacritics are folded away as well. A test that asks for "Concluir" should
+    not miss a button named "Concluído", and a caller that types the label
+    without its accent should not silently match nothing.
     """
+    decomposed = unicodedata.normalize("NFKD", _MARKUP_TAG.sub(" ", value))
     return "".join(
         character
-        for character in _MARKUP_TAG.sub(" ", value).casefold()
-        if character.isalnum()
+        for character in decomposed.casefold()
+        if character.isalnum() and not unicodedata.combining(character)
     )
 
 

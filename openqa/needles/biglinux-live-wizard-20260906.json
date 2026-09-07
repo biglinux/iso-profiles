@@ -1,0 +1,22 @@
+{
+  "area": [
+    {
+      "type": "match",
+      "xpos": 285,
+      "ypos": 13,
+      "width": 454,
+      "height": 77
+    },
+    {
+      "type": "match",
+      "xpos": 309,
+      "ypos": 144,
+      "width": 405,
+      "height": 42
+    }
+  ],
+  "properties": [],
+  "tags": [
+    "biglinux-live-wizard"
+  ]
+}

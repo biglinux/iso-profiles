@@ -482,7 +482,7 @@ sub _write_guest_metrics {
     # tty echo of the command line can never satisfy its own wait_serial; the
     # literal marker only appears once the command actually succeeded. This
     # also paces the chunk stream to the guest shell's real progress.
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     type_string "rm -f /tmp/application-metrics.json && : > /tmp/application-metrics.json && printf "
       . _shell_quote(_marker_format($start_marker) . '\\n');
     send_key 'ret';
@@ -512,7 +512,7 @@ sub _upload_guest_metrics {
     my $basename = 'application-metrics.json.gz';
     my $marker = sprintf('__OA_METRICS_UPLOAD_%d_%d__', $$, int(time * 1000) % 1_000_000);
     my $upload_url = autoinst_url("/uploadlog/$basename");
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     type_string 'curl --fail --silent --show-error --form upload=\@/tmp/application-metrics.json.gz '
       . '--form upname=application-metrics.json.gz --max-time 90 '
       . _shell_quote($upload_url)

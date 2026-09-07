@@ -15,7 +15,7 @@ sub run {
     # path does not click blindly through a dialog that exists only in UEFI.
     # The preceding live_desktop module already owns the non-black screenshot
     # checkpoints; launching Calamares below validates this state semantically.
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $uefi_marker = _marker_format('__OA_FIRMWARE_UEFI__');
     my $bios_marker = _marker_format('__OA_FIRMWARE_BIOS__');
     type_string "if [ -d /sys/firmware/efi ]; then printf '$uefi_marker\\n'; else printf '$bios_marker\\n'; fi";
@@ -42,21 +42,21 @@ sub run {
     }
 
     if ($is_uefi) {
-        wait_screen_change(sub { send_key 'ret' }, 60)
-          or die 'The UEFI installation confirmation was not accepted';
+        # The EFI warning is one of the launcher's GTK4 dialogs, so its button
+        # can be activated by name instead of by pressing return at a screen
+        # that may not have focus yet.
+        atspi->activate_widget($calamares::BUTTON_ROLES,
+            ['Continue', 'Continuar'], 60);
     }
 
-    # The launcher and its tips page are BigBashView: an HTML interface in a
-    # WebKit view that publishes a window but no accessible controls, so these
-    # two clicks stay on needles. Its appearance is owned by the application
-    # itself rather than by the desktop theme. From the Calamares pages onward
-    # navigation is semantic.
-    assert_and_click 'biglinux-installer-launcher', timeout => 90,
-      point_id => 'install', mousehide => 1;
-    assert_screen 'biglinux-installer-tips', 60;
-    assert_and_click 'biglinux-installer-tips', timeout => 60,
-      point_id => 'continue', mousehide => 1;
-    assert_screen 'biglinux-installer-welcome', 90;
+    # The launcher and its tips page are GTK4 (/usr/share/biglinux/calamares),
+    # not the WebKit interface an older comment here described, so both are
+    # driven by accessible name. Nothing in this module depends on the theme.
+    calamares->assert_page('launcher-home', 90);
+    atspi->activate_widget($calamares::BUTTON_ROLES, ['Install', 'Instalar'], 90);
+    calamares->assert_page('launcher-tips', 60);
+    atspi->activate_widget($calamares::BUTTON_ROLES, ['Continue', 'Continuar'], 60);
+    calamares->assert_page('installer-welcome', 90);
 }
 
 sub _marker_format {

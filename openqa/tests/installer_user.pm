@@ -10,11 +10,14 @@ sub test_flags {
 }
 
 sub run {
-    assert_screen 'calamares-partitions-page', 60;
+    calamares->assert_page('partitions-page', 60);
     atspi->activate_widget('radio button', ['Erase disk', 'Apagar disco'], 60);
-    assert_screen 'calamares-erase-disk-selected', 30;
+    # The radio reports its own state, which is what "selected" means here.
+    my $erase = atspi->wait_widget('radio button', ['Erase disk', 'Apagar disco'], 30);
+    die 'the installer did not select the erase-disk option'
+      unless ref $erase eq 'HASH' && $erase->{status} eq 'passed';
     calamares->click_action(\@calamares::NEXT);
-    assert_screen 'calamares-users-page', 90;
+    calamares->assert_page('users-page', 90);
 
     # Calamares focuses the first field when the users page opens.  Keeping the
     # path keyboard-only avoids brittle per-field coordinates and exercises the
@@ -28,13 +31,15 @@ sub run {
     type_password(calamares->test_password);
     send_key 'tab';
     type_password(calamares->test_password);
-    # The green validation marks are the meaningful proof that Calamares
-    # accepted the account, so this needle stays. The button that follows is
-    # located through AT-SPI because it only becomes enabled at this point.
-    assert_screen 'calamares-users-valid', 30;
+    # Calamares only enables "Next" once every field validates, so the button
+    # becoming sensitive is the accessible equivalent of the green marks - and
+    # unlike them it cannot be faked by a theme that draws a green icon.
+    my $ready = atspi->wait_widget($calamares::BUTTON_ROLES, \@calamares::NEXT, 30);
+    die 'Calamares did not accept the account details'
+      unless ref $ready eq 'HASH' && $ready->{status} eq 'passed';
 
     calamares->click_action(\@calamares::NEXT);
-    assert_screen 'calamares-summary-page', 90;
+    calamares->assert_page('summary-page', 90);
 }
 
 1;

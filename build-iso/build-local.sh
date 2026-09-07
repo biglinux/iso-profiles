@@ -17,6 +17,8 @@
 #   -c <branch>   BigCommunity branch: stable (default) | testing
 #   -o <dir>      output directory (default: ./output)
 #   -i <image>    container image (default depends on the distribution)
+#   -r <url>      package mirror used by the build (default: the engine's)
+#   -w <dir>      chroot/cache work directory (default: <output>/.buildiso-work)
 #
 set -euo pipefail
 
@@ -35,13 +37,20 @@ usage() {
 
 manjaroBranch=stable biglinuxBranch=stable communityBranch=stable
 outputDir="$PWD/output" image=""
-while getopts 'm:b:c:o:i:h' opt; do
+# The engine defaults to the Manjaro CDN. When that CDN is slow from here the
+# whole build dies hours in ("Operation too slow"), so a local build needs a way
+# to name a closer mirror without editing the engine.
+buildMirror="${BUILD_MIRROR:-}"
+workDir="${BUILD_WORK_DIR:-}"
+while getopts 'm:b:c:o:i:r:w:h' opt; do
     case "$opt" in
         m) manjaroBranch=$OPTARG ;;
         b) biglinuxBranch=$OPTARG ;;
         c) communityBranch=$OPTARG ;;
         o) outputDir=$OPTARG ;;
         i) image=$OPTARG ;;
+        r) buildMirror=$OPTARG ;;
+        w) workDir=$OPTARG ;;
         h) usage ;;
         *) usage 1 ;;
     esac
@@ -66,8 +75,23 @@ else
     image="${image:-docker.io/xivastudio/biglinux_build_package:latest}"
 fi
 
+# Rootless podman cannot mount devtmpfs inside the build chroot, and
+# manjaro-tools only finds out after pulling the image and resolving every
+# package: the build dies at "failed to setup API filesystems in new root",
+# tens of minutes in. Prefer an engine that can actually do it.
+engine=
 if command -v podman &>/dev/null; then
-    engine=podman
+    podmanRootless=$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || true)
+    if [[ "$podmanRootless" == true ]]; then
+        if command -v docker &>/dev/null; then
+            echo "==> podman here is rootless and cannot create the build chroot; using docker"
+            engine=docker
+        else
+            die "podman is rootless and cannot create the build chroot: install docker, or run a rootful podman"
+        fi
+    else
+        engine=podman
+    fi
 elif command -v docker &>/dev/null; then
     engine=docker
 else
@@ -75,6 +99,13 @@ else
 fi
 
 mkdir -p "$outputDir"
+# manjaro-tools builds its chroots with overlayfs. Inside a container whose own
+# filesystem is overlayfs, that fails at the first mount ("not supported as
+# upperdir") after the packages are already downloaded. The GitHub job avoids it
+# by mounting the runner's scratch disk over these two paths; do the same here,
+# from a directory on the host filesystem.
+workDir=${workDir:-$outputDir/.buildiso-work}
+mkdir -p "$workDir/buildiso" "$workDir/cache"
 outputDir=$(cd "$outputDir" && pwd)
 
 # Work on a copy: the engine edits the profile files in place.
@@ -104,11 +135,14 @@ echo "==> The first build downloads a lot; expect 1-2 hours in total."
 "$engine" run --rm --privileged --user 0:0 \
     -v "$tmpDir/iso-profiles:/build/iso-profiles" \
     -v "$outputDir:/build/output" \
+    -v "$workDir/buildiso:/var/lib/manjaro-tools/buildiso" \
+    -v "$workDir/cache:/var/cache/manjaro-tools/iso" \
     -e EDITION="$edition" \
     -e KERNEL="$kernel" \
     -e MANJARO_BRANCH="$manjaroBranch" \
     -e BIGLINUX_BRANCH="$biglinuxBranch" \
     -e BIGCOMMUNITY_BRANCH="$communityBranch" \
+    ${buildMirror:+-e BUILD_MIRROR="$buildMirror"} \
     -e WORK_PATH=/build/output \
     "$image" \
     bash /build/iso-profiles/build-iso/build-iso.sh

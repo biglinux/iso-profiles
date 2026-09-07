@@ -9,10 +9,12 @@ sub test_flags {
 }
 
 sub run {
-    calamares->advance('biglinux-installer-welcome', 'biglinux-installer-location');
-    calamares->advance('biglinux-installer-location', 'biglinux-installer-keyboard');
-    calamares->advance('biglinux-installer-keyboard', 'calamares-partitions-page');
-    assert_screen 'calamares-partitions-page', 60;
+    # The welcome page is proven by installer_launch, which is the module that
+    # opens the installer; this one walks from there to the partitioning page.
+    calamares->click_action(\@calamares::NEXT);
+    calamares->assert_page('installer-location', 90);
+    calamares->advance('installer-location', 'installer-keyboard');
+    calamares->advance('installer-keyboard', 'partitions-page');
 }
 
 1;

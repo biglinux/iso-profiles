@@ -11,7 +11,13 @@ sub init ($self) {
     $self->SUPER::init;
     # The ISO starts agetty on hvc0. A named virtio console lets tests run
     # deterministic shell probes without typing shell syntax through VNC.
-    $self->add_console('root-virtio-terminal', 'virtio-terminal');
+    #
+    # It logs in as the desktop user, not as root, because the session it has
+    # to reach is the user's: the application audit, every AT-SPI probe and the
+    # accessibility bus all belong to that session. The name says so - an
+    # earlier "root-" prefix cost a full security report, which measured
+    # nothing and reported it as clean.
+    $self->add_console('user-virtio-terminal', 'virtio-terminal');
 }
 
 # Which credentials the next activation should use. An extra argument to
@@ -25,7 +31,7 @@ sub use_installed_credentials {
 }
 
 sub activate_console ($self, $console, @) {
-    return unless $console eq 'root-virtio-terminal';
+    return unless $console eq 'user-virtio-terminal';
     my $mode = $credentials;
 
     # Every wait must be checked: continuing to type after a missed prompt
@@ -43,7 +49,11 @@ sub activate_console ($self, $console, @) {
 
     testapi::type_string $user;
     testapi::send_key 'ret';
-    defined testapi::wait_serial('Password:', timeout => 30)
+    # login(1) asks in the system language: the installed system is configured
+    # in Portuguese and prompts "Senha:", so matching only "Password:" waited
+    # out its timeout on a perfectly good installation. Add the prompt of any
+    # further language the gate installs in.
+    defined testapi::wait_serial(qr/(?:Password|Senha)\s*:/i, timeout => 30)
       or die 'serial console did not ask for a password';
     if ($mode eq 'installed') {
         testapi::type_password $password;
@@ -80,6 +90,63 @@ sub activate_console ($self, $console, @) {
 
 sub _marker_format ($marker) {
     return join '', map { sprintf '\\%03o', ord } split //, $marker;
+}
+
+# Raises the serial console to root for the probes that need it, and answers
+# whether it worked. Callers must check: a probe that keeps going unprivileged
+# reads a system it cannot see and reports it as clean. "grep -s NOPASSWD
+# /etc/sudoers" returning nothing is exactly that failure - the file is 0440
+# root, and -s hides the permission error.
+#
+# Root stays opt-in and per-probe. Making the shared console root would run the
+# desktop applications as root, which is neither what ships nor what the
+# accessibility probes can talk to.
+sub become_root {
+    my $uid_marker = '__OA_ROOT_UID__';
+    my $uid_format = _marker_format($uid_marker);
+    my $check = "printf '$uid_format%s$uid_format\\n' \"\$(sudo -n id -u 2>/dev/null)\"\n";
+    my $is_root = sub {
+        testapi::type_string $check;
+        my $answer = testapi::wait_serial(qr/${uid_marker}(\d*)${uid_marker}/, timeout => 60);
+        return defined $answer && $answer =~ /${uid_marker}0${uid_marker}/;
+    };
+
+    # The live session grants the desktop user passwordless sudo, so ask before
+    # typing anything.
+    return 1 if $is_root->();
+
+    my $password = $credentials eq 'installed'
+      ? testapi::get_required_var('_SECRET_BIGLINUX_TEST_PASSWORD')
+      : 'biglinux';
+    my $prompt_marker = '__OA_SUDO_PASSWORD__';
+    my $prompt_format = _marker_format($prompt_marker);
+
+    for (1 .. 2) {
+        # Never type the password without seeing sudo ask for it. Typing it
+        # blind is not just a race: the bytes arrive before sudo starts reading
+        # the tty, so the line discipline echoes the secret into the serial log
+        # that the job uploads, and sudo then reads the *next* typed line as
+        # the password. That is what happened on job 17, which leaked the local
+        # test password and failed with "2 incorrect password attempts".
+        #
+        # The prompt is built by printf so the echo of the command itself
+        # carries the octal escapes rather than the marker: only sudo's own
+        # prompt matches.
+        testapi::type_string "sudo -k; sudo -S -p \"\$(printf '$prompt_format')\" -v\n";
+        next unless defined testapi::wait_serial($prompt_marker, timeout => 30);
+        testapi::type_password $password;
+        testapi::send_key 'ret';
+        return 1 if $is_root->();
+    }
+
+    # Leave the console usable for the modules that follow. A sudo that read a
+    # wrong password keeps asking, and every command typed after it becomes
+    # another attempt: on job 17 the next module found the shell eating its
+    # input and died on an unrelated AT-SPI timeout.
+    testapi::send_key 'ctrl-c';
+    testapi::type_string "\n";
+    testapi::wait_serial('# ', no_regex => 1, timeout => 15);
+    return 0;
 }
 
 1;

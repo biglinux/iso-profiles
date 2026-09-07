@@ -24,7 +24,6 @@
   ],
   "properties": [],
   "tags": [
-    "biglinux-sddm-login",
-    "biglinux-sddm-password-field"
+    "biglinux-sddm-login"
   ]
 }

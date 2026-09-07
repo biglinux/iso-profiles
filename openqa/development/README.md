@@ -155,6 +155,74 @@ Stop the instance when finished:
 docker stop biglinux-openqa-dev
 ```
 
+## Finding the name of a control
+
+The tests drive the desktop through accessibility, so the thing to know when a
+module fails is the *name* AT-SPI publishes for a control, not where it is on
+screen. The gate hands that over on failure: `activate_widget` dies with the
+whole observed tree, for example
+
+```
+no showing and sensitive control for push button|button matching
+['Done', 'Concluir', 'Finish', 'Finalizar']; matching roles observed:
+button/Voltar (insensitive); button/Próximo; button/Concluído
+```
+
+which names the fix - add `Concluído` to the list in `openqa/lib/calamares.pm`.
+Labels are compared with markup, case, punctuation and accents folded away
+(`data/atspi_probe.py`), so a missing accent is never the problem; a different
+word always is.
+
+For an interactive look at the tree, start the MCP bridge and ask openQA for a
+running job, or run the probe by hand in the guest:
+
+```bash
+python3 /tmp/openqa-atspi-probe.py inventory --state /tmp/openqa-atspi-state.json --timeout 30
+```
+
+## Run a release plan on this machine
+
+`start-mcp.sh` exists to look at results. To *run* a plan the container needs
+what the workflow gives it — the test password, the worker class the job asks
+for, a results directory the host can read, and the OVMF pair for UEFI — so use
+the gate wrapper instead:
+
+```bash
+./openqa/development/start-gate-local.sh /path/to/biglinux.iso            # BIOS
+./openqa/development/start-gate-local.sh --firmware uefi /path/to/iso     # UEFI
+
+source ~/.cache/biglinux-openqa-gate/gate-env.sh
+./openqa/development/schedule-release-gate.sh --firmware bios
+./openqa/development/schedule-release-gate.sh --applications-shard 0 4
+
+docker rm -f biglinux-openqa-gate
+```
+
+The wrapper writes `gate-env.sh` with every variable
+`schedule-release-gate.sh` requires, including the ISO checksum it refuses to
+run without. It waits until the API, the scheduler **and** a worker carrying
+`biglinux-kvm` are up: a worker without that class leaves the job scheduled
+until the five-hour monitor timeout, with nothing on screen to explain it.
+
+Resource limits worth respecting on a workstation:
+
+- one plan at a time uses 2 vCPUs, 4 GiB of guest RAM and a sparse 40 GiB disk;
+- **do not run a plan while `build-iso/build-local.sh` is building an ISO** —
+  the two together drove this machine into memory pressure;
+- remove the container between plans (`docker rm -f`), or the next
+  `start-gate-local.sh` refuses to start on the existing name.
+
+The container copies the read-only `/workspace-source` mount to `/workspace`
+once, at startup. Editing the tests between two plans on the **same** container
+therefore changes nothing, and a deleted file is worse than an unchanged one:
+`cp -a` never removes it, so a needle you just dropped keeps matching. Re-sync
+before scheduling again, or restart the container:
+
+```bash
+docker exec biglinux-openqa-gate \
+  rsync -a --delete --chown=_openqa-worker:_openqa-worker /workspace-source/ /workspace/
+```
+
 ## How the agent uses it
 
 MCP is for read-only investigation: job settings, module results, screenshots and

@@ -62,7 +62,7 @@ sub prepare {
     my $user_launcher_url = data_url('gui_user_launch.sh');
     my $launcher_url = data_url('desktop_entry_launcher.py');
 
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $command = join ' ',
       'export DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',
       'SAL_ACCESSIBILITY_ENABLED=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 GTK_A11Y=atspi NO_AT_BRIDGE=0;',
@@ -108,7 +108,7 @@ sub prepare {
         die 'AT-SPI baseline is unavailable'
           . ($registry_log ? ": $registry_log" : '');
     }
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $session_baseline_saved = _run_guest_command(
         "cp '$state_path' '$session_state_path'",
         5,
@@ -146,7 +146,7 @@ sub result {
       _shell_quote($probe_timeout), $probe_command, '; else', $probe_command, '; fi; printf',
       _shell_quote(_marker_format('__OPENQA_ATSPI_DONE__') . '\\n');
 
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     type_string $shell_command;
     send_key 'ret';
     my $serial = wait_serial(
@@ -156,7 +156,7 @@ sub result {
     if (!defined $serial) {
         # A broken client can leave a libatspi call blocked.  Keep the serial
         # shell usable so the remaining inventory still gets a result.
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         type_string '', terminate_with => 'ETX';
         type_string 'printf ' . _shell_quote(_marker_format('__OPENQA_ATSPI_RECOVERED__') . '\\n');
         send_key 'ret';
@@ -233,7 +233,10 @@ sub x11_wait_open {
 sub _widget_operation {
     my ($class, $operation, $role, $labels, $timeout) = @_;
     die 'AT-SPI widget role is required' unless defined $role && $role ne '';
-    my $label_list = join '|', @{$labels // []};
+    # Labels arrive as characters (their module declares "use utf8"), and the
+    # command is typed into the guest as octets: encode here, as record_info
+    # does, or a translated label reaches the probe as a lone latin-1 byte.
+    my $label_list = encode('UTF-8', join '|', @{$labels // []});
     die 'AT-SPI widget labels must not contain a newline' if $label_list =~ /[\r\n]/;
     return $class->result($operation, $timeout, '--role', $role, '--labels', $label_list);
 }
@@ -306,7 +309,7 @@ sub _launch_argv {
       _shell_quote($user_launcher_path),
       _shell_quote($status_path),
       (map { _shell_quote($_) } @$argv);
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $launch_command = join ' ',
       $user_launcher_arguments,
       '< /dev/null > /tmp/openqa-gui-launch.log 2>&1 &',
@@ -356,7 +359,7 @@ sub cleanup {
     my ($class, $timeout) = @_;
     die 'AT-SPI cleanup requires a positive timeout'
       unless defined $timeout && $timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/;
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     _kill_process_groups(keys %session_launch_pids);
     %session_launch_pids = ();
     select_console 'sut';
@@ -380,7 +383,7 @@ sub terminate_window {
         # or popup focused instead of terminating the application.
         my $native_close = _native_close_command($entry, $pid);
         if (defined $native_close) {
-            select_console 'root-virtio-terminal';
+            select_console 'user-virtio-terminal';
             my $native_status = _run_guest_command($native_close, 5);
             if (defined $native_status && $native_status == 0) {
                 $close = {
@@ -405,7 +408,7 @@ sub terminate_window {
     my $wait_exit;
     my $process_gone = 0;
     if ($close->{status} eq 'passed') {
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command(
             "while test -d /proc/$pid && ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do sleep 1; done",
             $keyboard_fallback ? 10 : 15,
@@ -415,7 +418,7 @@ sub terminate_window {
     if (!$process_gone) {
         my $graceful_quit = _graceful_quit_command($entry);
         if (defined $graceful_quit) {
-            select_console 'root-virtio-terminal';
+            select_console 'user-virtio-terminal';
             my $quit_status = _run_guest_command($graceful_quit, 10);
             if (defined $quit_status && $quit_status == 0) {
                 $wait_exit = _run_guest_command(
@@ -434,7 +437,7 @@ sub terminate_window {
         # close path one chance before process cleanup.
         select_console 'sut';
         send_key 'alt-f4';
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command(
             "while test -d /proc/$pid && ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do sleep 1; done",
             10,
@@ -447,7 +450,7 @@ sub terminate_window {
         # Its application-level quit shortcut is the next graceful path.
         select_console 'sut';
         send_key 'ctrl-q';
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command(
             "while test -d /proc/$pid && ! grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null; do sleep 1; done",
             10,
@@ -455,7 +458,7 @@ sub terminate_window {
         $process_gone = defined $wait_exit && $wait_exit == 0;
     }
     if (!$process_gone) {
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         $cleanup_signal_exit_code = _kill_process_groups($launch_pid, $pid);
         $wait_exit = _run_guest_command(
             "test ! -d /proc/$pid || grep -q '^State:[[:space:]]*Z' /proc/$pid/status 2>/dev/null",
@@ -545,7 +548,7 @@ sub terminate_x11_window {
       unless defined $launch_pid && $launch_pid =~ /\A[0-9]+\z/ && $launch_pid > 1;
     my $wait_command = "while test -d /proc/$launch_pid && ! grep -q '^State:[[:space:]]*Z' /proc/$launch_pid/status 2>/dev/null; do sleep 1; done";
     my $close_action = 'keyboard.alt-f4';
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $native_close = _native_close_command($entry, $launch_pid);
     $native_close //= _x11_window_close_command($window_pid);
     my $wait_exit;
@@ -559,20 +562,20 @@ sub terminate_x11_window {
     if (!defined $wait_exit || $wait_exit != 0) {
         select_console 'sut';
         send_key 'alt-f4';
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command($wait_command, 10);
     }
     my $process_gone = defined $wait_exit && $wait_exit == 0;
     if (!$process_gone) {
         select_console 'sut';
         send_key 'ctrl-q';
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         $wait_exit = _run_guest_command($wait_command, 10);
         $process_gone = defined $wait_exit && $wait_exit == 0;
         $close_action = 'keyboard.ctrl-q' if $process_gone;
     }
     if (!$process_gone) {
-        select_console 'root-virtio-terminal';
+        select_console 'user-virtio-terminal';
         _kill_process_groups($launch_pid, $window_pid);
         $wait_exit = _run_guest_command($wait_command, 5);
         $process_gone = defined $wait_exit && $wait_exit == 0;
@@ -614,7 +617,7 @@ sub launch_exit_code {
 sub abort_launch {
     my ($class, $status_path, @known_pids) = @_;
     return unless defined $status_path && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my @pids = grep { defined $_ && $_ =~ /\A[0-9]+\z/ && $_ > 1 } @known_pids;
     my $pid = @pids ? undef : $class->_read_child_pid($status_path, 2);
     push @pids, $pid if defined $pid;
@@ -642,7 +645,7 @@ sub _kill_process_groups {
 # the marker path the rest of this module already relies on.
 sub run_command {
     my ($class, $command, $timeout) = @_;
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $exit_code = _run_guest_command($command, $timeout // 30);
     select_console 'sut';
     return $exit_code;
@@ -722,7 +725,7 @@ sub _read_launch_debug {
     my $end_marker = '__OA_GUI_DEBUG_END__';
     my $display_awk = _shell_quote('$1 == "DISPLAY" {print $2; exit}');
     my $xauthority_awk = _shell_quote('$1 == "XAUTHORITY" {print $2; exit}');
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $command = 'printf '
       . _shell_quote(_marker_format($begin_marker))
       . '; cat '
@@ -755,7 +758,7 @@ sub _read_launch_debug {
 sub _read_registry_log {
     my $begin_marker = '__OA_ATSPI_REGISTRY_BEGIN__';
     my $end_marker = '__OA_ATSPI_REGISTRY_END__';
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     type_string 'printf ' . _shell_quote(_marker_format($begin_marker))
       . '; cat /tmp/openqa-atspi-registry.log 2>/dev/null; printf '
       . _shell_quote(_marker_format($end_marker));
@@ -785,7 +788,7 @@ sub _read_status_value {
     # loop; otherwise the next back-to-back read could match this call's
     # leftover "MISSING" output and return the wrong field's value.
     my $marker = sprintf('__OA_APP_EXIT_DONE_%d_%d__', $$, ++$status_read_serial);
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     my $command = "code=MISSING; for i in \$(seq 1 $attempts); do candidate=\$(awk -F= '/^$field=/{print \$2; exit}' "
       . _shell_quote($status_path)
       . " 2>/dev/null || true); case \"\$candidate\" in '') sleep 1;; * ) code=\$candidate; break;; esac; done; printf "

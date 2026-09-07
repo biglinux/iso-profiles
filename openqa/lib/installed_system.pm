@@ -15,7 +15,7 @@ sub assert_filesystem {
     # assert_display_manager (installed_boot, fatal) already activated the
     # serial console with the installed credentials; the login session owns
     # hvc0 and a reset would wait for a prompt that never reappears.
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
 
     my $health_check = <<'SHELL';
 root_source=$(findmnt -no SOURCE / 2>/dev/null || true)
@@ -105,7 +105,7 @@ sub assert_brave_cli {
 sub assert_display_manager {
     biglinux::use_installed_credentials();
     reset_consoles;
-    select_console 'root-virtio-terminal';
+    select_console 'user-virtio-terminal';
     select_console 'sut';
     my $exit_code = atspi->run_command_until('pgrep -x sddm >/dev/null 2>&1', 60);
     die 'The installed system did not start its display manager'
@@ -114,13 +114,40 @@ sub assert_display_manager {
       'The installed system booted, its account authenticates and SDDM is running';
 }
 
+# The greeter process is the accessible-free way to know the login screen is
+# up: SDDM's own QML greeter publishes no useful accessibility tree, and its
+# appearance is exactly what a theme change is allowed to alter.
+sub assert_greeter {
+    my $exit_code = atspi->run_command_until(
+        'pgrep -f "sddm-greeter" >/dev/null 2>&1', 60);
+    die 'The installed system did not show its login greeter'
+      unless defined $exit_code && $exit_code == 0;
+    record_info 'Installed greeter', 'The SDDM greeter process is running';
+}
+
 sub assert_desktop {
     atspi->prepare;
     my $desktop_exit_code =
       atspi->run_command_until('pgrep -u 1000 -x plasmashell >/dev/null 2>&1', 45);
     die 'The installed KDE Plasma shell did not start'
       unless defined $desktop_exit_code && $desktop_exit_code == 0;
-    record_info 'Installed desktop', 'AT-SPI is active and plasmashell is running for the logged-in user';
+
+    # What the user actually got: a graphical session of their own, active and
+    # on the display server this ISO ships. A shell process alone says neither.
+    my $user = get_var('BIGLINUX_TEST_USER', 'openqa');
+    my $active_exit_code = atspi->run_command_until(
+        "loginctl show-user $user -p State | grep -q State=active", 45);
+    die 'The installed system did not open an active session for the user'
+      unless defined $active_exit_code && $active_exit_code == 0;
+
+    my $session_type_exit_code = atspi->run_command_until(
+        "loginctl show-session \$(loginctl show-user $user -p Display --value)"
+          . ' -p Type | grep -q Type=wayland', 45);
+    die 'The installed session is not a Wayland session'
+      unless defined $session_type_exit_code && $session_type_exit_code == 0;
+
+    record_info 'Installed desktop',
+      'AT-SPI is active, plasmashell is running and the user owns an active Wayland session';
 }
 
 sub _marker_format {

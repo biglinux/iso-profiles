@@ -9,11 +9,13 @@ sub test_flags {
 }
 
 sub run {
-    # A fresh BigLinux SDDM session selects the created user and focuses its
-    # password field. Matching the greeter is only a timing hint, never the
-    # verdict: its theme and language are free to change. What proves the
-    # graphical login worked is the desktop coming up afterwards.
-    check_screen 'biglinux-sddm-login', 60;
+    # The greeter is ready when its process is up, which the serial console can
+    # answer without knowing what the theme looks like. The screenshot is kept
+    # only as evidence in the job, never as the condition: SDDM's theme and
+    # language are free to change between builds.
+    installed_system->assert_greeter;
+    check_screen 'biglinux-sddm-login', 5;
+    # A greeter that just appeared may still be animating its password field in.
     wait_still_screen stilltime => 3, timeout => 60;
 
     type_password(installed_system->test_password);

@@ -240,6 +240,14 @@ api_post_args=(
     "PRODUCTDIR=$productdir"
     NEEDLES_DIR=%%CASEDIR%%/openqa/needles
     SERIALDEV=hvc0
+    # This instance has no job groups. Naming group 0 keeps the job out of any
+    # group the image might create, exactly as the upstream CI example does.
+    _GROUP_ID=0
+    # The default marker installs a PROMPT_COMMAND hook in the SUT so command
+    # exit codes reach the serial log. These tests read the virtio terminal
+    # directly and never call script_run, so the hook only adds noise to
+    # serial0.txt, which the installed-system modules read as a data channel.
+    PRETTY_SERIAL_MARKER=0
 )
 if [[ "$selected_firmware" == uefi ]]; then
     api_post_args+=(
@@ -258,11 +266,28 @@ if [[ "$plan_kind" == applications ]]; then
 fi
 [[ -n "$test_git_refspec" ]] && api_post_args+=("TEST_GIT_REFSPEC=$test_git_refspec")
 
+# openQA hides _SECRET_ variables from its web UI but returns them verbatim in
+# the scheduled-product API response, and the production workflow uploads this
+# whole directory as a job artifact. Strip them on the way in: a test password
+# in a downloadable artifact is a leaked credential even when it is disposable.
+redact_secrets() {
+    local file=$1 redacted
+    [[ -s "$file" ]] || return 0
+    redacted="$file.redacted"
+    if jq 'walk(if type == "object" then with_entries(if (.key | startswith("_SECRET_")) then .value = "[redacted]" else . end) else . end)' \
+        "$file" >"$redacted" 2>/dev/null; then
+        mv -- "$redacted" "$file"
+    else
+        unlink -- "$redacted" 2>/dev/null || true
+    fi
+}
+
 if ! docker exec "$container_name" openqa-cli "${api_post_args[@]}" \
     >"$response_file" 2>>"$schedule_log"; then
     echo 'Local openQA scheduling request failed' >>"$schedule_log"
     exit 1
 fi
+redact_secrets "$response_file"
 cat "$response_file" >>"$schedule_log"
 jq -e 'type == "object"' "$response_file" >/dev/null \
     || die 'local openQA scheduling response is not valid JSON'
@@ -275,8 +300,10 @@ if [[ -n "$scheduled_product_id" ]]; then
         if ! docker exec "$container_name" openqa-cli api --host http://localhost \
             "isos/$scheduled_product_id" >"$status_file" 2>>"$schedule_log"; then
             echo "Could not query scheduled product $scheduled_product_id" >>"$schedule_log"
+            redact_secrets "$status_file"
             exit 1
         fi
+        redact_secrets "$status_file"
         status=$(jq -r '.status // empty' "$status_file")
         case "$status" in
             scheduled)

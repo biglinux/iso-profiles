@@ -70,6 +70,14 @@ single-instance image used by the local development bridge. The container is
 stopped and removed at the end of every job; its database, assets, and results
 are not reused by another run.
 
+The gate schedules through `SCENARIO_DEFINITIONS_YAML`, which openQA's own
+documentation still labels experimental and free to change incompatibly. The
+digest pin is what keeps that from breaking a release: raising the image is
+therefore never a routine bump. Run one full firmware plan on a known ISO with
+the new image before the pin is updated, and expect
+[`../scenario-definitions.yaml`](../scenario-definitions.yaml) to need changes
+if the schema moved.
+
 ## Inputs and artifacts
 
 The reusable workflow receives `candidate_artifact`, `iso_filename`, `version`,
@@ -84,7 +92,10 @@ bytes.
 Every runner job uploads a uniquely named diagnostic artifact containing the
 ISO identity, resource measurements, container logs and metadata, job IDs,
 openQA archives, module details, screenshots, video when generated, KVM
-evidence, and the HTML report. Collection runs after failures and never changes
+evidence, and the HTML report. `schedule-release-gate.sh` redacts every
+`_SECRET_*` value from the JSON it writes there first: openQA hides those
+variables in its web UI but returns them verbatim from the scheduled-product
+API, and this directory is a downloadable artifact. Collection runs after failures and never changes
 the original test result to success.
 
 ## Local openQA lifecycle
@@ -157,6 +168,143 @@ existing ISO:
 
 This is local development only. It uses the same pinned image, requires KVM,
 binds its endpoint to loopback, and is not a second production implementation.
+
+## How the gate decides what it sees
+
+Everything that publishes an accessibility tree is driven through AT-SPI: the
+live wizard (GTK4/libadwaita), the BigLinux installer launcher and its dialogs
+(GTK4), Calamares itself (Qt), and every application in the audit. A page is
+recognised by a control only that page owns - the "Região" selector, the
+"Modelo de teclado" label, the "Apagar disco" radio - never by a picture of it.
+`openqa/lib/calamares.pm` keeps that map in `%PAGE_ANCHORS`.
+
+This is not a style preference. A needle records one build's pixels, so a new
+theme, a translated string or a reordered grid turns the gate red for no defect
+at all; worse, a needle that still matches after the layout moved sends a click
+somewhere else. Both happened here: five needles had to be re-recorded for one
+build, and the 2026-08-04 language needle had its click point over what later
+builds render as "English, United States" - a green run would have installed
+the wrong language.
+
+Three things have no accessibility tree and stay outside this rule:
+
+| Surface | Why | How it is covered |
+| --- | --- | --- |
+| GRUB | Boot loader, no session, no AT-SPI | Not asserted: if it breaks, the first module times out with the video recorded |
+| Plymouth | Same | Same |
+| SDDM greeter | Its QML greeter publishes nothing useful | The greeter *process* is the condition; the screenshot is evidence only |
+
+The workflow enforces this: a new `assert_screen`, `assert_and_click` or
+`check_screen` outside that last row fails the static validation, together with
+an audit that rejects a needle no test uses and a tag no needle answers.
+
+`openqa/needles/` holds exactly what those two surfaces need - four files for
+the live wizard and one for the greeter, answering five tags. The other 35
+files and 24 tags were deleted once the installer moved to AT-SPI; a needle
+kept "just in case" is a needle nobody re-records, and the audit above now
+fails the build rather than let one accumulate again. It also prints a warning
+for any surviving needle older than 180 days, so the re-recording happens on a
+quiet day instead of in the middle of a release.
+
+## When a needle stops matching
+
+A needle describes one build's pixels. When the ISO changes a wizard page, the
+job stops at that page and every later module is skipped, which looks alarming
+and usually is not: the gate is doing its job.
+
+The loop that fixes it, cheapest step first:
+
+1. Run only the live schedule against the new ISO. It loads a single module and
+   fails within minutes on the first stale needle, instead of spending an hour
+   to tell you the same thing:
+   `BIGLINUX_SCHEDULE=live` with `TEST=release_bios`.
+2. Take the last screenshot the failing module recorded — that *is* the screen
+   the needle should describe:
+   `ls -v /var/lib/openqa/testresults/*/<job>*/<module>-*.png | tail -1`.
+3. Add a new needle named after the day (`<tag>-YYYYMMDD.json/.png`) carrying
+   the **same tag** as the old one. openQA accepts any needle with the tag, so
+   the previous file keeps older ISOs working - unless its click point now
+   lands on a different control, in which case delete it instead of keeping it.
+   Two needles under one tag are two candidates, and openQA picks by pixel
+   score, not by date: the old language needle clicked at (513, 255) and the
+   new one at (242, 257), the first of which is "English, United States" on
+   this build.
+4. Anchor it on translated labels that identify the page, not on values.
+   A needle over "Região:" and "Área:" survives a changed default timezone; a
+   needle over "New York" does not.
+5. Re-run the plan. Each pass reveals at most one stale needle, so expect one
+   round per changed page.
+
+A needle that matches the wrong control is worse than one that matches nothing:
+the 2026-08-04 language needle had its click point over the middle column,
+which in a later build is "English, United States". Always check what the
+click point lands on before trusting a green run.
+
+## What the gate measures but does not block on
+
+`openqa/tests/installed_security.pm` runs on the installed system and reports
+its security posture as **soft failures**: passwordless sudo entries, services
+listening beyond loopback, whether anything actually filters incoming traffic,
+unsigned package databases, plain-HTTP mirrors, weakened
+`kptr_restrict`/`dmesg_restrict`, AppArmor running with `audit=0`, the LUKS
+generation when the disk is encrypted, and how many updates are already pending
+on a fresh install.
+
+The firewall item measures filtering, not configuration, and the difference is
+the whole point: `ufw` is listed in `enable_systemd`, so `systemctl is-enabled
+ufw` says `enabled` on every install while the policy stays `ACCEPT` until
+someone runs `ufw enable` once. The module reads `ufw status`, the `INPUT`
+policy and the nftables ruleset, and warns when the machine has services
+listening beyond loopback and none of the three filters anything.
+
+The probe runs as root and proves it: the serial console logs in as the desktop
+user, because the application audit and every AT-SPI probe need that session,
+so the module escalates with `biglinux->become_root` and reports the uid it
+measured with. This is not a formality. The first run of this module measured
+as the user and reported `sudoers NOPASSWD lines: 0` on a system whose
+`/etc/sudoers` it could not open - `grep -s` hides the permission error - and
+`ufw`, `iptables` and `nft` all came back empty for the same reason. The module
+now refuses to report anything when it cannot reach uid 0.
+
+Each item was true on a released ISO when this was written, which is exactly
+why it starts as a warning: the job stays green, the numbers land in the report,
+and a regression becomes visible on the next build. Turning one into a release
+blocker is a single line in that module - replace `record_soft_failure` with
+`die` - and should happen as each item is fixed.
+
+## What a plan costs
+
+Measured on this workstation (Ryzen, KVM, digest-pinned image) against
+`biglinux_2026-08-19_k618`:
+
+| | BIOS (`release`) | UEFI (`release_uefi`) |
+| --- | --- | --- |
+| Modules | 12 | 11 (no application audit) |
+| Wall clock | 16-20 min | 14 min |
+| Guest | 2 vCPUs, 4 GiB RAM, sparse 40 GiB disk | same, plus the OVMF pair |
+| Installed system after the run | 5.9 GiB used of 40 GiB, 1.5 GiB RAM in use | same |
+| Result artifacts | ~11 MiB per job | ~9 MiB per job |
+
+Where the time goes on a BIOS plan: `installed_critical_apps` 9.8 min,
+`installer_install` 4.6 min, `applications` 2.0 min, `live_desktop` 0.8 min,
+`installed_brave` 0.8 min, and every remaining module under half a minute.
+Two of the twelve modules are 75% of the run, which is where to look before
+optimising anything.
+
+## Running the gate day to day
+
+- **One plan at a time on a workstation.** Each job uses 2 vCPUs, 4 GiB of
+  guest RAM and a sparse 40 GiB disk. Running a plan next to
+  `build-iso/build-local.sh` drove this machine into memory pressure twice.
+- **Local runs**: `openqa/development/start-gate-local.sh` then
+  `schedule-release-gate.sh`; see the development README.
+- **Approval**: the same ISO has to pass BIOS and UEFI, and pass twice in a row
+  without a code change before a build is called good. A single green run does
+  not separate a fix from a flake.
+- **When it goes red**, first ask which kind of failure it is. The gate names
+  it: a module that dies with an AT-SPI tree in the message is a renamed or
+  missing control (add the label); a module that dies on a timeout usually
+  means the ISO really is broken.
 
 ## Rollback and maintenance
 
