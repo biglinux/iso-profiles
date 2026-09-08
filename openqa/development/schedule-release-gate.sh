@@ -186,28 +186,6 @@ job_ids_file="$diagnostics_dir/job-ids-$selected_firmware.txt"
 
 printf 'Starting local openQA plan: %s (%s)\n' "$test_suite" "$selected_firmware" | tee "$schedule_log"
 
-policy_json=$(ruby - "$policy_file" <<'RUBY'
-require 'json'
-require 'yaml'
-
-path = ARGV.fetch(0)
-policy = YAML.safe_load(File.read(path), permitted_classes: [], aliases: false)
-abort 'application policy must be a mapping' unless policy.is_a?(Hash)
-canonical = lambda do |value|
-  case value
-  when Hash
-    value.keys.sort.each_with_object({}) { |key, result| result[key] = canonical.call(value[key]) }
-  when Array
-    value.map { |item| canonical.call(item) }
-  else
-    value
-  end
-end
-puts JSON.generate(canonical.call(policy))
-RUBY
-) || die 'application policy could not be converted to JSON'
-policy_hash=$(printf '%s' "$policy_json" | sha256sum | awk '{print $1}')
-printf 'application_policy_sha256=%s\n' "$policy_hash" | tee -a "$schedule_log"
 
 api_post_args=(
     api --host http://localhost -X POST isos
@@ -230,12 +208,11 @@ api_post_args=(
     "BIGLINUX_OPENQA_BUILD=$openqa_build"
     "BIGLINUX_OPENQA_TEST_GIT_REFSPEC=$test_git_refspec"
     "BIGLINUX_NEEDLES_GIT_HASH=$needles_git_hash"
-    # The hash travels, the policy does not: openQA indexes every job setting,
-    # and PostgreSQL refuses an index row over 2704 bytes. The canonical policy
-    # JSON was already 2.7 KB, so one more entry broke job creation for every
-    # job in the run - "index row size 2808 exceeds btree version 4 maximum".
-    # The tests read the policy from CASEDIR and check it against this hash.
-    "BIGLINUX_APPLICATION_POLICY_HASH=$policy_hash"
+    # The policy itself never travels: openQA indexes every job setting, and
+    # PostgreSQL refuses an index row over 2704 bytes. The canonical policy JSON
+    # was already 2.7 KB, so one more entry broke job creation for every job in
+    # the run - "index row size 2808 exceeds btree version 4 maximum". The tests
+    # read it from CASEDIR, which BIGLINUX_OPENQA_TEST_GIT_REFSPEC records.
     QEMU_NO_KVM=0
     WORKER_CLASS=biglinux-kvm
     "BUILD=$plan_build"
@@ -268,7 +245,12 @@ if [[ "$plan_kind" == applications ]]; then
         "BIGLINUX_APPLICATION_SHARD_COUNT=$application_shard_count"
     )
 fi
-[[ -n "$test_git_refspec" ]] && api_post_args+=("TEST_GIT_REFSPEC=$test_git_refspec")
+# Deliberately not TEST_GIT_REFSPEC. That variable exists to force a shared,
+# long-lived worker CASEDIR onto the right commit; ours is the checkout
+# actions/checkout just placed at GITHUB_SHA in this same VM, so the checkout
+# would be onto itself. Setting it made openQA run git inside CASEDIR, which
+# required .git in the copy and silently reverted anything edited there.
+# The commit still travels, as a plain value the report reads.
 
 # openQA hides _SECRET_ variables from its web UI but returns them verbatim in
 # the scheduled-product API response, and the production workflow uploads this

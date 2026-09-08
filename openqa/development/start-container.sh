@@ -26,23 +26,12 @@ zypper --non-interactive addrepo --type plaindir \
 
 groupmod --gid "$KVM_GID" --non-unique kvm
 usermod --append --groups kvm _openqa-worker
-if [[ -d /workspace-source ]]; then
-    install -d -m 0755 /workspace
-    # Copy the test sources, not everything that happens to sit in the
-    # checkout. A local ISO build leaves unpacked root filesystems under
-    # ./output, device nodes included, and "cp -a" over those fails with
-    # "cannot create special file ... Operation not permitted" and takes the
-    # container down before the web UI is up. --delete also keeps a long-lived
-    # local container honest about files removed since it started.
-    #
-    # .git stays: openQA checks TEST_GIT_REFSPEC out inside CASEDIR, so a
-    # /workspace without a repository fails every job with "isotovideo died:
-    # Failed to check out <sha> in '/workspace'". Excluding it passed locally,
-    # where no refspec is pinned, and failed every job on GitHub.
-    rsync --archive --delete \
-        --exclude '/output/' \
-        --chown=_openqa-worker:_openqa-worker \
-        /workspace-source/ /workspace/
+# The sources are used where they are mounted. Nothing writes to CASEDIR now
+# that no refspec is checked out inside it, so the copy this used to make - and
+# the rules about what to exclude from it - are gone. A read-only CASEDIR is
+# also the honest description of what a test run does to its own sources.
+if [[ -d /workspace-source && ! -e /workspace ]]; then
+    ln -s /workspace-source /workspace
 fi
 export skip_suse_specifics=1
 export skip_suse_tests=1

@@ -465,3 +465,51 @@ class WindowAcceptanceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WalkBoundsTest(unittest.TestCase):
+    """A walk is bounded by time, not only by node count.
+
+    Every node costs several synchronous D-Bus round trips, so an application
+    that is on the bus but not answering makes the node limit meaningless: the
+    desktop-wide walk in dump-widgets outlived a five-minute budget and read as
+    a hang.
+    """
+
+    class SlowAccessible:
+        """One node per call, each taking a tenth of a second to answer."""
+
+        def __init__(self, clock):
+            self._clock = clock
+
+        def get_child_count(self):
+            self._clock[0] += 0.1
+            return 1
+
+        def get_child_at_index(self, _index):
+            return self
+
+    def test_the_walk_stops_at_its_deadline(self) -> None:
+        clock = [0.0]
+        node = self.SlowAccessible(clock)
+        with mock.patch.object(atspi_probe.time, "monotonic", lambda: clock[0]):
+            with self.assertRaises(atspi_probe.WalkTruncated):
+                for _ in atspi_probe._walk(node, limit=10_000, deadline=1.0):
+                    pass
+
+    def test_the_walk_without_a_deadline_still_stops_at_the_node_limit(self) -> None:
+        clock = [0.0]
+        node = self.SlowAccessible(clock)
+        visited = list(atspi_probe._walk(node, limit=5))
+        self.assertEqual(len(visited), 5)
+
+
+class DumpWidgetsBudgetTest(unittest.TestCase):
+    def test_dump_widgets_reports_truncation(self) -> None:
+        # The operation accepted --timeout and ignored it, so raising the
+        # budget from 120 to 300 seconds changed nothing at all.
+        with mock.patch.object(atspi_probe, "_visible_widgets", return_value=[]):
+            result = atspi_probe.dump_widget_tree(None, timeout=30)
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("truncated", result)
+        self.assertFalse(result["truncated"])

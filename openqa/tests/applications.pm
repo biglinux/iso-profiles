@@ -266,7 +266,6 @@ sub _build_application_context {
         build_id => get_var('BIGLINUX_OPENQA_BUILD', ''),
         commit_sha => get_var('BIGLINUX_OPENQA_TEST_GIT_REFSPEC', ''),
         needles_git_hash => get_var('BIGLINUX_NEEDLES_GIT_HASH', ''),
-        policy_hash => get_var('BIGLINUX_APPLICATION_POLICY_HASH', ''),
         policy_version => 1,
         shard_index => $shard_index + 0,
         shard_count => $shard_count + 0,

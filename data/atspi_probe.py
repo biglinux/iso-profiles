@@ -135,7 +135,13 @@ def sample_process_memory(root_pid: int, duration: float = 2.0) -> dict[str, Any
     return peak
 
 
+_ATSPI_CALL_TIMEOUT_MS = 250
+_ATSPI_APP_TIMEOUT_MS = 15000
+_atspi_timeout_set = False
+
+
 def _atspi_import() -> tuple[Any, Any]:
+    global _atspi_timeout_set
     try:
         import gi
 
@@ -143,6 +149,16 @@ def _atspi_import() -> tuple[Any, Any]:
         from gi.repository import Atspi, GLib
     except (ImportError, ValueError) as error:
         raise ProbeError(f"AT-SPI Python bindings are unavailable: {error}") from error
+    if not _atspi_timeout_set:
+        # libatspi waits 800 ms per method call by default. Every node of a
+        # walk costs several calls, so one application that is on the bus but
+        # not answering turns a tree walk into minutes. A quarter second is
+        # still far above a healthy round trip on a loaded guest.
+        try:
+            Atspi.set_timeout(_ATSPI_CALL_TIMEOUT_MS, _ATSPI_APP_TIMEOUT_MS)
+        except (AttributeError, TypeError):
+            pass
+        _atspi_timeout_set = True
     return Atspi, GLib
 
 
@@ -467,11 +483,26 @@ def wait_for_window_change(
     }
 
 
-def _walk(accessible: Any, limit: int = 600) -> Iterable[Any]:
+class WalkTruncated(Exception):
+    """The tree was larger, or slower, than the budget allowed."""
+
+
+def _walk(accessible: Any, limit: int = 600, deadline: float | None = None) -> Iterable[Any]:
+    """Breadth-first over an accessibility tree, bounded by nodes and by time.
+
+    A node limit alone is not a bound: every node costs several synchronous
+    D-Bus round trips, and an application that registered on the bus but does
+    not answer them pays libatspi's per-call timeout each time. Walking the
+    whole desktop that way outlasted a five-minute budget and looked like a
+    hang. Time is the bound that matters; the node limit stays as a cheap
+    guard against a cyclic tree.
+    """
     _atspi, GLib = _atspi_import()
     queue = [accessible] if accessible is not None else []
     visited = 0
     while queue and visited < limit:
+        if deadline is not None and time.monotonic() > deadline:
+            raise WalkTruncated(f"stopped after {visited} nodes")
         current = queue.pop(0)
         if current is None:
             continue
@@ -661,20 +692,33 @@ def _widget_record(accessible: Any) -> dict[str, Any] | None:
     }
 
 
-def _visible_widgets(expected_pid: int | None) -> list[tuple[Any, dict[str, Any]]]:
-    """Pair every visible widget with its accessible, which can act on it."""
+def _visible_widgets(
+    expected_pid: int | None, deadline: float | None = None
+) -> list[tuple[Any, dict[str, Any]]]:
+    """Pair every visible widget with its accessible, which can act on it.
+
+    Without expected_pid this walks every application on the desktop - the
+    shell, the compositor, the launcher - to reach one dialog. Pass a PID
+    wherever one is known; it is the difference between reading one window and
+    reading the session.
+    """
     allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
     widgets: list[tuple[Any, dict[str, Any]]] = []
     for window, record in _window_records():
         if allowed_pids is not None and record["pid"] not in allowed_pids:
             continue
-        for accessible in _walk(window, limit=_WIDGET_TREE_LIMIT):
-            widget = _widget_record(accessible)
-            if widget is None:
-                continue
-            widget["pid"] = record["pid"]
-            widget["window"] = record["name"]
-            widgets.append((accessible, widget))
+        try:
+            for accessible in _walk(window, limit=_WIDGET_TREE_LIMIT, deadline=deadline):
+                widget = _widget_record(accessible)
+                if widget is None:
+                    continue
+                widget["pid"] = record["pid"]
+                widget["window"] = record["name"]
+                widgets.append((accessible, widget))
+        except WalkTruncated:
+            # Partial evidence beats none: the caller reports what was reached
+            # and which window it was in when the budget ran out.
+            break
     return widgets
 
 
@@ -758,10 +802,15 @@ def _failure(
 
 
 def _widget_matches(
-    role: str, labels: list[str], expected_pid: int | None
+    role: str,
+    labels: list[str],
+    expected_pid: int | None,
+    budget: float | None = None,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], list[tuple[Any, dict[str, Any]]]]:
     roles_wanted = {part.casefold() for part in role.split("|") if part}
-    observed = _visible_widgets(expected_pid)
+    observed = _visible_widgets(
+        expected_pid, time.monotonic() + budget if budget is not None else None
+    )
     matches = [
         pair
         for pair in observed
@@ -787,7 +836,11 @@ def wait_for_widget(
     """
     deadline = time.monotonic() + timeout
     while True:
-        matches, observed = _widget_matches(role, labels, expected_pid)
+        # The walk gets what is left of the budget, so a slow tree expires the
+        # call instead of outliving it.
+        matches, observed = _widget_matches(
+            role, labels, expected_pid, max(1.0, deadline - time.monotonic())
+        )
         if matches:
             return {
                 "status": "passed",
@@ -821,7 +874,11 @@ def activate_widget(
     deadline = time.monotonic() + timeout
     observed: list[tuple[Any, dict[str, Any]]] = []
     while True:
-        matches, observed = _widget_matches(role, labels, expected_pid)
+        # The walk gets what is left of the budget, so a slow tree expires the
+        # call instead of outliving it.
+        matches, observed = _widget_matches(
+            role, labels, expected_pid, max(1.0, deadline - time.monotonic())
+        )
         for accessible, record in matches:
             try:
                 actions = accessible.get_action_iface()
@@ -878,11 +935,18 @@ def activate_widget(
         time.sleep(0.25)
 
 
-def dump_widget_tree(expected_pid: int | None) -> dict[str, Any]:
-    """Report every visible widget so a failed navigation can be diagnosed."""
+def dump_widget_tree(expected_pid: int | None, timeout: float = 30) -> dict[str, Any]:
+    """Report every visible widget so a failed navigation can be diagnosed.
+
+    Bounded like every other operation: this runs when something has already
+    gone wrong, which is exactly when the tree is most likely to be slow.
+    """
+    deadline = time.monotonic() + timeout
+    widgets = [record for _accessible, record in _visible_widgets(expected_pid, deadline)]
     return {
         "status": "passed",
-        "widgets": [record for _accessible, record in _visible_widgets(expected_pid)],
+        "widgets": widgets,
+        "truncated": time.monotonic() > deadline,
     }
 
 
@@ -1137,7 +1201,9 @@ def main() -> int:
                 args.pid if args.pid and args.pid > 1 else None,
             )
         elif args.operation == "dump-widgets":
-            result = dump_widget_tree(args.pid if args.pid and args.pid > 1 else None)
+            result = dump_widget_tree(
+                args.pid if args.pid and args.pid > 1 else None, args.timeout
+            )
         elif args.operation == "x11-wait-open":
             result = wait_for_x11_window(args.timeout, args.pid, args.name)
         elif args.operation == "cleanup":

@@ -711,12 +711,34 @@ jobs:
       - name: Download application shard diagnostics
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          # Pin the pattern to this run attempt: artifacts persist across
-          # re-run attempts and a bare openqa-applications-* would also match
-          # stale shard results and the summary from a previous attempt.
-          pattern: openqa-applications-*-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/openqa-application-artifacts
+          # Every attempt of this run, not only the current one. "Re-run
+          # failed jobs" re-runs the failed shard alone, so the shards that
+          # passed keep the artifacts of the attempt they ran in; pinning the
+          # attempt found one file of four and the aggregation could only ever
+          # fail. The step below keeps the newest attempt of each shard.
+          pattern: openqa-applications-*-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/openqa-application-attempts
           merge-multiple: false
+
+      - name: Keep the newest attempt of each application shard
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          attempts=$RUNNER_TEMP/openqa-application-attempts
+          selected=$RUNNER_TEMP/openqa-application-artifacts
+          install -d -m 0755 -- "$selected"
+          # Artifact names end in -<run_id>-<attempt>, and the shard is the
+          # field before the build id. Sorting by attempt numerically and
+          # taking the last one per shard is what makes a partial re-run add
+          # up to a complete set again.
+          find "$attempts" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
+              awk -F- '{ attempt = $NF; shard = $3; print attempt "\t" shard "\t" $0 }' |
+              sort -k2,2 -k1,1n |
+              awk -F'\t' '{ newest[$2] = $3 } END { for (shard in newest) print shard, newest[shard] }' |
+              while read -r shard directory; do
+                  printf 'shard %s from %s\n' "$shard" "$directory"
+                  cp -a -- "$attempts/$directory" "$selected/$directory"
+              done
 
       - name: Prepare application policy
         if: ${{ always() }}
@@ -767,9 +789,11 @@ jobs:
       - name: Download every suite's diagnostics
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          # Same attempt only: artifacts persist across re-runs and a stale suite
-          # would be reported as this run's evidence.
-          pattern: openqa-*-${{ github.run_id }}-${{ github.run_attempt }}
+          # Every attempt of this run: a re-run of one suite leaves the others
+          # on the attempt they passed in, and a report that silently omits
+          # them describes a run that never happened. The build step below
+          # reads the newest attempt of each suite.
+          pattern: openqa-*-${{ github.run_id }}-*
           path: ${{ runner.temp }}/openqa-artifacts
 
       - name: Build the report

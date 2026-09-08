@@ -197,7 +197,6 @@ def validate_shards(
         "build_id",
         "commit_sha",
         "needles_git_hash",
-        "policy_hash",
         "policy_version",
         "inventory_hash",
     )
@@ -217,9 +216,10 @@ def validate_shards(
         raise ValueError("metrics critical application list differs from policy")
     if first.get("missing_critical"):
         raise ValueError("metrics report missing critical applications")
-    expected_policy_hash = hashlib.sha256(canonical_json(policy).encode("utf-8")).hexdigest()
-    if first.get("policy_hash") != expected_policy_hash:
-        raise ValueError("application policy hash does not match the committed policy")
+    # No policy hash. Every shard of a run checks out the same commit_sha, which
+    # is compared above and which is what actually pins the policy file; hashing
+    # it only proved that a file at a commit matches itself, and it cost three
+    # byte-identical canonical-JSON implementations to do so.
 
     shard_indexes: set[int] = set()
     seen_launchables: dict[str, dict[str, Any]] = {}

@@ -32,9 +32,8 @@ class JobSettingsSizeTests(unittest.TestCase):
     def test_the_policy_is_not_passed_as_a_job_setting(self) -> None:
         scheduler = SCHEDULER.read_text(encoding="utf-8")
         self.assertNotIn("BIGLINUX_APPLICATION_POLICY_JSON", scheduler)
-        # The hash still travels: it is what lets a test verify the policy in
-        # its own checkout against the one the run was scheduled with.
-        self.assertIn("BIGLINUX_APPLICATION_POLICY_HASH=$policy_hash", scheduler)
+        # The commit is what pins the policy, and it is already a small value.
+        self.assertIn("BIGLINUX_OPENQA_TEST_GIT_REFSPEC=$test_git_refspec", scheduler)
 
     def test_the_policy_would_not_fit_in_a_setting_anyway(self) -> None:
         import json
