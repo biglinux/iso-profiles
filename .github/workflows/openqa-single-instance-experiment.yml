@@ -1,6 +1,15 @@
 ---
 name: BigLinux openQA release gate
 
+# One isotovideo run per plan, and nothing else.
+#
+# There is no openQA server in this workflow: isotovideo is the backend openQA
+# drives, so running it directly removes the database, the scheduler, the asset
+# store, the HTTP hop between a test and its own results, and the six-hour
+# ceiling a wedged worker used to hold. openqa/release-gate.yaml says which
+# plans exist and how long each may take; openqa/production/run-plan.sh runs
+# one. This file only prepares a runner and collects what the run produced.
+
 on:
   workflow_call:
     inputs:
@@ -33,7 +42,7 @@ on:
         type: string
         default: biglinux_2026-07-31_k71.iso
       version:
-        description: openQA product version from scenario-definitions.yaml
+        description: openQA product version recorded in the results
         required: true
         type: string
         default: candidate
@@ -46,123 +55,230 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    name: openQA ${{ matrix.suite }} (local KVM)
+  static:
+    name: Static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      plans: ${{ steps.plans.outputs.plans }}
+      shards: ${{ steps.plans.outputs.shards }}
+    steps:
+      - name: Check out the tested sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate repository sources
+        run: |
+          set -euo pipefail
+          git diff --check
+          bash -n openqa/production/*.sh data/*.sh
+          shellcheck -x openqa/production/*.sh data/*.sh
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load_file(path, permitted_classes: [], aliases: false) }' \
+            .github/workflows/*.yml openqa/*.yaml
+          python3 -m unittest discover -s data -p 'test_*.py'
+          python3 -m unittest discover -s openqa/data -p 'test_*.py'
+          python3 -m unittest discover -s openqa/report -p 'test_*.py'
+          python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py openqa/production/*.py
+          # "type_string calamares->test_user" is valid Perl that means
+          # "calamares->type_string(...)": the indirect object syntax silently
+          # calls the wrong method, and perl -c cannot see it. Require the
+          # parentheses that settle the parse.
+          if grep -rnE '^\s*(type_string|type_password|assert_script_run|script_run|record_info|upload_logs)\s+[a-z_]+->' \
+            openqa/tests/*.pm openqa/lib/*.pm; then
+            echo 'Call the method first and pass its result in parentheses' >&2
+            exit 1
+          fi
+          # Needles rot silently: a tag no test asks for is dead weight that
+          # still has to be reviewed, and a tag no needle answers fails only
+          # minutes into a job. Both are cheap to catch here.
+          python3 - <<'NEEDLE_AUDIT'
+          import datetime, glob, json, pathlib, re, subprocess, sys
+
+          needle_tags: dict[str, list[str]] = {}
+          for path in glob.glob("openqa/needles/*.json"):
+              for tag in json.loads(pathlib.Path(path).read_text()).get("tags", []):
+                  needle_tags.setdefault(tag, []).append(path)
+
+          sources = [
+              pathlib.Path(path).read_text(encoding="utf-8")
+              for path in glob.glob("openqa/tests/*.pm") + glob.glob("openqa/lib/*.pm")
+          ]
+          used = {
+              tag
+              for tag in needle_tags
+              if any(re.search(rf"['\"]{re.escape(tag)}['\"]", text) for text in sources)
+          }
+
+          problems = []
+          for tag, files in sorted(needle_tags.items()):
+              if tag not in used:
+                  problems.append(f"needle tag '{tag}' is used by no test: {', '.join(sorted(files))}")
+          for text in sources:
+              for tag in re.findall(r"(?:assert_screen|assert_and_click|check_screen)\s+'([^']+)'", text):
+                  if tag not in needle_tags:
+                      problems.append(f"test asks for needle tag '{tag}', which no needle provides")
+
+          if problems:
+              print("\n".join(sorted(set(problems))), file=sys.stderr)
+              sys.exit(1)
+
+          # A needle nobody has looked at in half a year is describing a build
+          # nobody runs any more. Warn, never fail: the day it stops matching is
+          # a bad day to discover it was already stale.
+          today = datetime.date.today()
+          for path in sorted(p for tag in used for p in needle_tags[tag]):
+              stamp = re.search(r"-(\d{4})(\d{2})(\d{2})\.json$", path)
+              if stamp:
+                  recorded = datetime.date(*(int(g) for g in stamp.groups()))
+              else:
+                  committed = subprocess.run(
+                      ["git", "log", "-1", "--format=%cs", "--", path],
+                      capture_output=True, text=True, check=True).stdout.strip()
+                  # No history means the needle was recorded just now, locally.
+                  recorded = datetime.date.fromisoformat(committed) if committed else today
+              age = (today - recorded).days
+              if age > 180:
+                  print(f"::warning file={path}::needle is {age} days old; "
+                        "re-record it against a current ISO before it fails mid-release")
+          NEEDLE_AUDIT
+          # One surface still compares pixels, and only as evidence: the SDDM
+          # greeter publishes no useful accessibility tree, so installed_login
+          # keeps a non-fatal check_screen while the greeter *process* is the
+          # actual condition. Everything else - the live wizard included, once
+          # the session's accessibility bus was fixed - is driven through
+          # AT-SPI, so a theme, an icon set or a translation cannot turn the
+          # gate red.
+          if grep -rnE '(assert_screen|assert_and_click|check_screen)' \
+            openqa/tests/*.pm openqa/lib/*.pm \
+            | grep -vE '^openqa/tests/installed_login\.pm:'; then
+            echo 'Use AT-SPI for anything that publishes an accessibility tree' >&2
+            exit 1
+          fi
+          # A Perl module whose literals are not ASCII needs "use utf8", or
+          # every accented label it declares reaches the guest as latin-1 and
+          # matches nothing. perl -c is silent about it: the file still
+          # compiles, and the test only fails minutes into a job.
+          for perl_module in openqa/lib/*.pm openqa/tests/*.pm openqa/main.pm; do
+            if LC_ALL=C grep -q '[^ -~[:space:]]' "$perl_module" \
+              && ! grep -q '^use utf8;' "$perl_module"; then
+              echo "$perl_module has non-ASCII literals but does not use utf8" >&2
+              exit 1
+            fi
+          done
+          # os-autoinst forwards a second select_console argument to
+          # distribution::console_selected, whose signature takes the console
+          # alone and dies on anything more. perl -c cannot see it either.
+          if grep -rnE "select_console\s+'[a-z0-9-]+'\s*," openqa/tests/*.pm openqa/lib/*.pm; then
+            echo 'select_console takes the console name alone' >&2
+            exit 1
+          fi
+
+      - name: Validate the pinned openQA image reference
+        run: |
+          set -euo pipefail
+          openqa_image=$(tr -d '[:space:]' < openqa/openqa-image.txt)
+          # Pinned by digest, and from a registry this project controls or
+          # trusts. The openSUSE devel registry keeps only a handful of tags
+          # and garbage-collected the digest the gate trusted, which is why
+          # mirror-openqa-image.yml exists.
+          [[ "$openqa_image" =~ ^(ghcr\.io|registry\.opensuse\.org)/.+@sha256:[[:xdigit:]]{64}$ ]] || {
+            echo 'The openQA image must be pinned by digest' >&2
+            exit 2
+          }
+          [[ "$openqa_image" != *:latest@sha256:* ]] || {
+            echo 'The openQA image must not use the mutable latest tag' >&2
+            exit 2
+          }
+
+      - name: Read the gate's plans
+        id: plans
+        run: |
+          set -euo pipefail
+          # The matrix comes from the gate file, so adding a plan is one commit
+          # in one place. A plan with gate: false is a local tool - `live` is a
+          # strict prefix of the firmware plans and would only spend a runner
+          # on what they already prove.
+          plans=$(ruby -ryaml -rjson -e '
+            gate = YAML.safe_load_file("openqa/release-gate.yaml", permitted_classes: [], aliases: false)
+            abort "release-gate.yaml must contain version: 2" unless gate["version"] == 2
+            plans = gate.fetch("plans").select { |plan| plan["gate"] }
+            abort "no plan is part of the gate" if plans.empty?
+            plans.each do |plan|
+              name = plan.fetch("name")
+              abort "plan #{name} has no timeout_minutes" unless plan["timeout_minutes"].is_a?(Integer)
+              abort "plan #{name} is not a safe artifact name" unless name.match?(/\A[a-z0-9-]+\z/)
+            end
+            puts JSON.generate(plans.map { |plan| {"name" => plan["name"], "timeout_minutes" => plan["timeout_minutes"]} })
+          ')
+          shards=$(ruby -ryaml -e '
+            gate = YAML.safe_load_file("openqa/release-gate.yaml", permitted_classes: [], aliases: false)
+            puts gate.fetch("plans").count { |plan| plan["schedule"] == "applications" }
+          ')
+          printf 'plans=%s\n' "$plans" >>"$GITHUB_OUTPUT"
+          printf 'shards=%s\n' "$shards" >>"$GITHUB_OUTPUT"
+          printf 'plans=%s\nshards=%s\n' "$plans" "$shards"
+
+  plan:
+    name: openQA ${{ matrix.plan.name }}
+    needs: static
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - suite: bios
-            firmware: bios
-          - suite: uefi
-            firmware: uefi
-          - suite: applications-0
-            firmware: bios
-            application_shard_index: 0
-          - suite: applications-1
-            firmware: bios
-            application_shard_index: 1
-          - suite: applications-2
-            firmware: bios
-            application_shard_index: 2
-          - suite: applications-3
-            firmware: bios
-            application_shard_index: 3
+        plan: ${{ fromJSON(needs.static.outputs.plans) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    # The plan's own bound, not one ceiling for all of them: a wedged live
+    # wizard should not hold a runner for as long as a full installation.
+    timeout-minutes: ${{ matrix.plan.timeout_minutes }}
+    permissions:
+      contents: read
+      # Only to pull the pinned image when it is mirrored into this
+      # repository's own registry - see mirror-openqa-image.yml.
+      packages: read
     env:
-      SUITE: ${{ matrix.suite }}
-      FIRMWARE: ${{ matrix.firmware }}
-      APPLICATION_SHARD_INDEX: ${{ matrix.application_shard_index }}
+      PLAN: ${{ matrix.plan.name }}
       ISO_FILENAME: ${{ inputs.iso_filename }}
       OPENQA_VERSION: ${{ inputs.version }}
       OPENQA_BUILD: ${{ inputs.build_id }}
-      OPENQA_CONTAINER: biglinux-openqa-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Check out the tested sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Initialize diagnostics and validate inputs
+      - name: Prepare the runner's layout
         run: |
           set -euo pipefail
-          OPENQA_DIAGNOSTICS_DIR="$RUNNER_TEMP/openqa-diagnostics/$SUITE"
-          OPENQA_PASSWORD_FILE="$RUNNER_TEMP/openqa-test-password"
-          OPENQA_WORKER_CONFIG="$RUNNER_TEMP/openqa-worker.ini"
-          OPENQA_OVMF_RUNTIME="$RUNNER_TEMP/openqa-ovmf"
-          APPLICATION_SHARD_COUNT=$(ruby -ryaml -e \
-            'puts YAML.safe_load_file("openqa/development/release-gate.yaml", permitted_classes: [], aliases: false).fetch("application_shard_count")')
-          [[ "$APPLICATION_SHARD_COUNT" =~ ^[1-9][0-9]*$ ]] || {
-            echo 'Invalid application shard count in release-gate.yaml' >&2
-            exit 2
-          }
+          # The guest disk needs HDDSIZEGB plus a fifth - 48 GiB for the
+          # default 40 - and isotovideo refuses to start without it. The
+          # runner's root filesystem has about 20 GiB free; /mnt has 65.
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+            /mnt/openqa /mnt/openqa/assets /mnt/openqa/run
+          diagnostics="$RUNNER_TEMP/openqa-diagnostics/$PLAN"
+          install -d -m 0755 -- "$diagnostics"
           {
-            printf 'OPENQA_DIAGNOSTICS_DIR=%s\n' "$OPENQA_DIAGNOSTICS_DIR"
-            printf 'OPENQA_PASSWORD_FILE=%s\n' "$OPENQA_PASSWORD_FILE"
-            printf 'OPENQA_WORKER_CONFIG=%s\n' "$OPENQA_WORKER_CONFIG"
-            printf 'OPENQA_OVMF_RUNTIME=%s\n' "$OPENQA_OVMF_RUNTIME"
-            printf 'APPLICATION_SHARD_COUNT=%s\n' "$APPLICATION_SHARD_COUNT"
+            printf 'OPENQA_ASSET_DIR=%s\n' /mnt/openqa/assets
+            printf 'OPENQA_RUN_DIR=%s\n' "/mnt/openqa/run/$PLAN"
+            printf 'OPENQA_DIAGNOSTICS_DIR=%s\n' "$diagnostics"
+            printf 'OPENQA_PASSWORD_FILE=%s\n' "$RUNNER_TEMP/openqa-test-password"
+            printf 'OPENQA_OVMF_RUNTIME=%s\n' "$RUNNER_TEMP/openqa-ovmf"
           } >>"$GITHUB_ENV"
-          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results" "$OPENQA_OVMF_RUNTIME"
+          install -d -m 0755 -- "$RUNNER_TEMP/openqa-ovmf"
           [[ "$ISO_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ ]] || {
             echo 'Invalid ISO filename' >&2
             exit 2
           }
-          [[ "$OPENQA_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || {
-            echo 'Invalid openQA version' >&2
-            exit 2
-          }
           [[ "$OPENQA_BUILD" =~ ^[A-Za-z0-9_.:-]+$ ]] || {
-            echo 'Invalid openQA build identifier' >&2
+            echo 'Invalid build identifier' >&2
             exit 2
           }
-          if [[ "$SUITE" == applications-* ]]; then
-            if ! [[ "$APPLICATION_SHARD_INDEX" =~ ^[0-9]+$ ]] || \
-              ! ((APPLICATION_SHARD_INDEX < APPLICATION_SHARD_COUNT)); then
-              echo 'Invalid application shard index' >&2
-              exit 2
-            fi
-          else
-            [[ -z "$APPLICATION_SHARD_INDEX" ]] || {
-              echo 'Firmware suite must not have an application shard' >&2
-              exit 2
-            }
-          fi
-          printf 'suite=%s\nfirmware=%s\nshard=%s/%s\nrun_id=%s\nrun_attempt=%s\ncommit=%s\n' \
-            "$SUITE" "$FIRMWARE" "${APPLICATION_SHARD_INDEX:-none}" "$APPLICATION_SHARD_COUNT" \
-            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_SHA" \
-            >"$OPENQA_DIAGNOSTICS_DIR/run-metadata.txt"
-
-      - name: Validate pinned openQA image
-        run: |
-          set -euo pipefail
-          openqa_image=$(tr -d '[:space:]' < openqa/openqa-image.txt)
-          [[ "$openqa_image" =~ ^registry\.opensuse\.org/.+:[^@[:space:]]+@sha256:[[:xdigit:]]{64}$ ]] || {
-            echo 'openQA image must contain a version tag and digest' >&2
-            exit 2
-          }
-          [[ "$openqa_image" != *:latest@sha256:* ]] || {
-            echo 'openQA image must not use the mutable latest tag' >&2
-            exit 2
-          }
-          echo "OPENQA_IMAGE=$openqa_image" >>"$GITHUB_ENV"
-          docker pull "$openqa_image"
-          docker image inspect "$openqa_image" \
-            --format 'image={{index .RepoDigests 0}} id={{.Id}}' \
-            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-image.txt"
-          docker run --rm --entrypoint /bin/bash "$openqa_image" -c \
-            'rpm -q openQA os-autoinst openQA-client' \
-            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-packages.txt"
-          docker run --rm --entrypoint /bin/bash "$openqa_image" -c \
-            'rpm -q --qf "openQA-client %{VERSION}-%{RELEASE}\\n" openQA-client' \
-            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-cli-version.txt"
+          df -h / /mnt | tee "$diagnostics/disk-before.txt"
+          free -h | tee "$diagnostics/resources-before.txt"
+          nproc | tee "$diagnostics/cpu-count.txt"
 
       - name: Download the private ISO candidate
         if: ${{ inputs.candidate_artifact != '' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: ${{ inputs.candidate_artifact }}
-          path: ${{ runner.temp }}/openqa-assets
+          path: /mnt/openqa/assets
 
       - name: Download existing release ISO for manual validation
         if: ${{ inputs.candidate_artifact == '' }}
@@ -171,8 +287,7 @@ jobs:
           ISO_RELEASE_TAG: ${{ inputs.iso_release_tag }}
         run: |
           set -euo pipefail
-          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
-          mkdir -p -- "$openqa_asset_dir"
+          openqa_asset_dir="$OPENQA_ASSET_DIR"
           mapfile -t release_assets < <(gh release view "$ISO_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
           has_asset() {
@@ -240,7 +355,7 @@ jobs:
       - name: Verify candidate checksums
         run: |
           set -euo pipefail
-          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
+          openqa_asset_dir="$OPENQA_ASSET_DIR"
           test -s "$openqa_asset_dir/$ISO_FILENAME"
           (
             cd "$openqa_asset_dir"
@@ -249,143 +364,40 @@ jobs:
           ) | tee "$OPENQA_DIAGNOSTICS_DIR/checksums.txt"
           sha256sum "$openqa_asset_dir/$ISO_FILENAME" | awk '{print $1}' \
             | tee "$OPENQA_DIAGNOSTICS_DIR/iso-sha256.txt"
-          printf 'BIGLINUX_ISO_SHA256=%s\n' "$(<"$OPENQA_DIAGNOSTICS_DIR/iso-sha256.txt")" >>"$GITHUB_ENV"
           printf '%s\n' "$ISO_FILENAME" >"$OPENQA_DIAGNOSTICS_DIR/iso-name.txt"
           stat --printf='iso_bytes=%s\n' "$openqa_asset_dir/$ISO_FILENAME" \
             | tee "$OPENQA_DIAGNOSTICS_DIR/iso-size.txt"
 
-      - name: Validate repository sources
+      - name: Sign in to the registry holding the pinned image
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git diff --check
-          bash -n openqa/production/*.sh openqa/development/*.sh data/*.sh
-          shellcheck -x openqa/production/*.sh openqa/development/*.sh data/*.sh
-          ruby -e 'require "yaml"; ARGV.each { |path| YAML.safe_load_file(path, permitted_classes: [], aliases: false) }' \
-            .github/workflows/*.yml openqa/*.yaml openqa/development/*.yaml
-          python3 -m unittest discover -s data -p 'test_*.py'
-          python3 -m unittest discover -s openqa/data -p 'test_*.py'
-          python3 -m unittest discover -s openqa/report -p 'test_*.py'
-          python3 -m unittest discover -s openqa/production -p 'test_*.py'
-          openqa/production/test_verify-kvm-results.sh
-          python3 -m py_compile data/*.py openqa/data/*.py openqa/report/*.py openqa/production/*.py
-          # "type_string calamares->test_user" is valid Perl that means
-          # "calamares->type_string(...)": the indirect object syntax silently
-          # calls the wrong method, and perl -c cannot see it. Require the
-          # parentheses that settle the parse.
-          if grep -rnE '^\s*(type_string|type_password|assert_script_run|script_run|record_info|upload_logs)\s+[a-z_]+->' \
-            openqa/tests/*.pm openqa/lib/*.pm; then
-            echo 'Call the method first and pass its result in parentheses' >&2
-            exit 1
-          fi
-          # Needles rot silently: a tag no test asks for is dead weight that
-          # still has to be reviewed, and a tag no needle answers fails only
-          # minutes into a job. Both are cheap to catch here.
-          python3 - <<'NEEDLE_AUDIT'
-          import datetime, glob, json, pathlib, re, subprocess, sys
-
-          needle_tags: dict[str, list[str]] = {}
-          for path in glob.glob("openqa/needles/*.json"):
-              for tag in json.loads(pathlib.Path(path).read_text()).get("tags", []):
-                  needle_tags.setdefault(tag, []).append(path)
-
-          sources = [
-              pathlib.Path(path).read_text(encoding="utf-8")
-              for path in glob.glob("openqa/tests/*.pm") + glob.glob("openqa/lib/*.pm")
-          ]
-          used = {
-              tag
-              for tag in needle_tags
-              if any(re.search(rf"['\"]{re.escape(tag)}['\"]", text) for text in sources)
-          }
-
-          problems = []
-          for tag, files in sorted(needle_tags.items()):
-              if tag not in used:
-                  problems.append(f"needle tag '{tag}' is used by no test: {', '.join(sorted(files))}")
-          for text in sources:
-              for tag in re.findall(r"(?:assert_screen|assert_and_click|check_screen)\s+'([^']+)'", text):
-                  if tag not in needle_tags:
-                      problems.append(f"test asks for needle tag '{tag}', which no needle provides")
-
-          if problems:
-              print("\n".join(sorted(set(problems))), file=sys.stderr)
-              sys.exit(1)
-
-          # A needle nobody has looked at in half a year is describing a build
-          # nobody runs any more. Warn, never fail: the day it stops matching is
-          # a bad day to discover it was already stale.
-          today = datetime.date.today()
-          for path in sorted(p for tag in used for p in needle_tags[tag]):
-              stamp = re.search(r"-(\d{4})(\d{2})(\d{2})\.json$", path)
-              if stamp:
-                  recorded = datetime.date(*(int(g) for g in stamp.groups()))
-              else:
-                  committed = subprocess.run(
-                      ["git", "log", "-1", "--format=%cs", "--", path],
-                      capture_output=True, text=True, check=True).stdout.strip()
-                  # No history means the needle was recorded just now, locally.
-                  recorded = datetime.date.fromisoformat(committed) if committed else today
-              age = (today - recorded).days
-              if age > 180:
-                  print(f"::warning file={path}::needle is {age} days old; "
-                        "re-record it against a current ISO before it fails mid-release")
-          NEEDLE_AUDIT
-          # Pixel comparison is the exception, not the tool of first resort:
-          # everything that publishes a usable accessibility tree is driven
-          # through AT-SPI, so a theme or layout change cannot turn the gate
-          # red. Two surfaces are exempt, each for a measured reason recorded
-          # in the module itself: the SDDM greeter publishes no useful tree,
-          # and the live wizard runs before the session's accessibility bus
-          # works. Everything else must not go back to pixels.
-          if grep -rnE '(assert_screen|assert_and_click|check_screen)' \
-            openqa/tests/*.pm openqa/lib/*.pm \
-            | grep -vE '^openqa/tests/(live_desktop|installed_login)\.pm:'; then
-            echo 'Use AT-SPI for anything that publishes an accessibility tree' >&2
-            exit 1
-          fi
-          # A Perl module whose literals are not ASCII needs "use utf8", or
-          # every accented label it declares reaches the guest as latin-1 and
-          # matches nothing. perl -c is silent about it: the file still
-          # compiles, and the test only fails minutes into a job.
-          for perl_module in openqa/lib/*.pm openqa/tests/*.pm openqa/main.pm; do
-            if LC_ALL=C grep -q '[^ -~[:space:]]' "$perl_module" \
-              && ! grep -q '^use utf8;' "$perl_module"; then
-              echo "$perl_module has non-ASCII literals but does not use utf8" >&2
-              exit 1
-            fi
-          done
-          # os-autoinst forwards a second select_console argument to
-          # distribution::console_selected, whose signature takes the console
-          # alone and dies on anything more. perl -c cannot see it either.
-          if grep -rnE "select_console\s+'[a-z0-9-]+'\s*," openqa/tests/*.pm openqa/lib/*.pm; then
-            echo 'select_console takes the console name alone' >&2
-            exit 1
-          fi
-
-      - name: Install KVM validation tools
-        run: |
-          set -euo pipefail
-          if ! command -v qemu-system-x86_64 >/dev/null 2>&1 || \
-             ! command -v kvm-ok >/dev/null 2>&1 || \
-             ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install --yes cpu-checker jq qemu-system-x86
-          fi
-          command -v qemu-system-x86_64
-          command -v kvm-ok
-          command -v jq
-          dpkg-query -W -f='${Package} ${Version}\n' qemu-system-x86 cpu-checker \
-            | tee "$OPENQA_DIAGNOSTICS_DIR/host-packages.txt"
+          # An image mirrored into this repository's registry is private to it
+          # by default. The upstream registry needs no credentials, so this is
+          # decided by the pin rather than by a workflow input.
+          openqa_image=$(tr -d '[:space:]' < openqa/openqa-image.txt)
+          case "$openqa_image" in
+            ghcr.io/*)
+              printf '%s' "$REGISTRY_TOKEN" \
+                | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+              ;;
+          esac
+          docker pull --quiet "$openqa_image"
+          docker image inspect "$openqa_image" \
+            --format 'image={{index .RepoDigests 0}} id={{.Id}}' \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-image.txt"
 
       - name: Prepare deterministic non-Secure-Boot UEFI firmware
-        if: ${{ matrix.firmware == 'uefi' }}
         run: |
           set -euo pipefail
+          # Prepared for every plan: only a UEFI plan mounts it, and a
+          # conditional here would be one more thing that can disagree with
+          # the machine definition in release-gate.yaml.
           if ! dpkg-query -W -f='${Status}' ovmf 2>/dev/null | grep -q 'install ok installed'; then
             sudo apt-get update
             sudo apt-get install --yes ovmf
           fi
-
           ovmf_code=
           ovmf_vars=
           for pair in \
@@ -404,17 +416,15 @@ jobs:
             find /usr/share/OVMF -maxdepth 1 -type f -printf '%f\n' >&2 || true
             exit 1
           }
-
-          cp -- "$ovmf_code" "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd"
-          cp -- "$ovmf_vars" "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
-          chmod 0444 -- "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd"
-          chmod 0644 -- "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
+          # The variable store is written by the firmware, so it is installed
+          # rather than copied: a second run must not inherit the boot entries
+          # of the first, and a read-only copy makes QEMU refuse to start.
+          install -m 0444 -- "$ovmf_code" "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd"
+          install -m 0666 -- "$ovmf_vars" "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
           dpkg-query -W -f='${Package} ${Version}\n' ovmf \
             | tee "$OPENQA_DIAGNOSTICS_DIR/ovmf-package.txt"
-          printf 'host_code=%s\nhost_vars=%s\n' "$ovmf_code" "$ovmf_vars" \
-            | tee "$OPENQA_DIAGNOSTICS_DIR/ovmf.txt"
 
-      - name: Validate KVM access before openQA
+      - name: Validate KVM access
         run: |
           set -euo pipefail
           if [[ ! -c /dev/kvm ]]; then
@@ -425,217 +435,88 @@ jobs:
           test -r /dev/kvm -a -w /dev/kvm
           stat --printf='path=%n mode=%a uid=%u gid=%g\n' /dev/kvm \
             | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-device.txt"
+          # Nested virtualisation is not a given on a hosted runner, and TCG
+          # would make every measured time in the results a fiction. run-plan.sh
+          # proves KVM again from the archived QEMU command line; this proves it
+          # before spending an hour.
+          if ! command -v kvm-ok >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes cpu-checker
+          fi
           kvm-ok | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-ok.txt"
-          free -h | tee "$OPENQA_DIAGNOSTICS_DIR/resources-before.txt"
-          df -h | tee "$OPENQA_DIAGNOSTICS_DIR/disk-before.txt"
-          nproc | tee "$OPENQA_DIAGNOSTICS_DIR/cpu-count.txt"
-          qemu_pidfile="$OPENQA_DIAGNOSTICS_DIR/qemu-kvm-smoke.pid"
-          qemu_log="$OPENQA_DIAGNOSTICS_DIR/qemu-kvm-smoke.log"
-          rm -f -- "$qemu_pidfile"
-          qemu-system-x86_64 \
-            -accel kvm \
-            -machine q35 \
-            -nodefaults \
-            -display none \
-            -monitor none \
-            -S \
-            -daemonize \
-            -pidfile "$qemu_pidfile" \
-            >"$qemu_log" 2>&1
-          test -s "$qemu_pidfile"
-          qemu_pid=$(<"$qemu_pidfile")
-          kill "$qemu_pid"
-          printf 'QEMU KVM smoke test passed with PID %s\n' "$qemu_pid" | tee -a "$qemu_log"
 
-      - name: Prepare local worker and test password
+      - name: Prepare the test password
         run: |
           set -euo pipefail
           umask 077
           openssl rand -hex 18 | tr -d '\n' >"$OPENQA_PASSWORD_FILE"
-          test_password=$(<"$OPENQA_PASSWORD_FILE")
-          echo "::add-mask::$test_password"
-          printf '[global]\nHOST = http://localhost\nBACKEND = qemu\nWORKER_CLASS = biglinux-kvm\n' \
-            >"$OPENQA_WORKER_CONFIG"
-          chmod 0644 "$OPENQA_WORKER_CONFIG"
+          # Masked in the log, and never a job setting: the tests read the file
+          # through a read-only mount, because isotovideo writes vars.json
+          # unredacted and that directory is uploaded.
+          echo "::add-mask::$(<"$OPENQA_PASSWORD_FILE")"
 
-      - name: Start ephemeral local openQA and worker
+      - name: Run the plan
         run: |
           set -euo pipefail
-          openqa_asset_dir="$RUNNER_TEMP/openqa-assets"
-          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results"
-          docker_args=(
-            --detach
-            --name "$OPENQA_CONTAINER"
-            --publish 127.0.0.1:1080:80
-            --tmpfs /srv/www/htdocs:mode=0755
-            --tmpfs /var/log/apache2:mode=0755
-            --volume "$GITHUB_WORKSPACE:/workspace-source:ro"
-            --volume "$openqa_asset_dir:/var/lib/openqa/share/factory/iso:ro"
-            --volume "$OPENQA_DIAGNOSTICS_DIR/results:/var/lib/openqa/biglinux-results:rw"
-            --volume "$OPENQA_PASSWORD_FILE:/run/secrets/biglinux-test-password:ro"
-            --volume "$OPENQA_WORKER_CONFIG:/etc/openqa/workers.ini.d/99-biglinux.ini:ro"
-            --volume "$OPENQA_OVMF_RUNTIME:/run/ovmf:rw"
-            --device /dev/kvm
-            --env "KVM_GID=$(stat --format '%g' /dev/kvm)"
-            --env OPENQA_MCP_ENABLED=0
-            --entrypoint /bin/bash
-          )
-          docker run "${docker_args[@]}" "$OPENQA_IMAGE" \
-            /workspace-source/openqa/development/start-container.sh
-          docker inspect "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container-start.json"
+          # Ten minutes short of the job's own limit, so a plan that overruns is
+          # still collected and reported instead of being killed by Actions.
+          plan_timeout=$(( (${{ matrix.plan.timeout_minutes }} - 10) * 60 ))
+          openqa/production/run-plan.sh \
+            --plan "$PLAN" \
+            --iso "$OPENQA_ASSET_DIR/$ISO_FILENAME" \
+            --results "$OPENQA_RUN_DIR" \
+            --password-file "$OPENQA_PASSWORD_FILE" \
+            --build "$OPENQA_BUILD" \
+            --commit "$GITHUB_SHA" \
+            --iso-sha256 "$(<"$OPENQA_DIAGNOSTICS_DIR/iso-sha256.txt")" \
+            --uefi-code "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd" \
+            --uefi-vars "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd" \
+            --timeout "$plan_timeout"
 
-      - name: Wait for local API scheduler and worker
+      - name: Collect what the run produced
+        if: ${{ always() }}
         run: |
           set -euo pipefail
-          for attempt in {1..180}; do
-            api_ready=0
-            worker_ready=0
-            scheduler_ready=0
-            if curl --fail --silent --show-error \
-              http://127.0.0.1:1080/api/v1/jobs >"$OPENQA_DIAGNOSTICS_DIR/jobs-ready.json"; then
-              api_ready=1
+          collected="$OPENQA_DIAGNOSTICS_DIR/results/$PLAN"
+          install -d -m 0755 -- "$collected"
+          # The run directory also holds the guest disk - forty sparse
+          # gigabytes - so what is kept is named rather than filtered: the
+          # module results, the logs the tests uploaded, and the two logs that
+          # explain a failure outside a module.
+          for evidence in testresults ulogs autoinst-log.txt vars.json virtio_console.log; do
+            if [[ -e "$OPENQA_RUN_DIR/$evidence" ]]; then
+              cp -a -- "$OPENQA_RUN_DIR/$evidence" "$collected/"
             fi
-            if curl --fail --silent --show-error \
-              http://127.0.0.1:1080/api/v1/workers >"$OPENQA_DIAGNOSTICS_DIR/workers.json" && \
-              jq -e '[.workers[]? | select(.status == "idle" or .status == "running") | select((.properties.WORKER_CLASS // "") | contains("biglinux-kvm"))] | length == 1' \
-                "$OPENQA_DIAGNOSTICS_DIR/workers.json" >/dev/null && \
-              docker exec "$OPENQA_CONTAINER" su _openqa-worker -c \
-                'test -r /dev/kvm -a -w /dev/kvm'; then
-              worker_ready=1
-            fi
-            if docker exec "$OPENQA_CONTAINER" pgrep -f openqa-scheduler-daemon >/dev/null 2>&1; then
-              scheduler_ready=1
-            fi
-            if ((api_ready && worker_ready && scheduler_ready)); then
-              echo "Local openQA became ready after $((attempt * 5)) seconds or less"
-              docker exec "$OPENQA_CONTAINER" qemu-system-x86_64 --version \
-                | tee "$OPENQA_DIAGNOSTICS_DIR/container-qemu-version.txt"
-              docker exec "$OPENQA_CONTAINER" find /usr/share -type f \( \
-                -iname 'OVMF_CODE*.fd' -o -iname 'OVMF_VARS*.fd' \) \
-                | tee "$OPENQA_DIAGNOSTICS_DIR/container-ovmf.txt"
-              exit 0
-            fi
-            if container_state=$(docker inspect --format '{{.State.Running}}' "$OPENQA_CONTAINER" 2>/dev/null); then
-              :
-            else
-              container_state=missing
-            fi
-            if [[ "$container_state" != true ]]; then
-              echo 'The local openQA container stopped before becoming ready' >&2
-              if ! docker logs "$OPENQA_CONTAINER" >&2; then
-                echo 'Container logs were unavailable' >&2
-              fi
-              exit 1
-            fi
-            if ((attempt == 180)); then
-              echo 'The local openQA API, scheduler, and worker were not ready within 15 minutes' >&2
-              if ! docker logs "$OPENQA_CONTAINER" >&2; then
-                echo 'Container logs were unavailable' >&2
-              fi
-              exit 1
-            fi
-            sleep 5
           done
-
-      - name: Schedule and monitor one mandatory plan
-        run: |
-          set -euo pipefail
-          export BIGLINUX_OPENQA_CONTAINER="$OPENQA_CONTAINER"
-          export BIGLINUX_OPENQA_FIRMWARE="$FIRMWARE"
-          export BIGLINUX_OPENQA_VERSION="$OPENQA_VERSION"
-          export BIGLINUX_OPENQA_BUILD="$OPENQA_BUILD"
-          export BIGLINUX_ISO_FILENAME="$ISO_FILENAME"
-          export BIGLINUX_TEST_USER=openqa
-          export BIGLINUX_TEST_PASSWORD_FILE="$OPENQA_PASSWORD_FILE"
-          export BIGLINUX_TEST_PASSWORD_CONTAINER_FILE=/run/secrets/biglinux-test-password
-          export BIGLINUX_OPENQA_CASEDIR=/workspace
-          export BIGLINUX_OPENQA_SCENARIO_DEFINITIONS=/workspace/openqa/scenario-definitions.yaml
-          export BIGLINUX_OPENQA_TEST_GIT_REFSPEC="$GITHUB_SHA"
-          export BIGLINUX_OPENQA_UEFI_PFLASH_CODE=/run/ovmf/OVMF_CODE.fd
-          export BIGLINUX_OPENQA_UEFI_PFLASH_VARS=/run/ovmf/OVMF_VARS.fd
-          export BIGLINUX_OPENQA_PRODUCTDIR=openqa
-          export BIGLINUX_OPENQA_DIAGNOSTICS_DIR="$OPENQA_DIAGNOSTICS_DIR"
-          export BIGLINUX_ISO_SHA256
-          if [[ "$SUITE" == applications-* ]]; then
-            BIGLINUX_OPENQA_FIRMWARE='' ./openqa/development/schedule-release-gate.sh \
-              --applications-shard "$APPLICATION_SHARD_INDEX" "$APPLICATION_SHARD_COUNT"
-          else
-            ./openqa/development/schedule-release-gate.sh --firmware "$FIRMWARE"
+          # The video is the only evidence for what happens before the first
+          # module can talk to the guest - GRUB and Plymouth publish no
+          # accessibility tree - and it is worth its size only when something
+          # went wrong.
+          if [[ '${{ job.status }}' != success && -s "$OPENQA_RUN_DIR/video.ogv" ]]; then
+            cp -a -- "$OPENQA_RUN_DIR/video.ogv" "$collected/"
           fi
+          du -sh "$collected" | tee "$OPENQA_DIAGNOSTICS_DIR/collected-size.txt"
+          df -h / /mnt | tee "$OPENQA_DIAGNOSTICS_DIR/disk-after.txt"
+          free -h | tee "$OPENQA_DIAGNOSTICS_DIR/resources-after.txt"
 
-      - name: Collect openQA diagnostics
-        if: ${{ always() }}
-        run: |
-          set +e
-          collection_status=0
-          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR/results"
-          free -h >"$OPENQA_DIAGNOSTICS_DIR/resources-before-collection.txt"
-          df -h >"$OPENQA_DIAGNOSTICS_DIR/disk-before-collection.txt"
-          if docker inspect "$OPENQA_CONTAINER" >/dev/null 2>&1; then
-            docker logs "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container.log" 2>&1 || collection_status=1
-            docker inspect "$OPENQA_CONTAINER" >"$OPENQA_DIAGNOSTICS_DIR/container.json" || collection_status=1
-            job_ids_file="$OPENQA_DIAGNOSTICS_DIR/job-ids.txt"
-            if [[ -s "$job_ids_file" ]]; then
-              while IFS= read -r job_id; do
-                [[ "$job_id" =~ ^[1-9][0-9]*$ ]] || { collection_status=1; continue; }
-                if ! openqa/production/copy-job-results.sh \
-                  "$OPENQA_CONTAINER" "$job_id" \
-                  "$OPENQA_DIAGNOSTICS_DIR/results/$job_id" \
-                  >"$OPENQA_DIAGNOSTICS_DIR/archive-$job_id.log" 2>&1; then
-                  echo "Failed to copy openQA job $job_id results" >&2
-                  collection_status=1
-                fi
-                docker exec "$OPENQA_CONTAINER" openqa-cli api --host http://localhost \
-                  "jobs/$job_id" >"$OPENQA_DIAGNOSTICS_DIR/job-$job_id-api.json" 2>&1 \
-                  || collection_status=1
-              done <"$job_ids_file"
-            fi
-            if docker exec "$OPENQA_CONTAINER" test -d /var/log/openqa; then
-              docker cp "$OPENQA_CONTAINER:/var/log/openqa" \
-                "$OPENQA_DIAGNOSTICS_DIR/worker-logs" || collection_status=1
-            fi
-          else
-            echo 'openQA container was never created' >"$OPENQA_DIAGNOSTICS_DIR/container.log"
-          fi
-          free -h >"$OPENQA_DIAGNOSTICS_DIR/resources-after.txt"
-          df -h >"$OPENQA_DIAGNOSTICS_DIR/disk-after.txt"
-          docker system df >"$OPENQA_DIAGNOSTICS_DIR/docker-disk-after.txt" 2>&1 || collection_status=1
-          sudo chown -R "$(id -u):$(id -g)" "$OPENQA_DIAGNOSTICS_DIR" \
-            || collection_status=1
-          exit "$collection_status"
-
-      - name: Verify archived QEMU KVM evidence
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          if [[ -s "$OPENQA_DIAGNOSTICS_DIR/job-ids.txt" ]]; then
-            BIGLINUX_OPENQA_RESULTS_DIR="$OPENQA_DIAGNOSTICS_DIR/results" \
-              BIGLINUX_OPENQA_JOB_IDS_FILE="$OPENQA_DIAGNOSTICS_DIR/job-ids.txt" \
-              openqa/production/verify-kvm-results.sh
-          else
-            echo 'No job ID was available; the scheduling step already failed.' \
-              | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-verification-skipped.txt"
-          fi
-
-      - name: Redact generated test password from text diagnostics
+      - name: Redact the generated test password
         if: ${{ always() }}
         run: |
           set -euo pipefail
           if [[ ! -r "$OPENQA_PASSWORD_FILE" ]]; then
-            echo 'Test password was not created because an earlier step failed.'
+            echo 'The password was never created; an earlier step failed.'
             exit 0
           fi
           test_password=$(<"$OPENQA_PASSWORD_FILE")
-          if [[ -n "$test_password" ]]; then
-            while IFS= read -r diagnostic; do
-              SECRET_TO_REDACT="$test_password" perl -0pi -e \
-                's/\Q$ENV{SECRET_TO_REDACT}\E/[REDACTED]/g' "$diagnostic"
-            done < <(find "$OPENQA_DIAGNOSTICS_DIR" -type f \( \
-              -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.html' \
-            \) -print)
-          fi
+          [[ -n "$test_password" ]] || exit 0
+          while IFS= read -r diagnostic; do
+            SECRET_TO_REDACT="$test_password" perl -0pi -e \
+              's/\Q$ENV{SECRET_TO_REDACT}\E/[REDACTED]/g' "$diagnostic"
+          done < <(find "$OPENQA_DIAGNOSTICS_DIR" -type f \( \
+            -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.html' \
+          \) -print)
 
-      - name: Generate human-readable validation report
+      - name: Generate the human-readable report
         if: ${{ always() }}
         run: |
           set -euo pipefail
@@ -644,14 +525,14 @@ jobs:
             --output "$OPENQA_DIAGNOSTICS_DIR/biglinux-validation-report.html" \
             --markdown-output "$OPENQA_DIAGNOSTICS_DIR/RESULTADO.md"
 
-      - name: Publish local job information in the Actions summary
+      - name: Publish the verdict in the Actions summary
         if: ${{ always() }}
         run: |
           set -euo pipefail
           # The verdict belongs on the run page. A report inside a zip is only
           # opened by someone who already suspects something is wrong.
           {
-            echo "## openQA $SUITE"
+            echo "## openQA $PLAN"
             echo
             echo "ISO: \`$ISO_FILENAME\` — commit \`${GITHUB_SHA:0:7}\`"
             if [[ -s "$OPENQA_DIAGNOSTICS_DIR/RESULTADO.md" ]]; then
@@ -659,7 +540,7 @@ jobs:
               sed 's/^## Resultado$//' "$OPENQA_DIAGNOSTICS_DIR/RESULTADO.md"
             else
               echo
-              echo 'O openQA não produziu resultado; ver os diagnósticos no artefato.'
+              echo 'O plano não produziu resultado; ver os diagnósticos no artefato.'
             fi
           } >>"$GITHUB_STEP_SUMMARY"
 
@@ -668,10 +549,9 @@ jobs:
         run: |
           set -euo pipefail
           cd "$OPENQA_DIAGNOSTICS_DIR"
-          # Thirty-seven files sat beside the report, nearly all of them about
-          # the runner rather than the ISO. Keep the three entry points at the
-          # top and move the machine's own paperwork one level down.
-          mkdir -p diagnostics
+          # The runner's own paperwork one level down, so the report and the
+          # results are what the artifact opens on.
+          install -d -m 0755 diagnostics
           for entry in *; do
             case "$entry" in
               results | diagnostics | RESULTADO.md | biglinux-validation-report.html)
@@ -681,56 +561,46 @@ jobs:
             mv -- "$entry" diagnostics/
           done
 
-      - name: Upload openQA diagnostics
+      - name: Upload the plan's results
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: openqa-${{ matrix.suite }}-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.suite }}/
+          name: openqa-${{ matrix.plan.name }}-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.plan.name }}/
           if-no-files-found: error
           retention-days: 14
-
-      - name: Stop ephemeral openQA
-        if: ${{ always() }}
-        run: |
-          set -euo pipefail
-          if docker inspect "$OPENQA_CONTAINER" >/dev/null 2>&1; then
-            docker stop --timeout 30 "$OPENQA_CONTAINER"
-            docker rm "$OPENQA_CONTAINER"
-          fi
 
   applications-aggregate:
     name: Aggregate application coverage
     if: ${{ always() }}
-    needs: validate
+    needs: [static, plan]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out the tested sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Download application shard diagnostics
+      - name: Download the application shards
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          # Every attempt of this run, not only the current one. "Re-run
-          # failed jobs" re-runs the failed shard alone, so the shards that
-          # passed keep the artifacts of the attempt they ran in; pinning the
-          # attempt found one file of four and the aggregation could only ever
-          # fail. The step below keeps the newest attempt of each shard.
+          # Every attempt of this run, not only the current one. "Re-run failed
+          # jobs" re-runs the failed shard alone, so the shards that passed keep
+          # the artifacts of the attempt they ran in; pinning the attempt found
+          # one shard of four and the aggregation could only ever fail.
           pattern: openqa-applications-*-${{ github.run_id }}-*
           path: ${{ runner.temp }}/openqa-application-attempts
           merge-multiple: false
 
-      - name: Keep the newest attempt of each application shard
+      - name: Keep the newest attempt of each shard
         if: ${{ always() }}
         run: |
           set -euo pipefail
           attempts=$RUNNER_TEMP/openqa-application-attempts
           selected=$RUNNER_TEMP/openqa-application-artifacts
           install -d -m 0755 -- "$selected"
-          # Artifact names end in -<run_id>-<attempt>, and the shard is the
-          # field before the build id. Sorting by attempt numerically and
-          # taking the last one per shard is what makes a partial re-run add
-          # up to a complete set again.
+          # Artifact names end in -<run_id>-<attempt> and the shard index is the
+          # third field. Sorting by attempt numerically and taking the last one
+          # per shard is what makes a partial re-run add up to a complete set.
           find "$attempts" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
               awk -F- '{ attempt = $NF; shard = $3; print attempt "\t" shard "\t" $0 }' |
               sort -k2,2 -k1,1n |
@@ -740,7 +610,7 @@ jobs:
                   cp -a -- "$attempts/$directory" "$selected/$directory"
               done
 
-      - name: Prepare application policy
+      - name: Prepare the application policy
         if: ${{ always() }}
         run: |
           set -euo pipefail
@@ -756,19 +626,17 @@ jobs:
           ' \
             >"$RUNNER_TEMP/application-policy.json"
 
-      - name: Aggregate and validate the four application shards
+      - name: Aggregate and validate every shard
         if: ${{ always() }}
         run: |
           set -euo pipefail
-          application_shard_count=$(ruby -ryaml -e \
-            'puts YAML.safe_load_file("openqa/development/release-gate.yaml", permitted_classes: [], aliases: false).fetch("application_shard_count")')
           python3 openqa/production/aggregate-application-results.py \
             --artifacts-root "$RUNNER_TEMP/openqa-application-artifacts" \
             --policy-json "$RUNNER_TEMP/application-policy.json" \
             --output-dir "$RUNNER_TEMP/application-summary" \
-            --expected-shards "$application_shard_count"
+            --expected-shards '${{ needs.static.outputs.shards }}'
 
-      - name: Upload application coverage summary
+      - name: Upload the application coverage summary
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -780,35 +648,34 @@ jobs:
   report:
     name: Validation report (PDF)
     if: ${{ always() }}
-    needs: validate
+    needs: plan
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out the tested sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Download every suite's diagnostics
+      - name: Download every plan's results
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          # Every attempt of this run: a re-run of one suite leaves the others
-          # on the attempt they passed in, and a report that silently omits
-          # them describes a run that never happened. The build step below
-          # reads the newest attempt of each suite.
+          # Every attempt of this run: a re-run of one plan leaves the others on
+          # the attempt they passed in, and a report that silently omits them
+          # describes a run that never happened.
           pattern: openqa-*-${{ github.run_id }}-*
           path: ${{ runner.temp }}/openqa-artifacts
 
       - name: Build the report
         run: |
           set -euo pipefail
-          # fpdf2 is pure Python, so this needs no system libraries and cannot
-          # make the report depend on a browser being present on the runner.
+          # fpdf2 is pure Python, so the report cannot come to depend on a
+          # browser being present on the runner.
           python3 -m pip install --quiet --disable-pip-version-check fpdf2 pillow
-          # The repository check skips these where the libraries are absent, so
-          # this is the one place they actually run.
+          # The static job skips these where the libraries are absent, so this
+          # is the one place they actually run.
           python3 -m unittest discover -s openqa/report -p 'test_build_pdf_report.py'
           python3 openqa/report/build_pdf_report.py \
             --artifacts-root "$RUNNER_TEMP/openqa-artifacts" \
             --output "$RUNNER_TEMP/report/biglinux-iso-validation.pdf"
-          ls -la "$RUNNER_TEMP/report"
 
       - name: Upload the report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -821,16 +688,25 @@ jobs:
   openqa-release-gate:
     name: openQA release gate
     if: ${{ always() }}
-    needs: [validate, applications-aggregate]
+    needs: [static, plan, applications-aggregate]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Require every mandatory openQA suite
+      - name: Require every plan and the application coverage
         run: |
           set -euo pipefail
-          validate_result='${{ needs.validate.result }}'
+          static_result='${{ needs.static.result }}'
+          plan_result='${{ needs.plan.result }}'
           aggregate_result='${{ needs.applications-aggregate.result }}'
-          printf 'validate=%s\napplications-aggregate=%s\n' "$validate_result" "$aggregate_result"
-          [[ "$validate_result" == success && "$aggregate_result" == success ]] || {
-            echo 'Mandatory openQA firmware or application coverage did not pass.' >&2
+          printf 'static=%s\nplan=%s\napplications-aggregate=%s\n' \
+            "$static_result" "$plan_result" "$aggregate_result"
+          [[ "$static_result" == success ]] || {
+            echo 'The static checks did not pass.' >&2
+            exit 1
+          }
+          # One matrix result covers every plan: it is success only when all of
+          # them were.
+          [[ "$plan_result" == success && "$aggregate_result" == success ]] || {
+            echo 'A release-gate plan or the application coverage did not pass.' >&2
             exit 1
           }

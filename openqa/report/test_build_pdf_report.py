@@ -22,13 +22,14 @@ else:
 
 
 def write_suite(root: Path, name: str, uefi: bool) -> Path:
-    directory = root / f"openqa-{name}-audit-abc-1"
-    results = directory / "results" / "1" / "testresults"
+    """An isotovideo working directory: vars.json at the root, results below."""
+    workdir = root / f"openqa-{name}-abc-1" / "work"
+    results = workdir / "testresults"
     results.mkdir(parents=True)
-    variables = {"ISO": "big.iso", "BUILD": "b1"}
+    variables = {"ISO": "big.iso", "BUILD": "b1", "TEST": name}
     if uefi:
         variables["UEFI"] = "1"
-    (results / "vars.json").write_text(json.dumps(variables), encoding="utf-8")
+    (workdir / "vars.json").write_text(json.dumps(variables), encoding="utf-8")
     return results
 
 
@@ -39,7 +40,7 @@ class ReadSuiteTest(unittest.TestCase):
             root = Path(directory)
             results = write_suite(root, "bios", uefi=False)
             (results / "live_desktop-2.png").write_bytes(b"png")
-            (results / "details-live_desktop.json").write_text(
+            (results / "result-live_desktop.json").write_text(
                 json.dumps(
                     {
                         "details": [
@@ -54,7 +55,7 @@ class ReadSuiteTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            suite = read_suite(root / "openqa-bios-audit-abc-1")
+            suite = read_suite(root / "openqa-bios-abc-1")
 
         assert suite is not None
         self.assertEqual(suite.firmware, "BIOS")
@@ -65,12 +66,12 @@ class ReadSuiteTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             results = write_suite(root, "uefi", uefi=True)
-            (results / "details-installer_install.json").write_text(
+            (results / "result-installer_install.json").write_text(
                 json.dumps({"details": [{"result": "ok"}, {"result": "fail"}]}),
                 encoding="utf-8",
             )
 
-            suite = read_suite(root / "openqa-uefi-audit-abc-1")
+            suite = read_suite(root / "openqa-uefi-abc-1")
 
         assert suite is not None
         self.assertEqual(suite.firmware, "UEFI")
@@ -99,7 +100,7 @@ class ReadSuiteTest(unittest.TestCase):
             with gzip.open(results / "application-metrics.json.gz", "wt") as stream:
                 json.dump(payload, stream)
 
-            suite = read_suite(root / "openqa-applications-0-audit-abc-1")
+            suite = read_suite(root / "openqa-applications-0-abc-1")
 
         assert suite is not None
         self.assertEqual(len(suite.applications), 3)

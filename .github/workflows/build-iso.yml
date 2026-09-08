@@ -113,8 +113,8 @@ jobs:
     with:
       candidate_artifact: ${{ needs.build.outputs.candidate_artifact }}
       iso_filename: ${{ needs.build.outputs.iso }}
-      # Must match products.biglinux.version in scenario-definitions.yaml;
-      # the unique build ID below distinguishes each candidate.
+      # Recorded in the results, and the unique build ID below is what
+      # distinguishes one candidate from another.
       version: candidate
       build_id: github-${{ github.run_id }}
 

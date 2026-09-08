@@ -1,0 +1,82 @@
+---
+name: Mirror the openQA image
+
+# The gate pins the os-autoinst container by digest, and the openSUSE devel
+# registry keeps only about five tags: the digest this repository trusted was
+# garbage-collected upstream, and every openQA job failed at "Validate pinned
+# openQA image" for a month before anyone noticed. A local run never sees it,
+# because the image is already in the workstation's Docker cache.
+#
+# Copying the exact digest into this repository's own registry removes an
+# upstream devel registry from the release path. It needs no configured secret:
+# GITHUB_TOKEN can write packages for the repository that owns the workflow.
+# Dispatch only. A schedule would have to read openqa-image.txt, which points
+# at the mirror as soon as this has run once, and GHCR does not garbage-collect
+# what was pushed to it - so a weekly copy of an image that cannot disappear
+# would only fail every Monday. Raising the pin is a deliberate act: mirror the
+# new upstream digest, then run a full firmware plan on a known ISO before the
+# pin moves.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Upstream image reference to mirror, digest included
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Copy the pinned image into GHCR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install skopeo
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+
+      - name: Copy the image, digest and all
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_SOURCE: ${{ inputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_image=$REQUESTED_SOURCE
+          [[ "$source_image" == *@sha256:* ]] \
+            || { echo 'the source must be pinned by digest' >&2; exit 1; }
+
+          digest=${source_image##*@}
+          target="ghcr.io/${GITHUB_REPOSITORY,,}/openqa-single-instance@$digest"
+          destination="ghcr.io/${GITHUB_REPOSITORY,,}/openqa-single-instance:${digest#sha256:}"
+
+          # Through a login rather than --dest-creds: credentials on the
+          # command line are visible in the process list.
+          printf '%s' "$REGISTRY_TOKEN" \
+            | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+
+          # --all and --preserve-digests copy the whole manifest index
+          # unchanged. Pulling and pushing with docker would rewrite it as a
+          # single-platform manifest, and the digest the gate pins would no
+          # longer exist.
+          skopeo copy --all --preserve-digests \
+            "docker://$source_image" "docker://$destination"
+
+          skopeo inspect --raw "docker://$target" >/dev/null
+          printf 'Mirrored %s\n' "$target"
+          printf 'Pin it with:\n  %s\n' "$target" >>"$GITHUB_STEP_SUMMARY"

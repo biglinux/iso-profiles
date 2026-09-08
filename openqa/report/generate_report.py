@@ -74,7 +74,7 @@ def module_result(path: Path, runtime_seconds: float | None = None) -> ModuleRes
         results, key=lambda value: RESULT_PRIORITY.get(value, 2), default="unknown"
     )
     return ModuleResult(
-        name=path.stem.removeprefix("details-"),
+        name=path.stem.removeprefix("result-"),
         result=result,
         duration_seconds=runtime_seconds,
         checks=len(details),
@@ -106,6 +106,11 @@ def find_biglinux_job(results_root: Path) -> tuple[Path | None, dict[str, Any]]:
 
 
 def find_biglinux_jobs(results_root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Find every isotovideo working directory below a root.
+
+    A working directory holds vars.json at its root and the module results in
+    testresults/; the pair is what identifies one plan's run.
+    """
     candidates: list[tuple[Path, dict[str, Any]]] = []
     for vars_path in results_root.rglob("vars.json"):
         variables = load_json(vars_path)
@@ -433,9 +438,9 @@ def main() -> int:
     for job_dir, job_variables in jobs:
         runtimes = load_module_runtimes(job_dir)
         label = job_variables.get("BUILD") or job_variables.get("TEST") or job_dir.name
-        for path in job_dir.glob("details-*.json"):
+        for path in (job_dir / "testresults").glob("result-*.json"):
             result = module_result(
-                path, runtimes.get(path.stem.removeprefix("details-"))
+                path, runtimes.get(path.stem.removeprefix("result-"))
             )
             modules.append(replace(result, name=f"{label} / {result.name}"))
     modules.sort(key=lambda item: item.name)

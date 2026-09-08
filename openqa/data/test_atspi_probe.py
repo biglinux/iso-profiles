@@ -18,6 +18,11 @@ class ProbeOperationsTest(unittest.TestCase):
     two lists live in different files and languages, so nothing but this check
     notices when one of them gains an operation and the other does not."""
 
+    # Operations a person runs from a console inside the guest, which the
+    # harness deliberately does not offer: a whole widget tree does not fit
+    # through a serial marker.
+    OPERATOR_ONLY = {"dump-widgets"}
+
     def test_perl_and_python_agree_on_the_operation_names(self) -> None:
         probe = (REPOSITORY / "data" / "atspi_probe.py").read_text(encoding="utf-8")
         choices = re.search(r"choices=\((.*?)\),", probe, re.DOTALL)
@@ -31,7 +36,10 @@ class ProbeOperationsTest(unittest.TestCase):
         assert allowed is not None, "atspi.pm no longer validates the operation"
         perl_operations = set(allowed.group(1).split("|"))
 
-        self.assertEqual(python_operations, perl_operations)
+        self.assertEqual(python_operations - self.OPERATOR_ONLY, perl_operations)
+        # An operator-only name still has to exist in the probe, or the
+        # exemption is hiding a rename rather than describing one.
+        self.assertLessEqual(self.OPERATOR_ONLY, python_operations)
 
 
 class AtspiProbeTest(unittest.TestCase):

@@ -5,6 +5,7 @@ use testapi;
 use atspi;
 use biglinux;
 use installed_system;
+use guest_shell qw(marker_format);
 
 # Measures the security posture of the freshly installed system.
 #
@@ -18,10 +19,6 @@ sub test_flags {
     return {fatal => 0};
 }
 
-sub _marker_format {
-    my ($marker) = @_;
-    return join '', map { sprintf '\\%03o', ord } split //, $marker;
-}
 
 sub run {
     select_console 'user-virtio-terminal';
@@ -102,7 +99,7 @@ suid=$(find / -xdev -perm -4000 -type f 2>/dev/null | grep -c . || true)
 printf '__OA_SECURITY_MARKER_FORMAT__uid=%s;nopasswd=%s;listening=%s;firewall=%s;filtering=%s;ufw=%s;inpolicy=%s;dbnever=%s;httpmirror=%s;kptr=%s;dmesgr=%s;audit=%s;apparmor=%s;luks=%s;updates=%s;suid=%s__\n' \
     "$uid" "$nopasswd" "$listening" "$firewall" "$filtering" "$ufwstate" "$inpolicy" "$dbnever" "$httpmirror" "$kptr" "$dmesgr" "$audit" "$apparmor" "$luks" "$updates" "$suid"
 SHELL
-    $probe =~ s/__OA_SECURITY_MARKER_FORMAT__/_marker_format('__OA_INSTALLED_SECURITY__')/e;
+    $probe =~ s/__OA_SECURITY_MARKER_FORMAT__/marker_format('__OA_INSTALLED_SECURITY__')/e;
     # One sudo for the whole script: the cached timestamp would otherwise have
     # to outlive every command in it, and "pacman -Qu" alone can take a minute.
     type_string "sudo -n bash -s <<'OA_SECURITY_PROBE'\n$probe" . "OA_SECURITY_PROBE\n";

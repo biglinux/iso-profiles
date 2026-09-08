@@ -196,7 +196,6 @@ def validate_shards(
         "iso_sha256",
         "build_id",
         "commit_sha",
-        "needles_git_hash",
         "policy_version",
         "inventory_hash",
     )

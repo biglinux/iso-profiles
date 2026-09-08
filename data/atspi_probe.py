@@ -942,7 +942,16 @@ def dump_widget_tree(expected_pid: int | None, timeout: float = 30) -> dict[str,
     gone wrong, which is exactly when the tree is most likely to be slow.
     """
     deadline = time.monotonic() + timeout
-    widgets = [record for _accessible, record in _visible_widgets(expected_pid, deadline)]
+    # Only widgets a test could have named. An anonymous container is never the
+    # answer to "which control should I have asked for", and there are hundreds
+    # of them: a full dump of one GTK4 page did not fit through the serial
+    # console before the caller gave up, which made the diagnostic useless
+    # exactly when it was needed.
+    widgets = [
+        record
+        for _accessible, record in _visible_widgets(expected_pid, deadline)
+        if record.get("name")
+    ]
     return {
         "status": "passed",
         "widgets": widgets,

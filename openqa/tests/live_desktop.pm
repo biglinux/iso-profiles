@@ -1,104 +1,114 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 use Mojo::Base 'basetest';
-# The comments below name translated labels; the pragma keeps the file valid
-# under the workflow's non-ASCII check.
+# The page titles below are the accessible names the wizard publishes, and two
+# of them are translated.
 use utf8;
 use testapi;
 use atspi;
+use guest_shell qw(marker_format shell_quote);
 
 sub test_flags {
     return {fatal => 1};
 }
 
-# The only module in the gate that still looks at pixels, and only to know
-# which page of the first-boot wizard is on screen. Nothing here is chosen by
-# coordinate any more; every choice is made with the keyboard, from the
-# wizard's own default selection.
-#
-# Why not accessibility, like every other module: the wizard is
-# GTK4/libadwaita and labels its controls for screen readers (18 uses of
-# Gtk.AccessibleProperty.LABEL in /usr/share/biglinux/livecd/ui), but the live
-# session starts with a broken accessibility bus - /run/user/1000/at-spi is
-# empty and toolkit-accessibility is false - and GTK only registers on the bus
-# while starting up. atspi->prepare repairs the bus, but the wizard has been
-# running for a while by then and never reconnects. Measured on
-# biglinux_2026-08-19_k618: with the bus repaired and a six-minute budget, the
-# probe reported "all roles observed: none". That is a defect in the ISO, not
-# merely an inconvenience here - Orca is in the autostart of this same session
-# and would be just as blind.
-#
-# Why no clicks: the language page orders its tiles by the boot-time locale
-# suggestion (suggested_locale.language_sort_key, first the suggested locale,
-# then en_US, pt_BR, es_ES), so the same ISO on the same machine puts
-# "Português, Brazil" first on one boot and second on the next. Job 14 and job
-# 15 differed exactly that way. A needle with a click point on a tile is
-# therefore a coin toss between installing Portuguese and installing English,
-# and a green run proves nothing about which one happened. Two needles had
-# already been recorded over the wrong tile before this was understood.
-sub run {
-    # This is the first module: the budget covers the GRUB countdown, the live
-    # boot, and the wizard appearing. The needle deliberately matches only the
-    # header icons and the search box - the parts of the page that do not move.
-    assert_screen 'biglinux-live-wizard', 360;
+# Every page of the wizard publishes a table whose accessible name is the page
+# title, so each page is recognised by what it is rather than by a picture of
+# it. Both the English and the translated name are listed: the wizard switches
+# language the moment one is chosen, and the probe folds case and accents.
+my %PAGE = (
+    language => ['Search for a language', 'Pesquise um idioma'],
+    keyboard => ['Choose Your Keyboard Layout', 'Escolha o layout do teclado'],
+    layout => ['Choose a Desktop Layout', 'Escolha um layout da área de trabalho'],
+    theme => ['Choose a System Theme', 'Escolha um tema do sistema'],
+);
 
-    # The wizard routes any printable key to its search box from anywhere in
-    # the window (LanguageView.handle_global_key_press), filters as it types,
-    # selects the first match, and activates it on Return. "Brazil" matches one
-    # entry, "Portuguese - Brazil", so the selection cannot depend on where the
-    # tile happens to be. Typed in ASCII on purpose: the accented name would
-    # have to survive the VNC keymap.
+# The first-boot wizard, driven through accessibility and the keyboard.
+#
+# Nothing here is chosen by coordinate. The language page orders its tiles by
+# the boot-time locale suggestion (suggested_locale.language_sort_key: the
+# suggested locale first, then en_US, pt_BR, es_ES), so the same ISO on the
+# same machine puts "Português, Brazil" first on one boot and second on the
+# next. A recorded click point on a tile is therefore a coin toss between
+# installing Portuguese and installing English, and a green run proves nothing
+# about which one happened - two needles had been recorded over the wrong tile
+# before that was understood.
+#
+# The tiles cannot be activated through accessibility either: GTK4 exposes them
+# as table cells with no action and no focus. What the wizard does offer is
+# type-to-search from anywhere in the window
+# (LanguageView.handle_global_key_press), which filters, selects the first
+# match and activates it on Return. Filtering by text cannot select the wrong
+# language, whatever the order.
+sub run {
+    # The first module: this covers the GRUB countdown, the live boot and the
+    # session coming up, and it is the accessibility bus that answers - not a
+    # picture of a wizard whose icons change between builds.
+    atspi->install;
+    atspi->reset_baseline;
+    atspi->wait_widget('table', $PAGE{language}, 300);
+
     # Two things have to be true before Return is pressed, and each one cost a
-    # failed run to learn:
+    # failed run to learn. The filter has to have been typed correctly: at the
+    # default speed a runner dropped a keystroke and the box read "Bazil", so
+    # nothing matched and Return activated nothing. And the filter has to have
+    # been applied: it runs on a 50 ms debounce and moves the selection from an
+    # idle callback, so a Return sent immediately activates the *unfiltered*
+    # first tile, which is the boot-time suggestion.
     #
-    # The filter has to have been typed correctly. At the default typing speed
-    # a GitHub runner dropped a keystroke and the box read "Bazil": no language
-    # matched, Return activated nothing, and the run sat on the language page
-    # until the next assertion failed. max_interval is 1-250 with lower meaning
-    # slower.
-    #
-    # The filter also has to have been applied. It runs on a 50 ms debounce and
-    # moves the selection to the first match from an idle callback
-    # (LanguageView._trigger_filter_update), so a Return sent right after the
-    # last keystroke activates the *unfiltered* first tile - the boot-time
-    # locale suggestion. Job 16 selected English that way.
-    #
-    # The retry is what makes this self-correcting without an accessibility
-    # tree: a filter matching nothing leaves the screen unchanged when Return
-    # is pressed, and that is observable.
-    my $language_chosen = 0;
+    # The retry is what makes this self-correcting, and the next page appearing
+    # is what says it worked. Not a changed frame buffer: a repaint is not a
+    # navigation, and the wizard animates.
+    my $chosen = 0;
     for (1 .. 3) {
-        # BackSpace reaches the search box from anywhere in the window, so this
-        # clears whatever a previous attempt typed.
+        # BackSpace reaches the search box from anywhere in the window.
         send_key 'backspace' for 1 .. 12;
-        wait_still_screen stilltime => 1, timeout => 15;
         type_string 'Brazil', max_interval => 20;
-        wait_still_screen stilltime => 2, timeout => 15;
-        next unless wait_screen_change(sub { send_key 'ret' }, 20);
-        $language_chosen = 1;
+        send_key 'ret';
+        my $next = eval { atspi->wait_widget('table', $PAGE{keyboard}, 20) };
+        next unless ref $next eq 'HASH' && ($next->{status} // '') eq 'passed';
+        $chosen = 1;
         last;
     }
-    $language_chosen
-      or die 'the wizard did not accept the language chosen by search';
+    $chosen or die 'the wizard did not accept the language chosen by search';
 
     # Every remaining page selects its first item when it appears
     # (BaseItemView._select_first_item, KeyboardView._select_first_and_announce)
-    # and activates the selection on Return, so the default is what a plain
-    # Return picks:
-    #   - keyboard: the layout derived from the language, ahead of "US";
-    #   - desktop layout: "classic", the first line of list-desktops.sh on KDE,
-    #     which is the same layout this module used to click by coordinate;
-    #   - theme: the first theme of list-themes.sh.
-    for my $page ('biglinux-live-keyboard', 'biglinux-live-desktop-layout',
-        'biglinux-live-theme') {
-        assert_screen $page, 60;
-        wait_screen_change(sub { send_key 'ret' }, 30)
-          or die "the wizard did not accept the default on $page";
+    # and activates the selection on Return, so a plain Return takes the
+    # default: the keyboard layout derived from the language, ahead of "US";
+    # "classic", the first line of list-desktops.sh on KDE; and the first theme
+    # of list-themes.sh.
+    # The language page has already been left, so the keyboard page is where we
+    # are. Each Return takes the default and the next page's own table is the
+    # proof it was taken.
+    my @remaining = (['keyboard', 'layout'], ['layout', 'theme'], ['theme', undef]);
+    for my $step (@remaining) {
+        my ($current, $next) = @$step;
+        atspi->wait_widget('table', $PAGE{$current}, 60);
+        send_key 'ret';
+        next unless defined $next;
+        atspi->wait_widget('table', $PAGE{$next}, 60);
     }
 
-    # Let the session settle; everything after this point works through
-    # accessibility and the serial console.
-    wait_still_screen stilltime => 5, timeout => 120;
+    # Choosing the theme ends the wizard, and the desktop session takes its
+    # place.
+    #
+    # The accessibility bus cannot answer whether that happened. It belongs to
+    # the graphical session (at-spi-dbus-bus.service is
+    # PartOf=graphical-session.target), so the wizard's session takes it down
+    # on the way out, and a probe during the transition fails identically
+    # whether the wizard has gone or is still on screen - this loop used to
+    # read that failure as success, and did. The process table has no such
+    # ambiguity, and the console is not part of the graphical session.
+    select_console 'user-virtio-terminal';
+    my $closed = '__OA_WIZARD_CLOSED__';
+    my $wizard = shell_quote('/usr/share/biglinux/livecd/main.py');
+    type_string "for attempt in \$(seq 120); do pgrep -f $wizard >/dev/null || break; sleep 1; done; "
+      . "pgrep -f $wizard >/dev/null || printf " . shell_quote(marker_format($closed) . '\\n');
+    send_key 'ret';
+    die 'the wizard did not close after the theme was chosen'
+      unless defined wait_serial($closed, no_regex => 1, timeout => 150);
+    select_console 'sut';
 }
 
 1;

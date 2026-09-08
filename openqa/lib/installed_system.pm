@@ -6,9 +6,10 @@ use Mojo::Base -strict;
 use testapi;
 use atspi;
 use biglinux;
+use guest_shell qw(marker_format);
 
 sub test_password {
-    return get_required_var('_SECRET_BIGLINUX_TEST_PASSWORD');
+    return biglinux->test_password;
 }
 
 sub assert_filesystem {
@@ -60,7 +61,7 @@ fi
 } >/tmp/openqa-installed-health.log
 printf '__OA_HEALTH_MARKER_FORMAT__root=%s;type=%s;release=%s;failed=%s;overlay=%s;brave=%s;efi=%s;efi_mount=%s;efi_boot=%s;units=%s__\n' "$root_source" "$root_fstype" "$release_present" "$failed_units" "$overlay_root" "$brave_present" "$efi_present" "$efi_mount" "$efi_boot" "$failed_unit_names"
 SHELL
-    $health_check =~ s/__OA_HEALTH_MARKER_FORMAT__/_marker_format('__OA_INSTALLED_HEALTH__')/e;
+    $health_check =~ s/__OA_HEALTH_MARKER_FORMAT__/marker_format('__OA_INSTALLED_HEALTH__')/e;
     type_string $health_check;
     my $result = wait_serial qr/__OA_INSTALLED_HEALTH__root=([^;]*);type=([^;]*);release=(\d+);failed=(\d+);overlay=(\d+);brave=(\d+);efi=(\d+);efi_mount=(\d+);efi_boot=(\d+);units=([^_]*)__/, timeout => 90;
     select_console 'sut';
@@ -126,7 +127,10 @@ sub assert_greeter {
 }
 
 sub assert_desktop {
-    atspi->prepare;
+    # A fresh boot into the installed system: /tmp is empty, so the probe
+    # has to be installed again, and this is a new graphical session.
+    atspi->install;
+    atspi->reset_baseline;
     my $desktop_exit_code =
       atspi->run_command_until('pgrep -u 1000 -x plasmashell >/dev/null 2>&1', 45);
     die 'The installed KDE Plasma shell did not start'
@@ -150,9 +154,5 @@ sub assert_desktop {
       'AT-SPI is active, plasmashell is running and the user owns an active Wayland session';
 }
 
-sub _marker_format {
-    my ($marker) = @_;
-    return join '', map { sprintf '\\%03o', ord } split //, $marker;
-}
 
 1;

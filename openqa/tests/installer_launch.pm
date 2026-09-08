@@ -4,6 +4,7 @@ use Mojo::Base 'basetest';
 use testapi;
 use atspi;
 use calamares;
+use guest_shell qw(marker_format);
 
 sub test_flags {
     return {fatal => 1};
@@ -16,8 +17,8 @@ sub run {
     # The preceding live_desktop module already owns the non-black screenshot
     # checkpoints; launching Calamares below validates this state semantically.
     select_console 'user-virtio-terminal';
-    my $uefi_marker = _marker_format('__OA_FIRMWARE_UEFI__');
-    my $bios_marker = _marker_format('__OA_FIRMWARE_BIOS__');
+    my $uefi_marker = marker_format('__OA_FIRMWARE_UEFI__');
+    my $bios_marker = marker_format('__OA_FIRMWARE_BIOS__');
     type_string "if [ -d /sys/firmware/efi ]; then printf '$uefi_marker\\n'; else printf '$bios_marker\\n'; fi";
     send_key 'ret';
     my $biglinux_firmware_mode = wait_serial qr/__OA_FIRMWARE_(?:BIOS|UEFI)__/, timeout => 30;
@@ -30,7 +31,9 @@ sub run {
     # No expected window title: the launcher renames its windows between
     # releases and localizes them. That a window appeared is enough here; the
     # installer pages asserted below prove it is really Calamares.
-    atspi->prepare;
+    # The installer runs in the live desktop session, which live_desktop
+    # already installed the probe into; only the baseline is per session.
+    atspi->reset_baseline;
     my (undef, $opened, undef, undef, $status_path) = atspi->launch_command(
         'calamares-biglinux_polkit --software-render',
         '',
@@ -59,9 +62,5 @@ sub run {
     calamares->assert_page('installer-welcome', 90);
 }
 
-sub _marker_format {
-    my ($marker) = @_;
-    return join '', map { sprintf '\\%03o', ord } split //, $marker;
-}
 
 1;

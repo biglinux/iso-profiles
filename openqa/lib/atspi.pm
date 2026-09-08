@@ -11,6 +11,7 @@ use MIME::Base64 qw(decode_base64);
 use Text::ParseWords qw(shellwords);
 use Time::HiRes 'time';
 use testapi;
+use guest_shell qw(marker_format shell_quote);
 
 my $probe_path = '/tmp/openqa-atspi-probe.py';
 my $supervisor_path = '/tmp/openqa-gui-supervisor.sh';
@@ -52,11 +53,23 @@ sub is_crash_exit_code {
     return $crash_exit_code{$code} ? 1 : 0;
 }
 
-sub prepare {
+# Install the guest side of the probe. Once per boot, because the installed
+# system reboots into a filesystem where /tmp is empty again.
+#
+# This used to also hunt for the accessibility bus, pin AT_SPI_BUS_ADDRESS in
+# the user environment and start its own at-spi-bus-launcher when it could not
+# find one. Every part of that was harmful. at-spi-bus-launcher unlinks
+# $XDG_RUNTIME_DIR/at-spi/bus before binding it, with no collision check, so a
+# second launcher steals the socket from the session's own - which keeps
+# running and keeps answering GetAddress with a path that no longer exists.
+# Pinning that dead path then aborted the probe with "Couldn't connect to
+# accessibility bus", and the failure branch ended in `exit 1`, which closed
+# the login shell: every module after it typed into a `login:` prompt. The
+# session owns its accessibility bus; the harness starts the service if it is
+# not running and otherwise leaves it alone.
+sub install {
     my ($class) = @_;
-    %session_launch_pids = ();
     my $ready_marker = '__OA_A11Y_READY__';
-    my $kernel_marker = '__OA_KERNEL__';
     my $probe_url = data_url('atspi_probe.py');
     my $supervisor_url = data_url('gui_supervisor.sh');
     my $user_launcher_url = data_url('gui_user_launch.sh');
@@ -64,65 +77,109 @@ sub prepare {
 
     select_console 'user-virtio-terminal';
     my $command = join ' ',
-      'export DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus',
-      'SAL_ACCESSIBILITY_ENABLED=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 GTK_A11Y=atspi NO_AT_BRIDGE=0;',
-      'session_xauthority=$(systemctl --user show-environment 2>/dev/null | awk -F= \'$1 == "XAUTHORITY" {print substr($0, index($0, "=") + 1); exit}\');',
-      '[ -n "$session_xauthority" ] && export XAUTHORITY="$session_xauthority";',
-      'gsettings set org.gnome.desktop.interface toolkit-accessibility true 2>/dev/null || true;',
-      'systemctl --user set-environment DISPLAY="$DISPLAY" XAUTHORITY="${XAUTHORITY:-}" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" 2>/dev/null || true;',
-      'dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true;',
-      # Start it, never restart it. A restart drops the socket every client is
-      # already connected to, and a toolkit binds to the accessibility bus once
-      # while starting up and never reconnects: restarting here left the live
-      # wizard connected to a dead bus and its tree unreadable, which read as
-      # "this application publishes nothing" for months.
-      'systemctl --user is-active at-spi-dbus-bus.service >/dev/null 2>&1 || systemctl --user --no-block start at-spi-dbus-bus.service 2>/dev/null || true;',
-      'at_spi_bus_address=$(systemctl --user show-environment 2>/dev/null | awk -F= \'$1 == "AT_SPI_BUS_ADDRESS" {print substr($0, index($0, "=") + 1); exit}\');',
-      'for i in $(seq 1 50); do published_at_spi_address=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.a11y.Bus.GetAddress 2>/dev/null | sed -E "s/.*\x27([^\x27]+)\x27.*/\\1/"); at_spi_socket=$(find /run/user/1000/at-spi -maxdepth 1 -type s -print -quit 2>/dev/null || true); for candidate in "$at_spi_bus_address" "$published_at_spi_address" "${at_spi_socket:+unix:path=$at_spi_socket}"; do candidate_path=${candidate#unix:path=}; if [ -n "$candidate" ] && { timeout 2 gdbus call --address "$candidate" --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.ListNames >/dev/null 2>&1 || test -S "$candidate_path"; }; then at_spi_bus_address="$candidate"; break 2; fi; done; if [ "$i" = 1 ] && test -x /usr/lib/at-spi-bus-launcher; then if [ "$(id -u)" = 0 ] && command -v runuser >/dev/null 2>&1; then runuser -u 1000 -- env DISPLAY="$DISPLAY" XAUTHORITY="${XAUTHORITY:-}" XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /usr/lib/at-spi-bus-launcher --launch-immediately --a11y=1 >/tmp/openqa-atspi-bus.log 2>&1 & else env DISPLAY="$DISPLAY" XAUTHORITY="${XAUTHORITY:-}" XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /usr/lib/at-spi-bus-launcher --launch-immediately --a11y=1 >/tmp/openqa-atspi-bus.log 2>&1 & fi; fi; at_spi_bus_address=; sleep 0.2; done;',
-      'test -n "$at_spi_bus_address" || { systemctl --user status at-spi-dbus-bus.service --no-pager 2>/dev/null || true; printf "AT_SPI_BUS_ADDRESS from user environment: "; systemctl --user show-environment 2>/dev/null | sed -n \'/^AT_SPI_BUS_ADDRESS=/p\'; command -v gdbus || true; find /run/user/1000/at-spi -maxdepth 1 -type s -ls 2>/dev/null || true; cat /tmp/openqa-atspi-bus.log 2>/dev/null || true; exit 1; }; export AT_SPI_BUS_ADDRESS="$at_spi_bus_address";',
-      'if test -x /usr/lib/at-spi2-registryd && ! pgrep -u 1000 -x at-spi2-registryd >/dev/null 2>&1; then /usr/lib/at-spi2-registryd --use-gnome-session >/tmp/openqa-atspi-registry.log 2>&1 & fi;',
-      'for i in $(seq 1 50); do if timeout 2 gdbus call --address "$AT_SPI_BUS_ADDRESS" --dest org.a11y.atspi.Registry --object-path /org/a11y/atspi/accessible/root --method org.a11y.atspi.Accessible.GetRoleName >/dev/null 2>&1; then break; fi; sleep 0.2; done;',
-      'systemctl --user set-environment SAL_ACCESSIBILITY_ENABLED=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 GTK_A11Y=atspi NO_AT_BRIDGE=0 AT_SPI_BUS_ADDRESS="$AT_SPI_BUS_ADDRESS" 2>/dev/null || true;',
-      'dbus-update-activation-environment --systemd SAL_ACCESSIBILITY_ENABLED QT_LINUX_ACCESSIBILITY_ALWAYS_ON GTK_A11Y NO_AT_BRIDGE AT_SPI_BUS_ADDRESS 2>/dev/null || true;',
-      'curl --fail --silent --show-error', _shell_quote($probe_url), '--output', _shell_quote($probe_path), '&&',
-      'curl --fail --silent --show-error', _shell_quote($supervisor_url), '--output', _shell_quote($supervisor_path), '&&',
-      'curl --fail --silent --show-error', _shell_quote($user_launcher_url), '--output', _shell_quote($user_launcher_path), '&&',
-      'curl --fail --silent --show-error', _shell_quote($launcher_url), '--output', _shell_quote($desktop_launcher_path), '&&',
-      'chmod 755', _shell_quote($probe_path), _shell_quote($supervisor_path), _shell_quote($user_launcher_path), _shell_quote($desktop_launcher_path), '&&',
+      'curl --fail --silent --show-error', shell_quote($probe_url), '--output', shell_quote($probe_path), '&&',
+      'curl --fail --silent --show-error', shell_quote($supervisor_url), '--output', shell_quote($supervisor_path), '&&',
+      'curl --fail --silent --show-error', shell_quote($user_launcher_url), '--output', shell_quote($user_launcher_path), '&&',
+      'curl --fail --silent --show-error', shell_quote($launcher_url), '--output', shell_quote($desktop_launcher_path), '&&',
+      'chmod 755', shell_quote($probe_path), shell_quote($supervisor_path), shell_quote($user_launcher_path), shell_quote($desktop_launcher_path), '&&',
       'kquitapp6 krunner >/dev/null 2>&1 || true;',
-      'printf ', _shell_quote(_marker_format($ready_marker) . '%s\\n'), ' "$(uname -r)"';
+      'printf ', shell_quote(marker_format($ready_marker) . '%s\\n'), ' "$(uname -r)"';
     type_string $command;
     send_key 'ret';
-    my $ready = wait_serial $ready_marker, no_regex => 1, timeout => 60;
-    die 'AT-SPI preparation did not finish' unless defined $ready;
+    my $ready = wait_serial qr/\Q$ready_marker\E([^\r\n]+)/, timeout => 120;
+    die 'the AT-SPI probe could not be installed in the guest' unless defined $ready;
 
-    type_string join ' ', 'printf', _shell_quote(_marker_format($kernel_marker) . '%s\\n'), '"$(uname -r)"';
-    send_key 'ret';
-    my $kernel_output = wait_serial qr/\Q$kernel_marker\E([^\r\n]+)/, timeout => 30;
-    ($kernel_version) = $kernel_output =~ /\Q$kernel_marker\E([^\r\n]+)/ if defined $kernel_output;
+    ($kernel_version) = $ready =~ /\Q$ready_marker\E([^\r\n]+)/;
     $kernel_version =~ s/\s+\z// if defined $kernel_version;
-    die 'AT-SPI preparation did not report the guest kernel'
+    die 'the AT-SPI probe did not report the guest kernel'
       unless defined $kernel_version && $kernel_version =~ /^[[:alnum:]][[:alnum:].+_~-]*$/;
-
-    select_console 'sut';
-    my $baseline = $class->result('baseline', 3);
-    if (ref $baseline ne 'HASH'
-        || !exists $baseline->{mem_available_mib}
-        || ref $baseline->{windows} ne 'ARRAY') {
-        my $registry_log = _read_registry_log();
-        die 'AT-SPI baseline is unavailable'
-          . ($registry_log ? ": $registry_log" : '');
-    }
-    select_console 'user-virtio-terminal';
-    my $session_baseline_saved = _run_guest_command(
-        "cp '$state_path' '$session_state_path'",
-        5,
-    );
-    die 'AT-SPI session baseline could not be saved'
-      unless defined $session_baseline_saved;
     select_console 'sut';
     return $kernel_version;
 }
+
+# Take the baseline for the graphical session that is running now.
+#
+# Called once per session, not once per job: the wizard, the live desktop and
+# the installed desktop are three different sessions, and a baseline from one
+# says nothing about the windows of the next.
+sub reset_baseline {
+    my ($class) = @_;
+    %session_launch_pids = ();
+
+    # The session's own environment, read now. Carrying it across sessions is
+    # what broke this: the wizard's Xwayland display was pinned into the user
+    # manager and the Plasma session that replaced it answered "Could not open
+    # X display" to every probe. A Wayland session also has no DISPLAY until
+    # Xwayland starts, so there is nothing to guess and nothing to cache.
+    select_console 'user-virtio-terminal';
+    my $environment = join ' ',
+      'export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus;',
+      'for name in DISPLAY XAUTHORITY WAYLAND_DISPLAY; do',
+      'value=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^$name=//p" | head -1);',
+      '[ -n "$value" ] && export "$name=$value";',
+      'done;',
+      # The installed system's Plasma session enables none of this by itself,
+      # and without it Qt and GTK publish no tree at all - there would be
+      # nothing to audit. The live session already does it (startbiglive), so
+      # this only fills the gap on the installed one.
+      'gsettings set org.gnome.desktop.interface toolkit-accessibility true 2>/dev/null || true;',
+      'export SAL_ACCESSIBILITY_ENABLED=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 GTK_A11Y=atspi NO_AT_BRIDGE=0;',
+      'systemctl --user set-environment SAL_ACCESSIBILITY_ENABLED=1',
+      'QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 GTK_A11Y=atspi NO_AT_BRIDGE=0 2>/dev/null || true;',
+      # Wait for an accessibility bus that is actually listening.
+      #
+      # Two things are wrong with the obvious ways to ask. systemctl start
+      # --no-block returns before the socket is bound, and the probe that
+      # followed it found nothing. And org.a11y.Bus.GetAddress answers with a
+      # path it no longer serves: at-spi-bus-launcher keeps the address of the
+      # bus it created, and the live wizard's private session
+      # (dbus-run-session) takes that socket with it when it ends - so between
+      # the wizard and the desktop the name is owned, the answer is instant,
+      # and /run/user/1000/at-spi/bus does not exist. Only the socket itself
+      # is evidence, and when it is missing the launcher is restarted: no
+      # client can be harmed by that here, because every client of that bus
+      # already lost it.
+      #
+      # The registry is activated by the launcher over this same bus
+      # (org.a11y.atspi.Registry), so it needs no help - starting it by hand
+      # only added a process that died on a bus that was not there.
+      # What the session left behind, before anything is restarted: this is
+      # the evidence for where a missing socket came from.
+      'pgrep -a at-spi 2>&1 | tail -3; ls -l /run/user/1000/at-spi/ 2>&1 | tail -2;',
+      'for attempt in $(seq 30); do',
+      # ('unix:path=/run/user/1000/at-spi/bus',) with the punctuation dropped.
+      'address=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus',
+      '--method org.a11y.Bus.GetAddress 2>/dev/null | tr -dc "a-zA-Z0-9:=/_.-");',
+      'case $address in',
+      'unix:path=/*) test -S "${address#unix:path=}" && break;;',
+      # An abstract socket has no file to look at; the address is all there is.
+      'unix:*) break;;',
+      'esac;',
+      'systemctl --user restart at-spi-dbus-bus.service >/dev/null 2>&1 || true;',
+      'sleep 1;',
+      'done;',
+      'ls -l /run/user/1000/at-spi/ 2>&1 | tail -2;',
+      'printf ', shell_quote(marker_format('__OA_A11Y_SESSION__') . '\\n');
+    type_string $environment;
+    send_key 'ret';
+    die 'the session environment could not be prepared for accessibility'
+      unless defined wait_serial('__OA_A11Y_SESSION__', no_regex => 1, timeout => 60);
+    select_console 'sut';
+
+    my $baseline = $class->result('baseline', 10);
+    if (ref $baseline ne 'HASH'
+        || !exists $baseline->{mem_available_mib}
+        || ref $baseline->{windows} ne 'ARRAY') {
+        die 'the AT-SPI baseline has an unexpected shape: '
+          . (ref $baseline ? JSON::PP->new->canonical->encode($baseline) : 'not a structure');
+    }
+    select_console 'user-virtio-terminal';
+    my $saved = _run_guest_command("cp '$state_path' '$session_state_path'", 5);
+    die 'the AT-SPI session baseline could not be saved' unless defined $saved;
+    select_console 'sut';
+    return $baseline;
+}
+
 
 sub kernel_version {
     return $kernel_version;
@@ -130,8 +187,11 @@ sub kernel_version {
 
 sub result {
     my ($class, $operation, $timeout, @arguments) = @_;
+    # dump-widgets is deliberately absent: a whole widget tree does not fit
+    # through a serial marker, and no test needs one. It is an operator's tool,
+    # run from a console inside the guest (see openqa/README.md).
     die "invalid AT-SPI operation '$operation'"
-      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|activate-widget|dump-widgets|close|cleanup|memory|inventory|inventory-chunk)\z/;
+      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|activate-widget|close|cleanup|memory|inventory|inventory-chunk)\z/;
     die 'invalid AT-SPI timeout' unless defined $timeout && $timeout =~ /\A[0-9]+(?:\.[0-9]+)?\z/;
 
     my @command = (
@@ -140,7 +200,7 @@ sub result {
         '--timeout', $timeout,
     );
     push @command, @arguments;
-    my $probe_command = join ' ', map { _shell_quote($_) } @command;
+    my $probe_command = join ' ', map { shell_quote($_) } @command;
     # One accessibility tree walk can take many seconds on a guest busy
     # installing, and the probe only checks its own deadline between walks. Two
     # seconds of headroom got the probe killed mid-answer during the
@@ -148,8 +208,8 @@ sub result {
     my $probe_timeout = $timeout + $WALK_HEADROOM;
     my $shell_command = join ' ',
       'if command -v timeout >/dev/null 2>&1; then timeout --kill-after=2',
-      _shell_quote($probe_timeout), $probe_command, '; else', $probe_command, '; fi; printf',
-      _shell_quote(_marker_format('__OPENQA_ATSPI_DONE__') . '\\n');
+      shell_quote($probe_timeout), $probe_command, '; else', $probe_command, '; fi; printf',
+      shell_quote(marker_format('__OPENQA_ATSPI_DONE__') . '\\n');
 
     select_console 'user-virtio-terminal';
     type_string $shell_command;
@@ -163,7 +223,7 @@ sub result {
         # shell usable so the remaining inventory still gets a result.
         select_console 'user-virtio-terminal';
         type_string '', terminate_with => 'ETX';
-        type_string 'printf ' . _shell_quote(_marker_format('__OPENQA_ATSPI_RECOVERED__') . '\\n');
+        type_string 'printf ' . shell_quote(marker_format('__OPENQA_ATSPI_RECOVERED__') . '\\n');
         send_key 'ret';
         wait_serial '__OPENQA_ATSPI_RECOVERED__', no_regex => 1, timeout => 3;
     }
@@ -171,7 +231,15 @@ sub result {
     die "AT-SPI operation '$operation' returned no result" unless defined $serial;
 
     my ($hex) = $serial =~ /__OPENQA_ATSPI__([0-9a-f]+)/;
-    die "AT-SPI operation '$operation' returned no result" unless defined $hex;
+    unless (defined $hex) {
+        # Whatever the probe printed instead of an answer is the diagnosis: a
+        # libatspi abort, a Python traceback, a dead bus socket. Reporting only
+        # "returned no result" threw that away and cost two rounds of guessing.
+        my $printed = $serial // '';
+        $printed =~ s/\r//g;
+        $printed = substr $printed, -600;
+        die "AT-SPI operation '$operation' returned no result; the guest printed: $printed";
+    }
     my $result = eval { decode_json(pack 'H*', $hex) };
     die "AT-SPI operation '$operation' returned invalid JSON: $@"
       unless ref $result eq 'HASH';
@@ -319,14 +387,14 @@ sub _launch_argv {
     my $baseline = $class->result('baseline', 3);
     my $status_path = sprintf('/tmp/openqa-gui-status-%d-%d', $$, int(time * 1000) % 1_000_000);
     my $user_launcher_arguments = join ' ',
-      _shell_quote($user_launcher_path),
-      _shell_quote($status_path),
-      (map { _shell_quote($_) } @$argv);
+      shell_quote($user_launcher_path),
+      shell_quote($status_path),
+      (map { shell_quote($_) } @$argv);
     select_console 'user-virtio-terminal';
     my $launch_command = join ' ',
       $user_launcher_arguments,
       '< /dev/null > /tmp/openqa-gui-launch.log 2>&1 &',
-      'printf', _shell_quote(_marker_format('__OA_GUI_LAUNCH_DONE__') . '\\n');
+      'printf', shell_quote(marker_format('__OA_GUI_LAUNCH_DONE__') . '\\n');
     type_string $launch_command;
     send_key 'ret';
     die 'GUI supervisor launch did not finish'
@@ -682,11 +750,11 @@ sub upload_guest_file {
     die "invalid uploaded log name '$log_name'"
       unless defined $log_name && $log_name =~ /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/;
     my $command = join ' ',
-      'test -s', _shell_quote($guest_path), '&&',
+      'test -s', shell_quote($guest_path), '&&',
       'curl --fail --silent --show-error --max-time 90',
-      '--form', _shell_quote('upload=@' . $guest_path),
-      '--form', _shell_quote('upname=' . $log_name),
-      _shell_quote(autoinst_url("/uploadlog/$log_name"));
+      '--form', shell_quote('upload=@' . $guest_path),
+      '--form', shell_quote('upname=' . $log_name),
+      shell_quote(autoinst_url("/uploadlog/$log_name"));
     return $class->run_command($command, 120);
 }
 
@@ -715,9 +783,9 @@ sub _run_guest_command {
     my $marker = sprintf('__OA_COMMAND_DONE_%d_%d__', $$, int(time * 1000) % 1_000_000);
     my $status_marker = sprintf('__OA_COMMAND_STATUS_%d_%d__', $$, int(time * 1000) % 1_000_000);
     my $wrapped = '{ ' . $command . '; code=$?; printf '
-      . _shell_quote('%s\\n' . _marker_format($status_marker) . '\\n')
+      . shell_quote('%s\\n' . marker_format($status_marker) . '\\n')
       . ' "$code"; printf '
-      . _shell_quote(_marker_format($marker) . '\\n') . '; }';
+      . shell_quote(marker_format($marker) . '\\n') . '; }';
     type_string $wrapped;
     send_key 'ret';
     my $status_regex = qr/(?:^|\r?\n)([0-9]+)\r?\n\Q$status_marker\E\r?\n\Q$marker\E/;
@@ -727,7 +795,7 @@ sub _run_guest_command {
         # serial wait expires. Interrupt it before issuing the next command.
         my $recovery_marker = sprintf('__OA_COMMAND_RECOVERED_%d_%d__', $$, int(time * 1000) % 1_000_000);
         type_string '', terminate_with => 'ETX';
-        type_string 'printf ' . _shell_quote(_marker_format($recovery_marker) . '\\n');
+        type_string 'printf ' . shell_quote(marker_format($recovery_marker) . '\\n');
         send_key 'ret';
         # Generous on purpose: this only runs after a command already
         # overran, and failing to interrupt it leaves the console unusable
@@ -745,7 +813,7 @@ sub _read_child_pid {
     $timeout //= 15;
     my $attempts = $timeout < 5 ? 2 : 15;
     my $command = "pid=; for i in \$(seq 1 $attempts); do if [ -r '$status_path' ]; then pid=\$(awk -F= '/^child_pid=/{print \$2; exit}' '$status_path' 2>/dev/null || true); test -n \"\$pid\" && break; fi; sleep 1; done; printf '%s\\n' \"\${pid:-0}\"; printf ";
-    $command .= _shell_quote(_marker_format('__OA_CHILD_PID_DONE__') . '\\n');
+    $command .= shell_quote(marker_format('__OA_CHILD_PID_DONE__') . '\\n');
     type_string $command;
     send_key 'ret';
     my $serial = wait_serial qr/(?:^|\r?\n)([0-9]+)\r?\n__OA_CHILD_PID_DONE__/, $timeout;
@@ -759,13 +827,13 @@ sub _read_launch_debug {
     my ($status_path) = @_;
     my $begin_marker = '__OA_GUI_DEBUG_BEGIN__';
     my $end_marker = '__OA_GUI_DEBUG_END__';
-    my $display_awk = _shell_quote('$1 == "DISPLAY" {print $2; exit}');
-    my $xauthority_awk = _shell_quote('$1 == "XAUTHORITY" {print $2; exit}');
+    my $display_awk = shell_quote('$1 == "DISPLAY" {print $2; exit}');
+    my $xauthority_awk = shell_quote('$1 == "XAUTHORITY" {print $2; exit}');
     select_console 'user-virtio-terminal';
     my $command = 'printf '
-      . _shell_quote(_marker_format($begin_marker))
+      . shell_quote(marker_format($begin_marker))
       . '; cat '
-      . _shell_quote($status_path)
+      . shell_quote($status_path)
       . ' 2>/dev/null; cat /tmp/openqa-gui-launch.log 2>/dev/null; cat /tmp/openqa-gui-supervisor.log 2>/dev/null; '
       . 'if command -v xprop >/dev/null 2>&1; then printf "x11-client-list="; '
       . 'xprop -root _NET_CLIENT_LIST_STACKING 2>/dev/null || true; '
@@ -778,7 +846,7 @@ sub _read_launch_debug {
       . $xauthority_awk . '; '
       . 'getent passwd 1000 2>/dev/null || true; '
       . 'find /home /run/user -maxdepth 3 -name .Xauthority -ls 2>/dev/null || true; printf '
-      . _shell_quote(_marker_format($end_marker));
+      . shell_quote(marker_format($end_marker));
     type_string $command;
     send_key 'ret';
     my $serial = wait_serial qr/\Q$begin_marker\E(.*?)\Q$end_marker\E/s, 10;
@@ -789,24 +857,6 @@ sub _read_launch_debug {
     $debug =~ s/\A\s+|\s+\z//g if defined $debug;
     $debug = substr($debug, 0, 800) if defined $debug;
     return defined $debug && length $debug ? $debug : 'empty-debug';
-}
-
-sub _read_registry_log {
-    my $begin_marker = '__OA_ATSPI_REGISTRY_BEGIN__';
-    my $end_marker = '__OA_ATSPI_REGISTRY_END__';
-    select_console 'user-virtio-terminal';
-    type_string 'printf ' . _shell_quote(_marker_format($begin_marker))
-      . '; cat /tmp/openqa-atspi-registry.log 2>/dev/null; printf '
-      . _shell_quote(_marker_format($end_marker));
-    send_key 'ret';
-    my $serial = wait_serial qr/\Q${begin_marker}\E(.*?)\Q${end_marker}\E/s, timeout => 5;
-    select_console 'sut';
-    return '' unless defined $serial;
-    my ($log) = $serial =~ /\Q${begin_marker}\E(.*?)\Q${end_marker}\E/s;
-    $log //= '';
-    $log =~ s/\s+/ /g;
-    $log =~ s/\A\s+|\s+\z//g;
-    return substr($log, 0, 1200);
 }
 
 sub _read_exit_code {
@@ -826,9 +876,9 @@ sub _read_status_value {
     my $marker = sprintf('__OA_APP_EXIT_DONE_%d_%d__', $$, ++$status_read_serial);
     select_console 'user-virtio-terminal';
     my $command = "code=MISSING; for i in \$(seq 1 $attempts); do candidate=\$(awk -F= '/^$field=/{print \$2; exit}' "
-      . _shell_quote($status_path)
+      . shell_quote($status_path)
       . " 2>/dev/null || true); case \"\$candidate\" in '') sleep 1;; * ) code=\$candidate; break;; esac; done; printf "
-      . _shell_quote('%s\\n' . _marker_format($marker) . '\\n')
+      . shell_quote('%s\\n' . marker_format($marker) . '\\n')
       . q{ "$code"};
     type_string $command;
     send_key 'ret';
@@ -838,7 +888,7 @@ sub _read_status_value {
         # desynchronize the next serial command.
         my $recovery_marker = sprintf('__OA_APP_EXIT_RECOVERED_%d_%d__', $$, $status_read_serial);
         type_string '', terminate_with => 'ETX';
-        type_string 'printf ' . _shell_quote(_marker_format($recovery_marker) . '\\n');
+        type_string 'printf ' . shell_quote(marker_format($recovery_marker) . '\\n');
         send_key 'ret';
         wait_serial $recovery_marker, no_regex => 1, timeout => 3;
     }
@@ -848,15 +898,6 @@ sub _read_status_value {
     return $exit_code;
 }
 
-sub _shell_quote {
-    my ($value) = @_;
-    $value =~ s/'/'"'"'/g;
-    return "'$value'";
-}
 
-sub _marker_format {
-    my ($marker) = @_;
-    return join '', map { sprintf '\\%03o', ord } split //, $marker;
-}
 
 1;

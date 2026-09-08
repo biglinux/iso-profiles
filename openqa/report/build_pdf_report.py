@@ -100,16 +100,16 @@ def read_suite(directory: Path) -> Suite | None:
     results = next(iter(sorted(directory.rglob("vars.json"))), None)
     if results is None:
         return None
-    testresults = results.parent
+    testresults = results.parent / "testresults"
     variables = _json(results)
     suite = Suite(
-        name=directory.name.split("-audit-")[0].removeprefix("openqa-"),
+        name=variables.get("TEST") or directory.name.removeprefix("openqa-"),
         firmware="UEFI" if variables.get("UEFI") else "BIOS",
         iso=str(variables.get("ISO") or ""),
         build=str(variables.get("BUILD") or ""),
     )
-    for details in sorted(testresults.glob("details-*.json")):
-        module = details.stem.removeprefix("details-")
+    for details in sorted(testresults.glob("result-*.json")):
+        module = details.stem.removeprefix("result-")
         payload = _json(details)
         steps = payload.get("details")
         steps = steps if isinstance(steps, list) else []

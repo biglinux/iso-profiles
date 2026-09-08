@@ -8,6 +8,7 @@ use Mojo::Base -strict;
 # a button whose name no installer will ever have.
 use utf8;
 use testapi;
+use biglinux;
 use atspi;
 
 # Buttons are located by their accessibility label, so the lists below are the
@@ -88,7 +89,7 @@ sub test_user {
 }
 
 sub test_password {
-    return get_required_var('_SECRET_BIGLINUX_TEST_PASSWORD');
+    return biglinux->test_password;
 }
 
 sub test_hostname {

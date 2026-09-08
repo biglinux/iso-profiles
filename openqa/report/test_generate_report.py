@@ -21,7 +21,7 @@ from generate_report import (
 class GenerateReportTest(unittest.TestCase):
     def test_reads_module_duration_and_worst_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory, "details-applications.json")
+            path = Path(directory, "result-applications.json")
             path.write_text(
                 json.dumps(
                     {

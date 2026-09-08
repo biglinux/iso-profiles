@@ -11,7 +11,7 @@ sub test_flags {
 
 sub run {
     installed_system->assert_brave_cli;
-    my $kernel = atspi->prepare;
+    my $kernel = atspi->kernel_version;
     # No expected window title: Brave renames its window across releases and
     # the browser being the right program is already proven by the CLI check
     # above plus the launched process tree.

@@ -1,0 +1,92 @@
+---
+# The release gate, in one file.
+#
+# Each plan is one isotovideo run: a schedule (the module sequence, owned by
+# openqa/main.pm), a machine (the QEMU shape), and whatever that plan alone
+# needs. openqa/production/run-plan.sh reads this and runs the plan; nothing
+# else defines what the gate does.
+#
+# timeout_minutes is the outer bound for one plan, not an estimate of it: it is
+# what a CI job is allowed to hold a runner for before it is killed. The
+# measured times live in openqa/README.md.
+version: 2
+
+machines:
+  bios:
+    QEMUCPUS: '2'
+    QEMURAM: '4096'
+    HDDSIZEGB: '40'
+    XRES: '1024'
+    YRES: '768'
+
+  uefi:
+    QEMUCPUS: '2'
+    QEMURAM: '4096'
+    HDDSIZEGB: '40'
+    QEMUMACHINE: q35
+    UEFI: '1'
+    UEFI_SECURE_BOOT: '0'
+    XRES: '1024'
+    YRES: '768'
+
+plans:
+  # Smallest plan: the live wizard alone. It fails within minutes, which is
+  # what makes it the right first step when an ISO or a change is new.
+  - name: live
+    timeout_minutes: 30
+    schedule: live
+    machine: bios
+    # Not part of the gate: it is a strict prefix of the firmware plans, so on
+    # CI it would only spend a runner on what bios already proves. It exists
+    # for the first run against a new ISO or a changed module, where failing in
+    # minutes is worth more than covering everything.
+    gate: false
+
+  - name: bios
+    gate: true
+    timeout_minutes: 150
+    schedule: release
+    machine: bios
+    settings:
+      # The firmware plans prove install and boot; the recursive .desktop audit
+      # belongs to the shards. These six are the applications a broken desktop
+      # would take down first, so they are worth the two minutes here.
+      BIGLINUX_APPLICATION_FILTER: dolphin,libreoffice,gimp,brave,biglinux-control-center,control-center
+
+  - name: uefi
+    gate: true
+    timeout_minutes: 150
+    schedule: release_uefi
+    machine: uefi
+
+  - name: applications-0
+    gate: true
+    timeout_minutes: 90
+    schedule: applications
+    machine: bios
+    settings:
+      BIGLINUX_APPLICATION_SHARD_INDEX: '0'
+
+  - name: applications-1
+    gate: true
+    timeout_minutes: 90
+    schedule: applications
+    machine: bios
+    settings:
+      BIGLINUX_APPLICATION_SHARD_INDEX: '1'
+
+  - name: applications-2
+    gate: true
+    timeout_minutes: 90
+    schedule: applications
+    machine: bios
+    settings:
+      BIGLINUX_APPLICATION_SHARD_INDEX: '2'
+
+  - name: applications-3
+    gate: true
+    timeout_minutes: 90
+    schedule: applications
+    machine: bios
+    settings:
+      BIGLINUX_APPLICATION_SHARD_INDEX: '3'

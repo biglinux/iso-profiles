@@ -9,6 +9,7 @@ use JSON::PP qw(encode_json);
 use Math::BigInt;
 use MIME::Base64 'encode_base64';
 use Time::HiRes 'time';
+use guest_shell qw(marker_format shell_quote);
 
 my @application_metrics;
 my $metrics_uploaded = 0;
@@ -264,8 +265,7 @@ sub _build_application_context {
         iso_filename => get_var('BIGLINUX_ISO_FILENAME', ''),
         iso_sha256 => get_var('BIGLINUX_ISO_SHA256', ''),
         build_id => get_var('BIGLINUX_OPENQA_BUILD', ''),
-        commit_sha => get_var('BIGLINUX_OPENQA_TEST_GIT_REFSPEC', ''),
-        needles_git_hash => get_var('BIGLINUX_NEEDLES_GIT_HASH', ''),
+        commit_sha => get_var('BIGLINUX_OPENQA_COMMIT', ''),
         policy_version => 1,
         shard_index => $shard_index + 0,
         shard_count => $shard_count + 0,
@@ -473,30 +473,30 @@ sub _write_guest_metrics {
     my @chunks = $encoded =~ /.{1,900}/g;
     my $start_marker = '__OA_METRICS_START__';
     my $ready_marker = '__OA_METRICS_READY__';
-    # Every marker below is typed as octal escapes (_marker_format) so the
+    # Every marker below is typed as octal escapes (marker_format) so the
     # tty echo of the command line can never satisfy its own wait_serial; the
     # literal marker only appears once the command actually succeeded. This
     # also paces the chunk stream to the guest shell's real progress.
     select_console 'user-virtio-terminal';
     type_string "rm -f /tmp/application-metrics.json && : > /tmp/application-metrics.json && printf "
-      . _shell_quote(_marker_format($start_marker) . '\\n');
+      . shell_quote(marker_format($start_marker) . '\\n');
     send_key 'ret';
     die 'guest metrics file did not start' unless wait_serial $start_marker, no_regex => 1, timeout => 15;
     for my $index (0 .. $#chunks) {
         my $marker = sprintf('__OA_METRICS_CHUNK_%04d__', $index);
         type_string "printf '%s' '$chunks[$index]' | base64 --decode >> /tmp/application-metrics.json && printf "
-          . _shell_quote(_marker_format($marker) . '\\n');
+          . shell_quote(marker_format($marker) . '\\n');
         send_key 'ret';
         die "guest metrics chunk $index was not acknowledged"
           unless wait_serial $marker, no_regex => 1, timeout => 15;
     }
     type_string "test -s /tmp/application-metrics.json && printf "
-      . _shell_quote(_marker_format($ready_marker) . '\\n');
+      . shell_quote(marker_format($ready_marker) . '\\n');
     send_key 'ret';
     die 'guest metrics file was not created' unless wait_serial $ready_marker, no_regex => 1, timeout => 15;
     my $compressed_marker = '__OA_METRICS_COMPRESSED__';
     type_string "gzip -c /tmp/application-metrics.json > /tmp/application-metrics.json.gz && printf "
-      . _shell_quote(_marker_format($compressed_marker) . '\\n');
+      . shell_quote(marker_format($compressed_marker) . '\\n');
     send_key 'ret';
     die 'guest metrics compression failed'
       unless wait_serial $compressed_marker, no_regex => 1, timeout => 15;
@@ -510,9 +510,9 @@ sub _upload_guest_metrics {
     select_console 'user-virtio-terminal';
     type_string 'curl --fail --silent --show-error --form upload=\@/tmp/application-metrics.json.gz '
       . '--form upname=application-metrics.json.gz --max-time 90 '
-      . _shell_quote($upload_url)
+      . shell_quote($upload_url)
       . ' >/tmp/openqa-metrics-upload.log 2>&1; code=$?; printf '
-      . _shell_quote(_marker_format($marker) . '%s\\n') . ' "$code"';
+      . shell_quote(marker_format($marker) . '%s\\n') . ' "$code"';
     send_key 'ret';
     my $serial = wait_serial qr/\Q$marker\E(\d+)/, timeout => 100;
     select_console 'sut';
@@ -576,19 +576,11 @@ sub post_fail_hook {
     upload_application_metrics;
 }
 
-sub _shell_quote {
-    my ($value) = @_;
-    $value =~ s/'/'"'"'/g;
-    return "'$value'";
-}
 
-sub _marker_format {
-    my ($marker) = @_;
-    return join '', map { sprintf '\\%03o', ord } split //, $marker;
-}
 
 sub run {
-    $kernel_version = atspi->prepare;
+    $kernel_version = atspi->kernel_version;
+    atspi->reset_baseline;
     _record_info 'Accessibility', 'AT-SPI is active and exposes the KDE live session';
     my $entries = atspi->inventory;
     die 'No desktop entries were discovered under /usr/share/applications'

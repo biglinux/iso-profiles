@@ -3,9 +3,11 @@
 package biglinux;
 
 use Mojo::Base 'distribution', -signatures;
+use feature 'state';
 # Import no symbols: importing testapi::script_run into this class would
 # shadow distribution::script_run and recurse when the console probes run.
 use testapi ();
+use guest_shell qw(marker_format);
 
 sub init ($self) {
     $self->SUPER::init;
@@ -44,7 +46,7 @@ sub activate_console ($self, $console, @) {
     my ($user, $password) = ('biglinux', 'biglinux');
     if ($mode eq 'installed') {
         $user = testapi::get_required_var('BIGLINUX_TEST_USER');
-        $password = testapi::get_required_var('_SECRET_BIGLINUX_TEST_PASSWORD');
+        $password = biglinux->test_password;
     }
 
     testapi::type_string $user;
@@ -81,16 +83,31 @@ sub activate_console ($self, $console, @) {
     defined $bash_ready
       or die 'plain bash did not take over the serial console';
     my $ready_marker = '__OA_SERIAL_READY__';
-    testapi::type_string "export PS1='# '; printf '" . _marker_format($ready_marker) . "\\n'\n";
+    testapi::type_string "export PS1='# '; printf '" . marker_format($ready_marker) . "\\n'\n";
     defined testapi::wait_serial($ready_marker, timeout => 15)
       or die 'serial console shell did not confirm readiness';
     defined testapi::wait_serial('# ', no_regex => 1, timeout => 10)
       or die 'serial console prompt did not appear';
 }
 
-sub _marker_format ($marker) {
-    return join '', map { sprintf '\\%03o', ord } split //, $marker;
+# The test user's password, read from the file the runner mounts.
+#
+# Never a job setting: isotovideo writes vars.json before the tests start and
+# does not redact it, and that directory is uploaded as an artifact. A password
+# that is never a variable cannot leak through one.
+sub test_password {
+    state $password;
+    return $password if defined $password;
+    my $path = testapi::get_required_var('BIGLINUX_TEST_PASSWORD_FILE');
+    open my $handle, '<', $path
+      or die "cannot read the test password from $path: $!";
+    $password = do { local $/; <$handle> };
+    close $handle;
+    $password =~ s/\s+\z//;
+    die "the test password file is empty: $path" if $password eq '';
+    return $password;
 }
+
 
 # Raises the serial console to root for the probes that need it, and answers
 # whether it worked. Callers must check: a probe that keeps going unprivileged
@@ -103,7 +120,7 @@ sub _marker_format ($marker) {
 # accessibility probes can talk to.
 sub become_root {
     my $uid_marker = '__OA_ROOT_UID__';
-    my $uid_format = _marker_format($uid_marker);
+    my $uid_format = marker_format($uid_marker);
     my $check = "printf '$uid_format%s$uid_format\\n' \"\$(sudo -n id -u 2>/dev/null)\"\n";
     my $is_root = sub {
         testapi::type_string $check;
@@ -116,12 +133,12 @@ sub become_root {
     return 1 if $is_root->();
 
     my $password = $credentials eq 'installed'
-      ? testapi::get_required_var('_SECRET_BIGLINUX_TEST_PASSWORD')
+      ? biglinux->test_password
       : 'biglinux';
     my $prompt_marker = '__OA_SUDO_PASSWORD__';
-    my $prompt_format = _marker_format($prompt_marker);
+    my $prompt_format = marker_format($prompt_marker);
     my $done_marker = '__OA_SUDO_DONE__';
-    my $done_format = _marker_format($done_marker);
+    my $done_format = marker_format($done_marker);
 
     for (1 .. 2) {
         # Never type the password without seeing sudo ask for it. Typing it
