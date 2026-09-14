@@ -26,10 +26,10 @@ jobs:
           python3 -m unittest discover -s data -p 'test_*.py'
           python3 -m unittest discover -s openqa/data -p 'test_*.py'
           python3 -m unittest discover -s openqa/report -p 'test_*.py'
-          python3 -m py_compile data/*.py openqa/production/*.py
+          python3 -m py_compile data/*.py openqa/production/*.py openqa/report/*.py
           python3 openqa/production/check-nonvisual.py
           prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
-          bash -n openqa/production/*.sh data/*.sh
+          for script in openqa/production/*.sh data/*.sh; do bash -n "$script"; done
           git diff --check
       - name: Archive tracked sources for reproducible harness diagnostics
         if: always()
