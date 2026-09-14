@@ -1,0 +1,44 @@
+name: openQA nonvisual harness checks
+
+on:
+  pull_request:
+    paths:
+      - 'data/**'
+      - 'openqa/**'
+      - '.github/workflows/openqa*.yml'
+      - 'docs/openqa*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Check Python harness and report regressions
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s data -p 'test_*.py'
+          python3 -m unittest discover -s openqa/data -p 'test_*.py'
+          python3 -m unittest discover -s openqa/report -p 'test_*.py'
+          python3 -m py_compile data/*.py openqa/production/*.py
+          git diff --check
+      - name: Archive tracked sources for reproducible harness diagnostics
+        if: always()
+        run: |
+          git rev-parse HEAD > "$RUNNER_TEMP/openqa-source-commit.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/openqa-source.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: openqa-harness-sources-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/openqa-source.tar.gz
+            ${{ runner.temp }}/openqa-source-commit.txt
+          retention-days: 3
+          if-no-files-found: error
