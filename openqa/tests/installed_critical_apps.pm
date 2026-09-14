@@ -40,58 +40,18 @@ sub _test_application {
         $open_seconds = $seconds;
         $launch_pid = $child_pid;
         my $validation_mode = 'atspi-open';
-        if ($opened->{status} ne 'passed') {
-            # Not every application publishes an accessible window: mpv draws
-            # its own video surface and exposes nothing to AT-SPI. A window
-            # belonging to the launched process is the evidence, whichever
-            # mechanism reveals it, which is what the live sweep already does.
-            my $x11 = eval { atspi->x11_wait_open($launch_pid, '', 120) };
-            if (ref $x11 eq 'HASH' && $x11->{status} eq 'passed') {
-                $opened = $x11;
-                $validation_mode = 'x11-open';
-            }
-        }
-        if ($opened->{status} ne 'passed') {
-            # A launcher that hands the work to another process -- xdg-open, a
-            # settings opener, a D-Bus activation -- exits successfully and the
-            # window belongs to whoever it asked. Its own success plus a window
-            # that was not there before is the evidence available, so identity
-            # by provenance cannot be required of these entries.
-            my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
-            if (defined $exit_code && $exit_code == 0) {
-                my $delegated = eval { atspi->result('wait-open', 120, '--name', '') };
-                if (ref $delegated eq 'HASH' && $delegated->{status} eq 'passed') {
-                    $opened = $delegated;
-                    $validation_mode = 'delegated-open';
-                }
-            }
-        }
-        if ($opened->{status} ne 'passed') {
-            # Last resort, and recorded as such. mpv draws its own video
-            # surface: it publishes nothing to AT-SPI and, in the installed
-            # Wayland session, nothing to X11 either, so no window of it can be
-            # observed at all. Where that happens the contract falls back to
-            # what remains provable -- the program started, it is the program
-            # the entry names, and the checks below still require it to leave
-            # without crashing. The mode is reported so a weakly validated
-            # application is visible rather than silently equal to the others.
-            my $alive = atspi->run_command("test -d /proc/$launch_pid", 10);
-            die 'did not expose a window of its own: '
-              . ($opened->{error} // 'no reason given')
-              unless defined $alive && $alive == 0;
-            $validation_mode = 'process-alive';
-            $opened = {status => 'passed', pid => $launch_pid, window => undef};
-        }
+        die 'critical application has no PID-scoped accessible window: '
+          . ($opened->{error} // 'incomplete observation')
+          unless ($opened->{status} // '') eq 'passed';
+        my $semantics = atspi->result('audit-window', 15, '--pid', $opened->{pid});
+        die 'critical application has no usable accessible controls: ' . ($semantics->{error} // '')
+          unless ($semantics->{status} // '') eq 'passed' && $semantics->{complete};
 
-        # Opening a window that belongs to this launch and closing without a
-        # crash is the whole contract. Asserting an AT-SPI action, a specific
-        # exit code, or the window title would fail on harmless UI changes in
-        # the next release of the application.
         my $termination = atspi->terminate_window(
             $opened->{pid}, $status_path, $launch_pid, $entry
         );
         die 'application did not exit after the close request'
-          unless $termination->{process_gone};
+          unless $termination->{graceful_exit};
         die "application crashed on exit (wait status $termination->{raw_application_exit_code})"
           if $termination->{application_crashed};
 

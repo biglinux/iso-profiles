@@ -15,7 +15,7 @@ sub run {
     # The radio reports its own state, which is what "selected" means here.
     my $erase = atspi->wait_widget('radio button', ['Erase disk', 'Apagar disco'], 30);
     die 'the installer did not select the erase-disk option'
-      unless ref $erase eq 'HASH' && $erase->{status} eq 'passed';
+      unless ref $erase eq 'HASH' && $erase->{status} eq 'passed' && $erase->{widget}{checked};
     calamares->click_action(\@calamares::NEXT);
     calamares->assert_page('users-page', 90);
 

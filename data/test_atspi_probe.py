@@ -324,8 +324,12 @@ class WidgetSearchTest(unittest.TestCase):
 
 
 class WidgetActivationTest(unittest.TestCase):
-    """Navigation activates a control through its own accessibility action,
-    never through the reported rectangle, which is window-relative."""
+    def setUp(self):
+        patcher = mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    """The explicit AT-action API does not claim keyboard reachability."""
 
     def _pair(self, name, actions, component=None):
         record = {
@@ -359,7 +363,7 @@ class WidgetActivationTest(unittest.TestCase):
         self.assertEqual(result["action"], "press")
         self.assertEqual(actions.done, ["press"])
 
-    def test_focuses_a_control_that_exposes_no_usable_action(self) -> None:
+    def test_never_teleports_focus_to_rescue_a_control(self) -> None:
         # Calamares' finished page reports its "Done" button with an empty
         # action list, which failed a release job after a complete and correct
         # installation. Focus is the other thing AT-SPI can do to a control,
@@ -373,10 +377,9 @@ class WidgetActivationTest(unittest.TestCase):
         ):
             result = atspi_probe.activate_widget(0, "button", ["Next"])
 
-        self.assertEqual(result["status"], "passed")
-        self.assertEqual(result["action"], "focus")
-        self.assertEqual(result["activation"], "keyboard")
-        self.assertEqual(component.focus_requests, 1)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("no usable accessibility action", result["error"])
+        self.assertEqual(component.focus_requests, 0)
         self.assertEqual(actions.done, [])
 
     def test_reports_a_control_that_neither_acts_nor_focuses(self) -> None:
@@ -390,8 +393,8 @@ class WidgetActivationTest(unittest.TestCase):
             result = atspi_probe.activate_widget(0, "button", ["Next"])
 
         self.assertEqual(result["status"], "failed")
-        self.assertIn("neither an accessibility action nor focus", result["error"])
-        self.assertIn("show-menu", result["error"])
+        self.assertIn("no usable accessibility action", result["error"])
+        self.assertEqual(component.focus_requests, 0)
 
     def test_prefers_an_action_over_focus(self) -> None:
         # Focus plus a key press is the fallback, never the first choice: a
@@ -468,6 +471,11 @@ if __name__ == "__main__":
 
 
 class WalkBoundsTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     """A walk is bounded by time, not only by node count.
 
     Every node costs several synchronous D-Bus round trips, so an application
@@ -487,7 +495,7 @@ class WalkBoundsTest(unittest.TestCase):
             return 1
 
         def get_child_at_index(self, _index):
-            return self
+            return type(self)(self._clock)
 
     def test_the_walk_stops_at_its_deadline(self) -> None:
         clock = [0.0]
@@ -500,7 +508,10 @@ class WalkBoundsTest(unittest.TestCase):
     def test_the_walk_without_a_deadline_still_stops_at_the_node_limit(self) -> None:
         clock = [0.0]
         node = self.SlowAccessible(clock)
-        visited = list(atspi_probe._walk(node, limit=5))
+        visited = []
+        with self.assertRaises(atspi_probe.WalkTruncated):
+            for item in atspi_probe._walk(node, limit=5):
+                visited.append(item)
         self.assertEqual(len(visited), 5)
 
 

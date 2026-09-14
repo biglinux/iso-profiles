@@ -183,21 +183,8 @@ def resolve_entry_path(
 
 def _prepare_environment(entry: DesktopEntry, command: list[str]) -> dict[str, str]:
     environment = os.environ.copy()
-    executable = Path(command[0]).name.casefold()
-    entry_identity = entry.path.stem.casefold()
-
-    # GitHub-hosted runners do not promise virgl or a usable physical GPU. Keep
-    # every graphical application on the same deterministic software path;
-    # this also prevents Qt Quick from selecting ZINK before AT-SPI is ready.
-    environment["LIBGL_ALWAYS_SOFTWARE"] = "1"
-    environment["GALLIUM_DRIVER"] = "llvmpipe"
-    environment["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
-    environment["QT_QUICK_BACKEND"] = "software"
-    environment["QT_QPA_PLATFORM"] = "xcb"
-    environment["QT_ACCESSIBILITY"] = "1"
-    environment["GDK_BACKEND"] = "x11"
-    environment.pop("WAYLAND_DISPLAY", None)
-
+    # Test the session and packaged command users actually receive. Do not force
+    # an alternate toolkit, display server, renderer or accessibility bridge.
     if entry.terminal:
         terminal = shutil.which("konsole") or shutil.which("xterm")
         if terminal:
@@ -206,56 +193,6 @@ def _prepare_environment(entry: DesktopEntry, command: list[str]) -> dict[str, s
                 command[:] = [terminal, "--nofork", "-e", *original_command]
             else:
                 command[:] = [terminal, "-e", *original_command]
-
-    if executable in {"libreoffice", "soffice", "soffice.bin"}:
-        # The GTK VCL backend exposes LibreOffice's accessibility tree reliably
-        # in the live KDE session while isolating the test profile.
-        environment.setdefault("SAL_USE_VCLPLUGIN", "gtk3")
-        environment.setdefault("SAL_ACCESSIBILITY_ENABLED", "1")
-        if not any(
-            argument.startswith("-env:UserInstallation=") for argument in command
-        ):
-            command.append(
-                f"-env:UserInstallation=file:///tmp/openqa-lo-profile-{os.getpid()}"
-            )
-
-    if (
-        "gimp" in executable or "gimp" in entry_identity
-    ) and "--no-splash" not in command:
-        command.append("--no-splash")
-
-    if executable == "gkbd-keyboard-display" and len(command) == 1:
-        # The desktop entry omits the required layout argument.
-        command.extend(["-l", "us"])
-
-    if (
-        "brave" in executable or "brave" in entry_identity
-    ) and "--force-renderer-accessibility" not in command:
-        # Chromium-based browsers otherwise expose only their top-level frame
-        # to AT-SPI in a fresh live session.
-        command.append("--force-renderer-accessibility")
-
-    if executable in {"vim", "nvim"} and "-es" not in command:
-        # Terminal=true entries cannot expose a stable application AT-SPI tree.
-        # Run Vim's real executable through a deterministic Ex command so the
-        # process-only validation can prove startup and clean exit.
-        command.extend(["-Nu", "NONE", "-n", "-es", "-c", "qa!"])
-
-    if executable == "mpv" or entry_identity == "mpv":
-        # GitHub-hosted runners do not provide a stable virgl device. Keep this
-        # application test independent of host GPU availability while still
-        # exercising mpv's X11 window and AT-SPI lifecycle.
-        for option in (
-            "--no-config",
-            "--hwdec=no",
-            "--vo=x11",
-            "--force-window=immediate",
-            "--idle=yes",
-        ):
-            if option in command:
-                continue
-            separator = command.index("--") if "--" in command else len(command)
-            command.insert(separator, option)
 
     return environment
 
@@ -292,8 +229,6 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 2
     command = command_for_entry(entry)
     environment = _prepare_environment(entry, command)
-    environment.setdefault("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1")
-    environment.setdefault("SAL_ACCESSIBILITY_ENABLED", "1")
     os.execvpe(command[0], command, environment)
 
 

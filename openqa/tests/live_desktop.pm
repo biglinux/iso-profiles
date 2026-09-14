@@ -46,7 +46,8 @@ sub run {
     # picture of a wizard whose icons change between builds.
     atspi->install;
     atspi->reset_baseline;
-    atspi->wait_widget('table', $PAGE{language}, 300);
+    my $language = atspi->assert_widget('table', $PAGE{language}, 300);
+    atspi->set_widget_scope($language->{widget}{pid});
 
     # Two things have to be true before Return is pressed, and each one cost a
     # failed run to learn. The filter has to have been typed correctly: at the
@@ -84,10 +85,10 @@ sub run {
     my @remaining = (['keyboard', 'layout'], ['layout', 'theme'], ['theme', undef]);
     for my $step (@remaining) {
         my ($current, $next) = @$step;
-        atspi->wait_widget('table', $PAGE{$current}, 60);
+        atspi->assert_widget('table', $PAGE{$current}, 60);
         send_key 'ret';
         next unless defined $next;
-        atspi->wait_widget('table', $PAGE{$next}, 60);
+        atspi->assert_widget('table', $PAGE{$next}, 60);
     }
 
     # Choosing the theme ends the wizard, and the desktop session takes its
@@ -109,6 +110,7 @@ sub run {
     die 'the wizard did not close after the theme was chosen'
       unless defined wait_serial($closed, no_regex => 1, timeout => 150);
     select_console 'sut';
+    atspi->set_widget_scope(undef);
 }
 
 1;

@@ -24,7 +24,6 @@ sub run {
     # run pressed Install Now while the dialog was still fading in, the action
     # reported success, and the installer sat on the summary page until the
     # whole budget ran out.
-    wait_still_screen stilltime => 2, timeout => 30;
     atspi->activate_widget_until_gone($calamares::BUTTON_ROLES, \@CONFIRM, 60);
 
     # The finish page is the only one offering to restart, so waiting for that
@@ -36,7 +35,8 @@ sub run {
       unless $restart->{status} eq 'passed';
 
     calamares->upload_installation_log;
-    atspi->activate_widget('check box|checkbox', \@RESTART, 60);
+    atspi->activate_widget('check box|checkbox', \@RESTART, 60)
+      unless $restart->{widget}{checked};
     my $selected = atspi->wait_widget('check box|checkbox', \@RESTART, 30);
     die 'The installer did not accept restarting after the installation'
       unless $selected->{status} eq 'passed' && $selected->{widget}{checked};
@@ -47,17 +47,8 @@ sub run {
     eject_cd;
     calamares->click_action(\@calamares::DONE);
 
-    # Give the installer's own reboot room to happen, then reset the machine
-    # regardless of what it did. Nothing about this transition can be trusted:
-    # the reboot goes through a privileged helper and has been seen to arrive
-    # more than a minute after Done, rebooting from this console is impossible
-    # because the live user is unprivileged, and in some runs the display
-    # stopped updating altogether while the session kept running, so the screen
-    # says nothing either. The installation is finished and its target already
-    # unmounted here, which makes a reset the deterministic way to reach the
-    # installed system -- and reaching it is the point of the whole gate.
-    sleep 60;
-    power 'reset';
+    # The installer must perform its own restart. Resetting here would hide a
+    # broken user action. installed_boot waits for a new authenticated console.
     reset_consoles;
 }
 

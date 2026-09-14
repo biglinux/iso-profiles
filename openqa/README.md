@@ -1,139 +1,135 @@
-# BigLinux release gate
+# BigLinux — validação funcional e acessibilidade não visual
 
-Proves that the exact ISO GitHub Actions built can boot, install, reboot, log
-in and run its applications - in both firmware modes, without comparing
-pixels.
+O gate usa `isotovideo` diretamente, no container fixado por digest em
+`openqa-image.txt`. Não há servidor openQA nesse caminho. Os planos, máquinas,
+shards e limites de execução continuam definidos em `release-gate.yaml`.
 
-## One file and one script
+## Critério de aprovação
 
-`release-gate.yaml` is the whole definition. A *plan* is one isotovideo run: a
-schedule (the module sequence, in `main.pm`), a machine (the QEMU shape) and
-whatever that plan alone needs.
+Comparações de screenshots, coordenadas de mouse e espera por estabilização da
+imagem não são critérios de aprovação. Capturas e vídeo são apenas diagnóstico.
+Não existem needles ativas. `production/check-nonvisual.py` impede a reintrodução
+dessas APIs nos módulos de teste.
+
+Uma janela existente, um processo vivo ou uma limpeza forçada não certificam
+uma tarefa nem sua acessibilidade. Há duas camadas deliberadamente distintas:
+
+* **Varredura de aplicativos:** verifica abertura de janela vinculada ao processo
+  lançado e um contrato mínimo de semântica AT-SPI. É um smoke test, não uma
+  certificação funcional ou de leitor de tela. Programas explicitamente tratados
+  como comandos precisam de saída zero confirmada para esse contrato limitado.
+* **Percursos não visuais:** `tests/nonvisual_tasks.pm` executa tarefas concretas
+  por teclado em Kate, Konsole, Dolphin e Brave. Confirma efeitos funcionais e a
+  informação apresentada pelo Orca, em campos separados. Está nos schedules
+  `installer`, `release` e `release_uefi` e sua falha reprova o plano.
+
+Os antigos campos `functional_test` de `application-policy.yaml` ainda identificam
+aplicativos críticos para a varredura de abertura/fechamento; não significam que
+cada um ganhou um percurso funcional. Os quatro percursos implementados estão
+explicitamente nomeados em `nonvisual-contracts.json`.
+
+## Semântica e teclado
+
+Seletores aceitam PID, identificador acessível estável, janela, papel e nomes
+localizados. Correspondência ambígua reprova. O identificador de automação não
+substitui o nome compreensível para quem usa leitor de tela. O caminho do objeto
+AT-SPI é identidade apenas durante a execução, não um ID estável entre versões.
+
+A ativação usada pelos testes navega pelo teclado e observa o foco após cada
+tecla, com detecção de ciclos e limite de passos. Não usa `grab_focus` para
+contornar uma barreira de navegação. Controles compostos podem precisar de uma
+estratégia específica além de Tab e setas; essa limitação não deve ser escondida
+por clique programático. A operação Python de ação AT-SPI permanece separada
+para diagnóstico e não representa prova de alcance por teclado.
+
+Toda espera obrigatória deve ser verificada. Desaparecimento exige uma consulta
+completa que confirme ausência: erro no barramento, timeout, limite de nós ou
+árvore parcial resultam em **inconclusivo bloqueante**, nunca em sucesso. Para
+seleções, verificar `checked`/`selected`, não somente existência do controle.
+
+O harness não reinicia silenciosamente o barramento, não força X11, outro plugin
+de toolkit ou variáveis de acessibilidade na aplicação. A preparação de fixtures
+usa console; a ação avaliada usa a GUI. Postcondições em arquivos são observações,
+não uma implementação alternativa da tarefa.
+
+## Orca: captura real, capacidade verificada
+
+`data/orca_probe.py` inicia uma instância instrumentada do Orca com `--replace`
+na sessão do usuário e introspecta a API upstream `SetLogFileForTesting(s,s)->b`.
+A API só existe quando o Orca é iniciado com `ORCA_TEST_RPC_SECRET`; o segredo
+aleatório fica no ambiente desse processo, nunca nas variáveis do isotovideo.
+Não é instalada outra versão do Orca durante o teste e não é fabricada fala pela
+API `SpeakMessage`.
+
+A versão de Orca da ISO precisa oferecer essa capacidade. Ausência ou assinatura
+incompatível são inconclusivas e bloqueantes, com diagnóstico explícito. O
+adaptador não presume que um número de versão garanta a API. Ele consome apenas
+registros `kind=speech` após o marcador da ação, respeita interrupções e não
+aceita teclas ecoadas, histórico anterior ou linhas incompletas como resposta.
+
+Isso comprova conteúdo do **apresentador de fala instrumentado**, não som audível,
+entrega a hardware braille ou ativação do leitor pelo caminho nativo do usuário.
+As transcrições privadas não são publicadas como artefatos; o resultado estruturado
+usa somente fixtures de teste e fica separado dos testes de senha.
+
+## Executar
 
 ```bash
 openqa/production/run-plan.sh \
-  --plan live \
-  --iso output/biglinux_TESTING_2026-09-08_k618.iso \
-  --results /var/tmp/gate/live \
-  --password-file /run/user/1000/gate-password
+  --plan bios --iso /caminho/candidate.iso \
+  --results /var/tmp/gate/bios --password-file /run/user/1000/gate-password \
+  --build candidato --commit "$(git rev-parse HEAD)" \
+  --iso-sha256 "$(sha256sum /caminho/candidate.iso | cut -d' ' -f1)"
 ```
 
-The results directory *is* the isotovideo working directory: `testresults/`,
-`ulogs/`, `autoinst-log.txt`, `vars.json`, `video.ogv` and the guest disk all
-land there, owned by the invoking user. It needs `HDDSIZEGB` plus a fifth -
-48 GiB for the default 40 - or isotovideo refuses to start.
+UEFI também exige `--uefi-code` e `--uefi-vars`. KVM é obrigatório. O diretório
+precisa ter espaço para o disco virtual, conforme `run-plan.sh`.
 
-There is no openQA server anywhere in this path. isotovideo is the backend
-openQA drives; running it directly removes the database, the scheduler, the
-asset store and the HTTP hop between a test and its own results, and with them
-every failure this project ever had that was not about the ISO: a PostgreSQL
-index limit that rejected job creation outright, jobs whose results could not
-be copied out of a container, and a password that travelled as a job setting
-into an uploaded artifact.
+`isotovideo -e` aceita módulos `ok`/`softfail`; as medições de postura de segurança
+continuam não bloqueantes conforme a política anterior. Acessibilidade e tarefas
+não visuais obrigatórias não devem ser transformadas em `softfail` para liberar
+uma versão. O workflow atual executa cada plano uma vez; duas passagens seguidas
+exigem duas execuções completas, não são garantidas pela matriz atual.
 
-`-e` makes isotovideo's exit status the verdict: 0 when every module ended `ok`
-or `softfail`, 100 when no module ran, 101 when one failed.
+## Resultados e validação do próprio harness
 
-## What drives the tests
-
-Accessibility, through `lib/atspi.pm` and `data/atspi_probe.py`. A page is
-recognised by what it publishes - the accessible name of its table, the label
-of its button - so a theme, an icon set, a wallpaper or a translation cannot
-turn the gate red. Two needles had been recorded over the *wrong* language
-tile, which a green run could never have revealed: the live wizard orders its
-tiles by the boot-time locale suggestion, so a recorded click point is a coin
-toss between installing Portuguese and installing English.
-
-Three surfaces publish no accessibility tree, and each is a deliberate
-exception rather than an oversight:
-
-| Surface | Why | What happens if it breaks |
-|---|---|---|
-| GRUB | No accessibility of any kind | The first module times out, with the video recorded |
-| Plymouth | Same | Same |
-| SDDM greeter | Publishes no useful tree | `installed_login.pm` keeps a non-fatal `check_screen`; the greeter *process* and `loginctl` are the real condition |
-
-Nobody should "fix" these with a needle. The static checks in
-`.github/workflows/openqa-single-instance-experiment.yml` reject a new
-`assert_screen`, `assert_and_click` or `check_screen` anywhere but
-`installed_login.pm`, and warn when an active needle is older than half a
-year.
-
-The accessibility bus itself needs care, and this cost several days to
-understand. `at-spi-dbus-bus.service` is `PartOf=graphical-session.target` and
-nothing wants it, so the session that ends takes the bus with it and the
-session that starts does not bring it back. Worse, `at-spi-bus-launcher`
-unlinks `$XDG_RUNTIME_DIR/at-spi/bus` before binding its own: the launcher
-that D-Bus activates inside the live wizard's private session (`dbus-run-session`)
-replaces the session's socket and removes it when that bus ends, while the
-launcher on the real bus survives and keeps answering `GetAddress` with a path
-that no longer exists. So `reset_baseline` trusts the socket, never the
-answer, and restarts the launcher when the socket is gone - and
-`biglinux-livecd` does the same before handing over to the desktop, because
-otherwise every application in the session, Orca included, inherits a dead
-address.
-
-## Security is measured, not enforced
-
-`tests/installed_security.pm` reports the installed system's posture as soft
-failures with the measured value: whether anything is actually filtering
-(`ufw status`, the `INPUT` policy, the nftables ruleset - not merely whether a
-unit is enabled), uncommented `NOPASSWD` rules, listening ports, `pacman.conf`
-signature levels and mirror schemes, weakened `sysctl` values, SUID files
-outside a known list, pending updates and failed units. Turning any item into
-a blocker is one line, when that is the decision.
-
-## What a plan costs
-
-Measured on this project's own machine (Ryzen, KVM, 2 vCPU and 4 GiB per
-guest), against `biglinux_TESTING_2026-09-08_k618.iso`:
-
-| Plan | Modules | Wall clock | CI bound |
-|---|---|---|---|
-| live | 1 | 47-65 s | 30 min |
-| bios | 12 | see below | 150 min |
-| uefi | 12 | see below | 150 min |
-| applications-0..3 | 1 each | see below | 90 min each |
-
-The CI bound is what a job may hold a runner for before Actions kills it, not
-an estimate: `run-plan.sh` gets ten minutes less than the job, so an overrun
-is still collected and reported. A GitHub Free account runs 20 jobs at once,
-so six plans in parallel are free of contention with themselves but not with
-anything else the account is doing.
-
-A run cannot share the machine with an ISO build: two local runs were killed
-by the out-of-memory reaper that way.
-
-## Approval
-
-The same ISO passes twice in a row, without changing code, on `bios` and
-`uefi`, and the four application shards aggregate with no missing entry. The
-aggregator rejects incomplete shards and provenance mismatches, so a shard
-that silently did not run is a failure rather than a smaller number.
-
-## When it breaks
-
-Read `testresults/result-<module>.json` first: `result` and `execution_time`
-per module. `autoinst-log.txt` holds isotovideo's own view, including the QEMU
-command line - `run-plan.sh` refuses to accept a run whose archived command
-line does not contain `-enable-kvm`, because `QEMU_NO_KVM=0` does not
-guarantee it: os-autoinst adds the flag only when `/dev/kvm` is readable
-*inside* the container, and silently runs TCG otherwise, which would make
-every time above a fiction. `virtio_console.log` is what the guest actually
-printed, which is where a missing accessibility bus or a mistyped filter shows
-up.
-
-## Reading a page's accessibility tree
-
-When a page has to be anchored on something, ask the guest what it publishes.
-From a console inside the running guest:
+Os resultados ficam em `testresults/`, `ulogs/`, `autoinst-log.txt` e
+`virtio_console.log`. `nonvisual-contracts.json` distingue efeito funcional,
+percurso por teclado, saída do Orca e limpeza. HTML/Markdown exibem essa camada
+separadamente. O agregador exige proveniência não vazia, consistência de todos os
+shards e evidência semântica; modo `process-alive` não é aceitável como aprovação
+GUI. O commit informado é comparado ao commit esperado pelo workflow.
 
 ```bash
-python3 /tmp/openqa-atspi-probe.py dump-widgets --timeout 30
+python3 -m unittest discover -s data -p 'test_*.py'
+python3 -m unittest discover -s openqa/data -p 'test_*.py'
+python3 -m unittest discover -s openqa/report -p 'test_*.py'
+python3 openqa/production/check-nonvisual.py
+prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
 ```
 
-It answers with every named widget - role, name, position, state - and says
-whether the walk was truncated. This is how the wizard's pages came to be
-identified by the accessible name of their table. It is not available through
-`atspi.pm`: a whole tree does not fit through a serial marker, and no test
-needs one.
+`openqa/t/lib` contém doubles apenas para testes unitários de contrato. Nunca
+adicionar esse diretório ao ambiente do isotovideo: esses testes não simulam o
+backend, QEMU ou o desktop. Os testes negativos verificam que o harness recusa
+aprovações indevidas; não substituem a execução da ISO.
+
+## Escopo ainda não certificado
+
+Esta implementação não certifica o sistema inteiro. Permanecem necessários os
+percursos de ativação nativa do leitor, assistente live e instalação com anúncios
+em todas as etapas, greeter SDDM, desbloqueio, autorização, recuperação de erros,
+saída audível/braille e demais aplicativos críticos. O login atual continua sendo
+uma verificação de autenticação/sessão, não uma aprovação do greeter com Orca.
+
+Não há imagens diferentes para cada tema. Os mesmos contratos semânticos devem
+ser reutilizados. A enumeração automática de todos os temas e a seleção de cada
+um no assistente ainda precisam ser implementadas/validadas na ISO; não existe
+alegação de cobertura de todos os temas nesta revisão. Mudança de cor não reprova;
+perda de nome, estado ou navegação acessível é uma regressão real.
+
+Antes de integrar, executar a ISO em BIOS/UEFI e ajustar seletores somente com
+base na árvore e no percurso reais. Não enfraquecer condições para esconder uma
+sonda incompatível. Avaliações com pessoas cegas continuam necessárias para
+compreensão, descoberta, conforto e tarefas não cobertas.
+
+Referências e detalhes: `../docs/openqa-nonvisual-implementation.md`.

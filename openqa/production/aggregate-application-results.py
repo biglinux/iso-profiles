@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import html
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -179,12 +180,15 @@ def validate_policy(
 
 
 def validate_shards(
-    metrics_files: list[Path], expected_count: int, policy: dict[str, Any]
+    metrics_files: list[Path], expected_count: int, policy: dict[str, Any],
+    expected_commit: str | None = None,
 ) -> dict[str, Any]:
     if len(metrics_files) != expected_count:
         raise ValueError(
             f"expected {expected_count} application metric files, found {len(metrics_files)}"
         )
+    if expected_count <= 0:
+        raise ValueError("expected shard count must be positive")
     payloads = [read_json_gzip(path) for path in metrics_files]
     coverages = [payload.get("coverage") for payload in payloads]
     if any(not isinstance(coverage, dict) for coverage in coverages):
@@ -205,7 +209,20 @@ def validate_shards(
             if coverage.get(key) != first.get(key):
                 raise ValueError(f"shard metadata differs for {key}")
 
+    for coverage in coverages:
+        assert isinstance(coverage, dict)
+        for key in ("iso_filename", "iso_sha256", "build_id", "commit_sha"):
+            require_string(coverage, key)
+        if not re.fullmatch(r"[0-9a-f]{64}", coverage["iso_sha256"]):
+            raise ValueError("invalid ISO SHA-256 provenance")
+        if not re.fullmatch(r"[0-9a-f]{40}", coverage["commit_sha"]):
+            raise ValueError("invalid commit SHA provenance")
+        if expected_commit is not None and coverage["commit_sha"] != expected_commit:
+            raise ValueError("metrics do not belong to the expected commit")
+        validate_inventory(coverage, expected_count)
     inventory = validate_inventory(first, expected_count)
+    if any(item["classification"] == "invalid" for item in inventory.values()):
+        raise ValueError("invalid desktop entries block application coverage")
     for coverage in coverages[1:]:
         assert isinstance(coverage, dict)
         if coverage.get("inventory") != first.get("inventory"):
@@ -266,6 +283,15 @@ def validate_shards(
                 raise ValueError(f"application result classification is invalid: {desktop_id}")
             if item.get("status") not in {"passed", "failed"}:
                 raise ValueError(f"application result has invalid status: {desktop_id}")
+            if item.get("status") == "passed":
+                mode = item.get("validation_mode")
+                if mode == "process-start":
+                    if (inventory_item.get("execution_contract") != "process"
+                            or item.get("launch_exit_code") != 0):
+                        raise ValueError(f"process-only approval lacks an explicit contract: {desktop_id}")
+                elif (mode != "atspi-open" or item.get("accessible_window") is not True
+                      or item.get("accessibility_status") != "semantics-only"):
+                    raise ValueError(f"graphical approval lacks accessible evidence: {desktop_id}")
             if desktop_id in seen_launchables:
                 raise ValueError(
                     f"launchable desktop ID appears in multiple shards: {desktop_id}"
@@ -303,6 +329,7 @@ def validate_shards(
     critical_failed = sorted(set(critical_ids) & set(failed_ids))
     summary: dict[str, Any] = {
         "status": "failed" if failed_ids else "passed",
+        "scope": "application startup and accessible semantics; not whole-desktop certification",
         "metadata": {key: first.get(key) for key in metadata_keys},
         "coverage": {
             "inventory_total": len(inventory),
@@ -410,6 +437,7 @@ def main() -> int:
     parser.add_argument("--policy-json", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-shards", type=int, default=4)
+    parser.add_argument("--expected-commit")
     args = parser.parse_args()
     try:
         if args.expected_shards <= 0:
@@ -418,7 +446,7 @@ def main() -> int:
         if not isinstance(policy, dict):
             raise ValueError("policy JSON is not an object")
         metric_files = sorted(args.artifacts_root.rglob("application-metrics.json.gz"))
-        summary = validate_shards(metric_files, args.expected_shards, policy)
+        summary = validate_shards(metric_files, args.expected_shards, policy, args.expected_commit)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         summary = {
             "status": "failed",

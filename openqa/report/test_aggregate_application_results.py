@@ -80,6 +80,9 @@ class AggregateApplicationResultsTest(unittest.TestCase):
                         {
                             "desktop_id": desktop_id,
                             "classification": "launchable",
+                            "validation_mode": "atspi-open",
+                            "accessible_window": True,
+                            "accessibility_status": "semantics-only",
                             "status": status_by_id.get(desktop_id, "passed"),
                         }
                     )
@@ -137,6 +140,48 @@ class AggregateApplicationResultsTest(unittest.TestCase):
                 AGGREGATOR.validate_shards(
                     sorted(root.rglob("application-metrics.json.gz")), 4, self.policy
                 )
+
+    def _rewrite_payloads(self, root, transform):
+        for path in root.rglob("application-metrics.json.gz"):
+            payload = AGGREGATOR.read_json_gzip(path)
+            transform(payload)
+            with gzip.open(path, "wt", encoding="utf-8") as stream:
+                json.dump(payload, stream)
+
+    def test_weak_visual_or_process_modes_cannot_pass_as_gui(self):
+        for mode in ("process-alive", "x11-open", "delegated-open", "process-start"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._write_metrics(root)
+                self._rewrite_payloads(root, lambda payload: [item.update(validation_mode=mode)
+                    for item in payload["applications"]])
+                with self.assertRaises(ValueError):
+                    AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+
+    def test_empty_provenance_cannot_pass_by_agreement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            self._rewrite_payloads(root, lambda payload: payload["coverage"].update(commit_sha=""))
+            with self.assertRaises(ValueError):
+                AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+
+    def test_wrong_expected_commit_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            with self.assertRaises(ValueError):
+                AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy,
+                                          expected_commit="d" * 40)
+
+    def test_accessible_window_without_semantic_evidence_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            self._rewrite_payloads(root, lambda payload: [item.pop("accessibility_status", None)
+                for item in payload["applications"]])
+            with self.assertRaises(ValueError):
+                AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
 
     def test_shard_assignment_is_deterministic_for_unicode(self):
         desktop_id = "Aplicação/日本語.desktop"

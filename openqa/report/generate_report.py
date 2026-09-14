@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from nonvisual_report import load_nonvisual, render_nonvisual_html, render_nonvisual_markdown
 import gzip
 import html
 import json
@@ -240,8 +241,8 @@ def render_markdown(
     lines = [
         "## Resultado",
         "",
-        f"- Módulos: **{len(modules) - len(failed)} de {len(modules)}** passaram",
-        f"- Aplicativos: **{len(applications) - len(broken)} de {len(applications)}** passaram",
+        f"- Módulos: **{sum(m.result in {'ok', 'passed'} for m in modules)} de {len(modules)}** passaram",
+        f"- Aplicativos: **{sum(a.get('status') == 'passed' for a in applications)} de {len(applications)}** passaram",
     ]
     if weak:
         lines.append(
@@ -260,8 +261,10 @@ def render_markdown(
     if weak:
         lines += ["", "### Provados sem inspecionar a janela", ""]
         lines += [f"- `{app.get('desktop_id')}`" for app in weak]
-    if not failed and not broken:
-        lines += ["", "Nenhuma falha."]
+    if not modules and not applications:
+        lines += ["", "Sem resultados; não há aprovação confirmada."]
+    elif not failed and not broken:
+        lines += ["", "Nenhuma falha registrada; verificar itens inconclusivos e o escopo."]
     return "\n".join(lines) + "\n"
 
 
@@ -394,7 +397,7 @@ def render_report(
   </section>
 
   <section aria-labelledby="apps-title">
-    <div class="section-head"><h2 id="apps-title">Aplicativos</h2><p>Todos os Desktop Entries descobertos, confirmando a abertura por AT-SPI quando possível. Quando o aplicativo não expõe AT-SPI, é usado fallback X11 por PID; entradas de terminal ou daemon são validadas pelo início do processo.</p></div>
+    <div class="section-head"><h2 id="apps-title">Aplicativos</h2><p>Verificação de abertura e semântica AT-SPI dos aplicativos inventariados. Ausência de janela acessível não é convertida em aprovação por X11 ou processo vivo. Percursos funcionais por teclado e Orca são apresentados separadamente.</p></div>
     <div class="table-wrap"><table><thead><tr><th scope="col">Aplicativo</th><th scope="col">Resultado</th><th scope="col">Abertura</th><th scope="col">RSS pico</th><th scope="col">PSS pico</th><th scope="col">Processos pico</th><th scope="col">Mem. disponível aberto</th><th scope="col">Validação</th><th scope="col">Evento</th><th scope="col">Motivo</th></tr></thead><tbody>{application_rows}</tbody></table></div>
   </section>
 
@@ -416,7 +419,7 @@ def render_report(
 
   <section aria-labelledby="method-title">
     <div class="section-head"><h2 id="method-title">Como interpretar</h2></div>
-    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. Cada aplicativo é aprovado quando o comando do Desktop Entry inicia e expõe uma janela AT-SPI utilizável. Se isso não for possível, o teste procura uma janela X11 pertencente ao processo iniciado; entradas sem janela são aprovadas somente quando o processo inicia. RSS e PSS são os picos agregados do processo e dos descendentes; PSS evita contar repetidamente bibliotecas compartilhadas. Screenshots podem ser preservadas como diagnóstico de falha, mas nunca são usadas como prova de que um programa abriu.</div>
+    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. A varredura de aplicativos verifica somente abertura e semântica AT-SPI. Processo vivo e janela X11 não substituem acessibilidade. Os percursos de teclado e a saída do Orca têm evidência separada em nonvisual-contracts.json; abertura isolada não certifica funcionamento nem acessibilidade completa. RSS e PSS são os picos agregados do processo e dos descendentes; PSS evita contar repetidamente bibliotecas compartilhadas. Screenshots podem ser preservadas como diagnóstico de falha, mas nunca são usadas como prova de que um programa abriu.</div>
   </section>
   <footer>Relatório estático e autocontido · nenhum dado é enviado para serviços externos</footer>
 </main>
@@ -445,14 +448,16 @@ def main() -> int:
             modules.append(replace(result, name=f"{label} / {result.name}"))
     modules.sort(key=lambda item: item.name)
     system, applications = load_application_metrics_from_jobs(jobs)
+    nonvisual = load_nonvisual(args.results_root)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
-        render_report(variables, modules, system, applications), encoding="utf-8"
+        render_report(variables, modules, system, applications).replace(
+            "</main>", render_nonvisual_html(nonvisual) + "</main>"), encoding="utf-8"
     )
     if args.markdown_output:
         args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
         args.markdown_output.write_text(
-            render_markdown(modules, applications), encoding="utf-8"
+            render_markdown(modules, applications) + render_nonvisual_markdown(nonvisual), encoding="utf-8"
         )
     return 0
 

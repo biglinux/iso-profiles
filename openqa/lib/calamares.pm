@@ -69,7 +69,8 @@ sub page_anchor {
 sub assert_page {
     my ($class, $page, $timeout) = @_;
     my ($role, $labels) = $class->page_anchor($page);
-    my $found = atspi->wait_widget($role, $labels, $timeout // 60);
+    my $found = atspi->assert_widget($role, $labels, $timeout // 60, pid => undef);
+    atspi->set_widget_scope($found->{widget}{pid});
     die "the installer did not show the '$page' page: "
       . ($found->{error} // 'unknown reason')
       unless ref $found eq 'HASH' && $found->{status} eq 'passed';

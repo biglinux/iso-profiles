@@ -102,31 +102,6 @@ sub _entry_timeout {
     return $default;
 }
 
-sub _x11_fallback_open {
-    my ($launch_pid, $timeout) = @_;
-    return eval {
-        atspi->x11_wait_open($launch_pid, '', $timeout);
-    };
-}
-
-sub _uses_x11_fallback {
-    my ($entry) = @_;
-    return !_entry_value($entry, 'terminal', JSON::PP::false);
-}
-
-# Commands that are handlers by definition: they ask another program to open
-# something and the window belongs to that program, never to the process tree
-# under them. This is a category, not a list of misbehaving applications.
-sub _uses_delegating_launcher {
-    my ($entry) = @_;
-    my $binary = lc(_entry_value($entry, 'launch_binary', ''));
-    my %delegating = map { $_ => 1 } qw(
-      xdg-open gio kde-open kde-open5 kioclient kioclient5 gtk-launch exo-open
-      plasma-open-settings flatpak
-    );
-    return $delegating{$binary} ? 1 : 0;
-}
-
 sub _uses_process_only {
     my ($entry) = @_;
     my $launch_binary = lc(_entry_value($entry, 'launch_binary', ''));
@@ -237,6 +212,7 @@ sub _build_application_context {
             canonical => $policy->{aliases}{$desktop_id},
             exclusion_reason => $policy->{excluded}{$desktop_id},
             critical_functional_test => $policy->{critical}{$desktop_id},
+            execution_contract => (_entry_value($entry, 'terminal', 0) || _uses_process_only($entry)) ? 'process' : 'graphical',
             assigned_shard => _shard_for($desktop_id, $shard_count),
         };
     }
@@ -307,48 +283,9 @@ sub _test_entry {
         _record_info "$name / launched",
           sprintf('pid=%s; method=%s', $launch_pid // 'unknown', $launch_method // 'unknown');
         my $validation_mode = 'atspi-open';
-        if ($opened->{status} ne 'passed' && _uses_x11_fallback($entry)) {
-            my $x11_opened = _x11_fallback_open($launch_pid, $timeout);
-            if (ref $x11_opened eq 'HASH' && $x11_opened->{status} eq 'passed') {
-                $opened = $x11_opened;
-                $validation_mode = 'x11-open';
-                $metric->{fallback_reason} = 'AT-SPI did not expose a window; PID-scoped X11 window found';
-            }
-        }
-        if ($opened->{status} ne 'passed') {
-            # A launcher that hands the work to another process -- xdg-open, a
-            # settings opener, a D-Bus activation -- exits successfully and the
-            # window belongs to whoever it asked. Its own success plus a window
-            # that was not there before is the evidence available, so identity
-            # by provenance cannot be required of these entries.
-            my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
-            if (_uses_delegating_launcher($entry)
-                || (defined $exit_code && $exit_code == 0)) {
-                my $delegated = eval { atspi->result('wait-open', $timeout, '--name', '') };
-                $delegated = eval { atspi->result('x11-wait-open', $timeout, '--name', '') }
-                  unless ref $delegated eq 'HASH' && $delegated->{status} eq 'passed';
-                if (ref $delegated eq 'HASH' && $delegated->{status} eq 'passed') {
-                    $opened = $delegated;
-                    $validation_mode = 'delegated-open';
-                }
-            }
-        }
-        if ($opened->{status} ne 'passed' && !$metric->{terminal}) {
-            # Last resort, and recorded as such. KWin leaves
-            # _NET_CLIENT_LIST_STACKING empty in this Wayland session, so an
-            # application drawing through XWayland without accessibility --
-            # lstopo does exactly that -- has a window nobody here can see.
-            # Require it to still be alive after the whole search: a program
-            # that started, is the program the entry names and is still running
-            # is what remains provable, while one that died on the way is not.
-            my $alive = atspi->run_command("test -d /proc/$launch_pid", 10);
-            if (defined $alive && $alive == 0) {
-                $validation_mode = 'process-alive';
-                $metric->{fallback_reason} =
-                  'no window observable in this session; process still running';
-                $opened = {status => 'passed', pid => $launch_pid, window => undef};
-            }
-        }
+        # A graphical application must expose its own accessible window.
+        # Neither X11 visibility, another application's window, nor a live PID
+        # is evidence that a person can use it without sight.
         $metric->{launch_method} = $launch_method;
         $metric->{launch_pid} = $launch_pid;
         $metric->{launch_timeout_seconds} = $timeout + 0;
@@ -376,22 +313,22 @@ sub _test_entry {
           : 'process exited before memory sampling';
         _record_info "$name / " . ($opened->{status} eq 'passed' ? 'opened' : 'started'),
           sprintf('%s; peak RSS=%s MiB; peak PSS=%s MiB',
-            $opened->{status} eq 'passed' ? 'AT-SPI window detected' : 'process started without accessible window',
+            $opened->{status} eq 'passed' ? 'Accessible window observed (not functional certification)' : 'process started without accessible window',
             $metric->{rss_mib_peak} // 'not collected',
             $metric->{pss_mib_peak} // 'not collected');
 
         if ($opened->{status} ne 'passed') {
-            # Terminal and daemon-style entries have no window to observe. The
-            # supervisor records the wait status, so a command that already died
-            # from a crash signal must not pass on PID evidence alone. Any other
-            # exit is accepted: a short-lived console tool exiting non-zero is
-            # not a defect this gate should report.
+            # A declared process-only entry requires a confirmed successful
+            # exit. It never earns a keyboard or screen-reader certification.
             if ($metric->{terminal} || _uses_process_only($entry)) {
                 my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
-                die "application crashed on start (wait status $exit_code)"
-                  if atspi::is_crash_exit_code($exit_code);
+                die "process-only entry did not confirm successful exit"
+                  if !defined $exit_code || $exit_code != 0;
                 $metric->{launch_exit_code} = $exit_code;
                 $metric->{validation_mode} = 'process-start';
+                $metric->{accessibility_status} = 'not-applicable';
+                $metric->{functional_status} = 'exit-zero';
+                $metric->{screen_reader_status} = 'not-applicable';
                 $metric->{interaction} = 'process.started';
                 $metric->{interaction_status} = 'passed';
                 $metric->{interaction_result} = JSON::PP::true;
@@ -403,6 +340,12 @@ sub _test_entry {
         }
 
         if (!$process_started) {
+            my $semantics = atspi->result('audit-window', 15, '--pid', $window_pid);
+            die 'accessible controls were not validated: ' . ($semantics->{error} // '')
+              unless ($semantics->{status} // '') eq 'passed' && $semantics->{complete};
+            $metric->{accessibility_status} = 'semantics-only';
+            $metric->{functional_status} = 'launch-only';
+            $metric->{screen_reader_status} = 'not-tested';
             $metric->{validation_mode} = $validation_mode;
             $metric->{interaction} = 'application.opened';
             $metric->{interaction_status} = 'passed';
@@ -413,7 +356,6 @@ sub _test_entry {
                 $metric->{accessible_window_name} // 'unknown',
                 $window_pid // 'unknown',
                 $validation_mode);
-            wait_still_screen stilltime => 1, timeout => 5;
             save_screenshot;
             $metric->{open_screenshot} = JSON::PP::true;
         }
