@@ -18,12 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
       - name: Apply the immutable, locally tested patch
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = ed5a334101bb4460904710d63cf3eb8a68a6c717
+          test "$(git rev-parse HEAD~2)" = ed5a334101bb4460904710d63cf3eb8a68a6c717
           python3 - <<'PY'
           import base64, hashlib, lzma, os, pathlib, subprocess
           encoded = b''.join(pathlib.Path(f'.openqa-review-{i}').read_bytes() for i in range(4))
@@ -50,7 +50,7 @@ jobs:
             git diff --cached --check
           } 2>&1 | tee "$RUNNER_TEMP/nonvisual-validation.log"
           test "$(git write-tree)" = d06f2cd68f21630d7bb8169911f878045e37d766
-      - name: Publish tested Git objects without moving any branch
+      - name: Upload content blobs for authorized connector publication
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -62,19 +62,6 @@ jobs:
           parent = git('rev-parse', 'HEAD').decode().strip()
           expected = 'd06f2cd68f21630d7bb8169911f878045e37d766'
           assert git('write-tree').decode().strip() == expected
-          entries = []
-          for name in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
-              if not name:
-                  continue
-              name = name.decode('utf-8')
-              index = git('ls-files', '--stage', '--', name).decode().strip()
-              if not index:
-                  entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': None})
-                  continue
-              mode = index.split()[0]
-              assert mode in ('100644', '100755')
-              content = git('show', ':' + name).decode('utf-8')
-              entries.append({'path': name, 'mode': mode, 'type': 'blob', 'content': content})
           def post(endpoint, payload):
               request = urllib.request.Request(
                   'https://api.github.com/repos/biglinux/iso-profiles/git/' + endpoint,
@@ -84,12 +71,24 @@ jobs:
                            'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28'})
               with urllib.request.urlopen(request, timeout=60) as response:
                   return json.load(response)
-          tree = post('trees', {'base_tree': git('rev-parse', 'HEAD^{tree}').decode().strip(), 'tree': entries})
-          assert tree['sha'] == expected, tree['sha']
-          commit = post('commits', {
-              'message': 'test(openqa): enforce nonvisual contracts and add Orca-backed user tasks\n\nNo appearance matching, no process-alive approval, no silent accessibility repair.\nSeparate function, keyboard, reader, and infrastructure evidence.\nUnit/contract checks passed; ISO and human accessibility validation remain required.',
-              'tree': expected, 'parents': [parent]})
-          manifest = {'commit_sha': commit['sha'], 'tree_sha': expected, 'parent_sha': parent,
+          entries = []
+          for raw in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
+              if not raw:
+                  continue
+              name = raw.decode('utf-8')
+              index = git('ls-files', '--stage', '--', name).decode().strip()
+              if not index:
+                  entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': None})
+                  continue
+              mode, local_sha, _ = index.split(maxsplit=2)
+              assert mode in ('100644', '100755')
+              content = git('show', ':' + name).decode('utf-8')
+              blob = post('blobs', {'content': content, 'encoding': 'utf-8'})
+              assert blob['sha'] == local_sha
+              entries.append({'path': name, 'mode': mode, 'type': 'blob', 'sha': blob['sha']})
+          manifest = {'tree_sha': expected, 'parent_sha': parent,
+                      'base_tree_sha': git('rev-parse', 'HEAD^{tree}').decode().strip(),
+                      'tree_elements': entries,
                       'patch_sha256': '91976bff7ed70d3b0dc5410c15b6bd3a8ebb4ccacbac73c67f5c5f65b5ef00c3',
                       'regressions': 'passed; see log for dependency-based skips',
                       'iso_executed': False, 'branch_moved': False}
