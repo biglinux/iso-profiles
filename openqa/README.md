@@ -152,3 +152,11 @@ sonda incompatível. Avaliações com pessoas cegas continuam necessárias para
 compreensão, descoberta, conforto e tarefas não cobertas.
 
 Referências e detalhes: `../docs/openqa-nonvisual-implementation.md`.
+
+## Relatório em sucesso ou falha
+
+Cada execução publica `RESULTADO.md`, `RESULTADO.json` e HTML; o consolidado
+publica também PDF e o resumo do Actions, mesmo quando os testes falham ou não
+chegam a iniciar. O executor local grava seus relatórios em `<results>/report/`.
+Falha no renderizador mantém um relatório resumido e não permite aprovação
+silenciosa. Consulte [contrato de publicação e limites](../docs/openqa-reports-always.md).

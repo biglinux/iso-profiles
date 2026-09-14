@@ -82,6 +82,31 @@ while (($# > 0)); do
 done
 
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# Finalize locally too, not just when called by GitHub Actions. Preserve the
+# executor's original failure; a reporting failure only changes a successful run.
+phase=preflight
+status=
+finish_report() {
+    local result=$? report_status=success
+    trap - EXIT
+    ((result == 0)) || report_status=failure
+    if [[ -n "$results" ]]; then
+        REPORT_NAME="$plan" REPORT_STATUS="$report_status" \
+        ISO_FILENAME="$(basename -- "$iso")" OPENQA_BUILD="$build" GITHUB_SHA="$commit" \
+        REPORT_RUNNER_EXIT_CODE="$result" REPORT_ISOTOVIDEO_EXIT_CODE="$status" \
+        REPORT_STEPS_JSON="{\"$phase\":{\"outcome\":\"$report_status\"}}" \
+        python3 "$repository/openqa/report/finalize_report.py" \
+            --results-root "$results" --output-dir "$results/report" || {
+                echo 'run-plan.sh: detailed report failed; inspect the fallback report' >&2
+                ((result != 0)) || result=1
+            }
+    fi
+    exit "$result"
+}
+trap finish_report EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 gate_file="$repository/openqa/release-gate.yaml"
 image=${image:-$(tr -d '[:space:]' <"$repository/openqa/openqa-image.txt")}
 
@@ -227,12 +252,14 @@ printf 'Running plan %s against %s\n' "$plan" "$iso_name"
 # cannot hold a CI runner for six hours.
 # isotovideo logs to standard output; the file both the report and the KVM
 # check read is written by openQA's worker, which is not here.
+phase=isotovideo
 set +e
 timeout --kill-after=60 "$timeout_seconds" \
     docker "${docker_arguments[@]}" "$image" "${isotovideo_arguments[@]}" \
     2>&1 | tee "$results/autoinst-log.txt"
 status=${PIPESTATUS[0]}
 set -e
+phase=backend-verification
 
 if ((status == 124 || status == 137)); then
     # SIGKILL reaches the docker client, which merely detaches: the container

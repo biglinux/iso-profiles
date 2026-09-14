@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from report_outcome import module_outcome, read_json, workdirs, summarize, LABELS
 from nonvisual_report import load_nonvisual, render_nonvisual_html, render_nonvisual_markdown
 import gzip
 import html
@@ -18,7 +19,8 @@ RESULT_PRIORITY = {
     "fail": 4,
     "failed": 4,
     "softfail": 3,
-    "unknown": 2,
+    "unknown": 3.5,
+    "skipped": 0,
     "ok": 1,
     "passed": 1,
 }
@@ -43,15 +45,7 @@ class ModuleResult:
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    try:
-        if path.suffix == ".gz":
-            with gzip.open(path, "rt", encoding="utf-8") as stream:
-                value = json.load(stream)
-        else:
-            value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    return read_json(path)
 
 
 def module_result(path: Path, runtime_seconds: float | None = None) -> ModuleResult:
@@ -71,9 +65,11 @@ def module_result(path: Path, runtime_seconds: float | None = None) -> ModuleRes
         if isinstance(detail.get("screenshot"), str):
             screenshots += 1
 
-    result = max(
-        results, key=lambda value: RESULT_PRIORITY.get(value, 2), default="unknown"
-    )
+    result = module_outcome(payload)
+    if runtime_seconds is None:
+        value = payload.get("execution_time")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            runtime_seconds = value
     return ModuleResult(
         name=path.stem.removeprefix("result-"),
         result=result,
@@ -112,19 +108,7 @@ def find_biglinux_jobs(results_root: Path) -> list[tuple[Path, dict[str, Any]]]:
     A working directory holds vars.json at its root and the module results in
     testresults/; the pair is what identifies one plan's run.
     """
-    candidates: list[tuple[Path, dict[str, Any]]] = []
-    for vars_path in results_root.rglob("vars.json"):
-        variables = load_json(vars_path)
-        if variables.get("DISTRI") == "biglinux":
-            candidates.append((vars_path.parent, variables))
-    return sorted(
-        candidates,
-        key=lambda item: (
-            1 if item[1].get("UEFI") else 0,
-            str(item[1].get("BUILD") or item[1].get("TEST") or item[0].name),
-            str(item[0]),
-        ),
-    )
+    return [(directory, load_json(directory / "vars.json")) for directory in workdirs(results_root)]
 
 
 def load_application_metrics(
@@ -168,7 +152,7 @@ def load_application_metrics_from_jobs(
         if job_system:
             system = job_system
         label = variables.get("BUILD") or variables.get("TEST") or job.name
-        firmware = variables.get("UEFI") and "UEFI" or "BIOS"
+        firmware = "UEFI" if str(variables.get("UEFI")) == "1" else "BIOS"
         for application in job_applications:
             applications.append({"job": label, "firmware": firmware, **application})
     if len(jobs) > 1:
@@ -283,10 +267,12 @@ def render_report(
     applications: list[dict[str, Any]],
 ) -> str:
     overall = max(
-        (module.result for module in modules),
+        ([module.result for module in modules]
+         + [str(app.get("status", "unknown")) for app in applications if app.get("status") != "skipped"]),
         key=lambda value: RESULT_PRIORITY.get(value, 2),
         default="unknown",
     )
+    overall = variables.get("REPORT_OVERALL", overall)
     passed = sum(module.result in {"ok", "passed"} for module in modules)
     failed = sum(module.result in {"fail", "failed"} for module in modules)
     total_duration = sum(module.duration_seconds or 0 for module in modules)
@@ -389,7 +375,7 @@ def render_report(
   <header>
     <p class="eyebrow">BigLinux · validação automatizada</p>
     <h1>{esc(product or "BigLinux")}</h1>
-    <p>Build {esc(variables.get("BUILD", "não identificado"))} · relatório gerado em {generated_at}</p>
+    <p>Build {esc(variables.get("BIGLINUX_OPENQA_BUILD") or variables.get("BUILD", "não identificado"))} · relatório gerado em {generated_at}</p>
   </header>
 
   <div class="summary" aria-label="Resumo da execução">
@@ -436,37 +422,50 @@ def render_report(
 """
 
 
+def build(results_root: Path, output: Path, markdown_output: Path | None = None,
+          summary: dict[str, Any] | None = None) -> None:
+    summary = summary or summarize(results_root)
+    jobs = find_biglinux_jobs(results_root)
+    variables = dict(jobs[-1][1]) if jobs else {}
+    context = summary.get("context", {})
+    variables.setdefault("ISO", context.get("iso", "não identificada"))
+    variables.setdefault("BUILD", context.get("build", "não identificado"))
+    variables["REPORT_OVERALL"] = summary["result"]
+    modules: list[ModuleResult] = []
+    for job_dir, job_variables in jobs:
+        runtimes = load_module_runtimes(job_dir)
+        label = job_variables.get("TEST") or job_dir.name
+        for path in (job_dir / "testresults").glob("result-*.json"):
+            result = module_result(path, runtimes.get(path.stem.removeprefix("result-")))
+            modules.append(replace(result, name=f"{label} / {result.name}"))
+    modules.sort(key=lambda item: item.name)
+    system, applications = load_application_metrics_from_jobs(jobs)
+    nonvisual = load_nonvisual(results_root)
+    problems = summary.get("problems", [])
+    diagnostics = ("<section aria-labelledby='execution-title'><div class='section-head'>"
+                   "<h2 id='execution-title'>Execução e resultados ausentes</h2></div><ul>"
+                   + "".join("<li>" + esc(p) + "</li>" for p in problems)
+                   + "</ul></section>") if problems else ""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        render_report(variables, modules, system, applications).replace(
+            "</main>", diagnostics + render_nonvisual_html(nonvisual) + "</main>"), encoding="utf-8")
+    if markdown_output:
+        markdown_output.parent.mkdir(parents=True, exist_ok=True)
+        markdown_output.write_text(
+            "# openQA — " + LABELS[summary["result"]] + "\n\n"
+            + render_markdown(modules, applications) + render_nonvisual_markdown(nonvisual)
+            + ("\n### Execução e resultados ausentes\n\n" + "\n".join("- " + p for p in problems) + "\n" if problems else ""),
+            encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--markdown-output", type=Path)
     args = parser.parse_args()
-
-    jobs = find_biglinux_jobs(args.results_root)
-    variables = jobs[-1][1] if jobs else {}
-    modules: list[ModuleResult] = []
-    for job_dir, job_variables in jobs:
-        runtimes = load_module_runtimes(job_dir)
-        label = job_variables.get("BUILD") or job_variables.get("TEST") or job_dir.name
-        for path in (job_dir / "testresults").glob("result-*.json"):
-            result = module_result(
-                path, runtimes.get(path.stem.removeprefix("result-"))
-            )
-            modules.append(replace(result, name=f"{label} / {result.name}"))
-    modules.sort(key=lambda item: item.name)
-    system, applications = load_application_metrics_from_jobs(jobs)
-    nonvisual = load_nonvisual(args.results_root)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        render_report(variables, modules, system, applications).replace(
-            "</main>", render_nonvisual_html(nonvisual) + "</main>"), encoding="utf-8"
-    )
-    if args.markdown_output:
-        args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
-        args.markdown_output.write_text(
-            render_markdown(modules, applications) + render_nonvisual_markdown(nonvisual), encoding="utf-8"
-        )
+    build(args.results_root, args.output, args.markdown_output)
     return 0
 
 

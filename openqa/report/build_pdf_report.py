@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from report_outcome import module_outcome, read_json, workdirs, summarize, LABELS, worst
+
 from fpdf import FPDF
 from PIL import Image
 
@@ -79,50 +81,43 @@ class Suite:
     weak: list[str] = field(default_factory=list)
 
     @property
+    def result(self) -> str:
+        values = list(self.modules.values())
+        if self.failures:
+            values.append("fail")
+        if self.weak:
+            values.append("unknown")
+        return worst(values)
+
+    @property
     def ok(self) -> bool:
-        return bool(self.modules) and all(
-            result in {"ok", "passed"} for result in self.modules.values()
-        )
+        return bool(self.modules) and self.result == "ok"
 
 
 def _json(path: Path) -> dict[str, Any]:
-    try:
-        opener = gzip.open if path.suffix == ".gz" else open
-        with opener(path, "rt", encoding="utf-8") as stream:
-            value = json.load(stream)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    return read_json(path)
 
 
 def read_suite(directory: Path) -> Suite | None:
     """Read one uploaded artifact directory into the facts the report shows."""
     results = next(iter(sorted(directory.rglob("vars.json"))), None)
-    if results is None:
+    if results is None and not (directory / "testresults").is_dir():
         return None
-    testresults = results.parent / "testresults"
-    variables = _json(results)
+    work = results.parent if results is not None else directory
+    testresults = work / "testresults"
+    variables = _json(work / "vars.json")
     suite = Suite(
         name=variables.get("TEST") or directory.name.removeprefix("openqa-"),
-        firmware="UEFI" if variables.get("UEFI") else "BIOS",
-        iso=str(variables.get("ISO") or ""),
-        build=str(variables.get("BUILD") or ""),
+        firmware="UEFI" if str(variables.get("UEFI")) == "1" else "BIOS",
+        iso=str(variables.get("BIGLINUX_ISO_FILENAME") or variables.get("ISO") or ""),
+        build=str(variables.get("BIGLINUX_OPENQA_BUILD") or variables.get("BUILD") or ""),
     )
     for details in sorted(testresults.glob("result-*.json")):
         module = details.stem.removeprefix("result-")
         payload = _json(details)
         steps = payload.get("details")
         steps = steps if isinstance(steps, list) else []
-        outcomes = [
-            step.get("result")
-            for step in steps
-            if isinstance(step, dict) and isinstance(step.get("result"), str)
-        ]
-        if not outcomes:
-            continue
-        suite.modules[module] = (
-            "fail" if any(value in {"fail", "failed"} for value in outcomes) else "ok"
-        )
+        suite.modules[module] = module_outcome(payload)
         # The last screenshot is the state the module left behind, which is what
         # someone wants to see for a phase that already happened.
         shots = [
@@ -135,7 +130,7 @@ def read_suite(directory: Path) -> Suite | None:
                 suite.shots[module] = shot
                 break
 
-    metrics = next(iter(sorted(testresults.rglob("application-metrics.json*"))), None)
+    metrics = next(iter(sorted(work.rglob("application-metrics.json*"))), None)
     if metrics is not None:
         payload = _json(metrics)
         applications = payload.get("applications")
@@ -190,6 +185,9 @@ class Report(FPDF):
         self.set_auto_page_break(False)
         self.set_title("BigLinux ISO validation")
 
+    def normalize_text(self, text: str) -> str:
+        return super().normalize_text(str(text).encode("latin-1", errors="replace").decode("latin-1"))
+
     def badge(
         self, x: float, y: float, text: str, colour: tuple[int, int, int]
     ) -> None:
@@ -215,11 +213,13 @@ class Report(FPDF):
         self.line(16, 33, PAGE[0] - 16, 33)
 
 
-def cover(pdf: Report, suites: list[Suite]) -> None:
+def cover(pdf: Report, suites: list[Suite], summary: dict[str, Any] | None = None) -> None:
     pdf.add_page()
     everything_ok = all(suite.ok for suite in suites) and bool(suites)
-    iso = next((suite.iso for suite in suites if suite.iso), "unknown ISO")
-    build = next((suite.build for suite in suites if suite.build), "")
+    verdict = summary["result"] if summary else ("ok" if everything_ok else "fail")
+    context = summary.get("context", {}) if summary else {}
+    iso = next((suite.iso for suite in suites if suite.iso), context.get("iso") or "unknown ISO")
+    build = next((suite.build for suite in suites if suite.build), context.get("build", ""))
 
     pdf.set_text_color(*INK)
     pdf.set_font("helvetica", "B", 34)
@@ -228,22 +228,23 @@ def cover(pdf: Report, suites: list[Suite]) -> None:
     pdf.set_font("helvetica", "", 14)
     pdf.set_text_color(*MUTED)
     pdf.set_xy(16, 47)
-    pdf.cell(0, 8, iso)
-    pdf.set_xy(16, 56)
-    pdf.cell(0, 8, f"{build}   ·   {datetime.now(UTC):%Y-%m-%d %H:%M UTC}")
+    pdf.multi_cell(PAGE[0] - 32, 6, iso[:160])
+    pdf.set_xy(16, 63)
+    pdf.cell(0, 6, f"{build[:90]}   ·   {datetime.now(UTC):%Y-%m-%d %H:%M UTC}")
 
-    colour = GOOD if everything_ok else BAD
+    colour = GOOD if verdict == "ok" else BAD if verdict == "fail" else WEAK
     pdf.set_fill_color(*colour)
     pdf.rect(16, 72, PAGE[0] - 32, 26, style="F")
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("helvetica", "B", 22)
     pdf.set_xy(16, 79)
-    pdf.cell(PAGE[0] - 32, 12, "PASSED" if everything_ok else "FAILED", align="C")
+    pdf.cell(PAGE[0] - 32, 12, {"ok": "PASSED", "fail": "FAILED", "unknown": "INCONCLUSIVE", "softfail": "WARNING", "skipped": "NOT APPLICABLE"}[verdict], align="C")
 
     # One tile per firmware: the two paths a user can actually boot.
     left = 16.0
-    width = (PAGE[0] - 32 - 8) / max(len([s for s in suites if s.shots]), 1)
-    for suite in [s for s in suites if s.shots]:
+    tiles = suites[:3]
+    width = (PAGE[0] - 32 - 8) / max(len(tiles), 1)
+    for suite in tiles:
         modules_ok = sum(1 for r in suite.modules.values() if r == "ok")
         pdf.set_draw_color(*RULE)
         pdf.set_fill_color(250, 250, 251)
@@ -253,7 +254,7 @@ def cover(pdf: Report, suites: list[Suite]) -> None:
         pdf.set_xy(left + 6, 114)
         pdf.cell(0, 8, suite.firmware)
         pdf.badge(
-            left + 6, 126, "OK" if suite.ok else "FAILED", GOOD if suite.ok else BAD
+            left + 6, 126, LABELS[suite.result], GOOD if suite.ok else BAD if suite.result == "fail" else WEAK
         )
         pdf.set_text_color(*MUTED)
         pdf.set_font("helvetica", "", 11)
@@ -290,13 +291,13 @@ def phase_pages(pdf: Report, suite: Suite) -> None:
                 pdf.badge(
                     column,
                     40,
-                    "OK" if result == "ok" else "FAILED",
-                    GOOD if result == "ok" else BAD,
+                    LABELS.get(result, "Inconclusivo"),
+                    GOOD if result == "ok" else BAD if result == "fail" else WEAK,
                 )
                 pdf.set_text_color(*INK)
                 pdf.set_font("helvetica", "", 10)
                 pdf.set_xy(column, 50)
-                pdf.multi_cell(span - 6, 5, CAPTIONS.get(module, module))
+                pdf.multi_cell(span - 6, 5, CAPTIONS.get(module, module) if result == "ok" else module.replace("_", " "))
                 shot = suite.shots.get(module)
                 if shot:
                     stream = encoded_screenshot(shot)
@@ -359,21 +360,44 @@ def applications_page(pdf: Report, suites: list[Suite]) -> None:
         pdf.cell(0, 8, "No failures.")
 
 
-def build(artifacts_root: Path, output: Path) -> int:
-    suites = [
-        suite
-        for directory in sorted(artifacts_root.iterdir())
-        if directory.is_dir()
-        for suite in [read_suite(directory)]
-        if suite is not None
-    ]
+def outcome_pages(pdf: Report, summary: dict[str, Any]) -> None:
+    """Always show nonvisual results, including phases without screenshots."""
+    rows = ["Resultado: " + LABELS[summary["result"]]]
+    rows += [str(p) for p in summary.get("problems", [])]
+    rows += [f"{m['plan']} / {m['name']}: {LABELS[m['result']]}" for m in summary.get("modules", [])]
+    rows += [f"{a['plan']} / {a['name']}: {LABELS[a['result']]}" for a in summary.get("applications", [])]
+    pdf.add_page()
+    pdf.heading("Resultados e diagnóstico", "Capturas são opcionais; ausência de evidência não significa aprovação.")
+    pdf.set_font("helvetica", "", 10)
+    pdf.set_text_color(*INK)
+    pdf.set_xy(16, 42)
+    # Wrap before rendering so long failure lists never overflow the page.
+    import textwrap
+    for row in rows:
+        for line in textwrap.wrap(row, width=115, break_long_words=True) or [""]:
+            if pdf.get_y() > 187:
+                pdf.add_page()
+                pdf.heading("Resultados e diagnóstico — continuação")
+                pdf.set_font("helvetica", "", 10)
+                pdf.set_text_color(*INK)
+                pdf.set_xy(16, 42)
+            y = pdf.get_y()
+            pdf.cell(PAGE[0] - 32, 5, line)
+            pdf.set_xy(16, y + 5)
+
+
+def build(artifacts_root: Path, output: Path, summary: dict[str, Any] | None = None) -> int:
+    summary = summary or summarize(artifacts_root)
+    suites = [suite for directory in workdirs(artifacts_root)
+              for suite in [read_suite(directory)] if suite is not None]
     firmware_first = sorted(suites, key=lambda s: (not s.shots, s.firmware))
     pdf = Report()
-    cover(pdf, firmware_first)
+    cover(pdf, firmware_first, summary)
+    outcome_pages(pdf, summary)
     for suite in firmware_first:
-        if suite.shots:
-            phase_pages(pdf, suite)
-    applications_page(pdf, firmware_first)
+        phase_pages(pdf, suite)
+    # The textual outcome pages already include all apps without merging away
+    # failures from another plan or limiting diagnostics to twelve entries.
     output.parent.mkdir(parents=True, exist_ok=True)
     pdf.output(str(output))
     return 0
