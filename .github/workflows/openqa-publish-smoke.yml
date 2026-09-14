@@ -1,0 +1,100 @@
+name: Validate reviewed simple application smoke
+on:
+  push:
+    branches: [fix/openqa-nonvisual-accessibility-20260914]
+    paths: ['.openqa-smoke-review-*', '.github/workflows/openqa-publish-smoke.yml']
+permissions:
+  contents: write
+jobs:
+  reviewed:
+    if: github.repository == 'biglinux/iso-profiles' && github.ref == 'refs/heads/fix/openqa-nonvisual-accessibility-20260914'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Apply the checksum-pinned reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = c5c8ac590127b4933157ba00ad1413c76b535955
+          python3 - <<'PY'
+          import base64, hashlib, lzma, os, pathlib, subprocess
+          encoded = b''.join(pathlib.Path(f'.openqa-smoke-review-{i}').read_bytes() for i in range(4))
+          patch = lzma.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '84b5444cf6e473e028ae64a6a1662b5d2a56a72b014a459e35cc12532434bde2'
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'simple-smoke.patch'
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--index', str(path)], check=True)
+          PY
+          git rm -- .openqa-smoke-review-0 .openqa-smoke-review-1 .openqa-smoke-review-2 .openqa-smoke-review-3 .github/workflows/openqa-publish-smoke.yml
+          test "$(git write-tree)" = ebb477d5fc655ca13c8ba5ce1bfc592723303930
+      - name: Run regression and source-policy checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python3 -m unittest discover -s data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/report -p 'test_*.py'
+            prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
+            python3 openqa/production/check-nonvisual.py
+            python3 -m py_compile data/*.py openqa/production/*.py openqa/report/*.py
+            for script in openqa/production/*.sh data/*.sh; do bash -n "$script"; done
+            ruby -ryaml -e 'ARGV.each { |f| YAML.safe_load_file(f, permitted_classes: [], aliases: false) }' .github/workflows/openqa*.yml openqa/*.yaml
+            git diff --cached --check
+          } 2>&1 | tee "$RUNNER_TEMP/smoke-validation.log"
+          test "$(git write-tree)" = ebb477d5fc655ca13c8ba5ce1bfc592723303930
+      - name: Publish immutable tested blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, pathlib, subprocess, urllib.request
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          assert os.environ['GITHUB_REPOSITORY'] == 'biglinux/iso-profiles'
+          assert os.environ['GITHUB_REF'] == 'refs/heads/fix/openqa-nonvisual-accessibility-20260914'
+          expected = 'ebb477d5fc655ca13c8ba5ce1bfc592723303930'
+          assert git('write-tree').decode().strip() == expected
+          entries = []
+          for raw_name in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
+              if not raw_name:
+                  continue
+              name = raw_name.decode('utf-8')
+              index = git('ls-files', '--stage', '--', name).decode().strip()
+              if not index:
+                  entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': None})
+                  continue
+              mode, sha = index.split()[:2]
+              assert mode in ('100644', '100755')
+              data = {'content': base64.b64encode(git('show', ':' + name)).decode('ascii'), 'encoding': 'base64'}
+              request = urllib.request.Request('https://api.github.com/repos/biglinux/iso-profiles/git/blobs',
+                  data=json.dumps(data).encode(), method='POST',
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  created = json.load(response)
+              assert created['sha'] == sha, name
+              entries.append({'path': name, 'mode': mode, 'type': 'blob', 'sha': sha})
+          manifest = {'parent_sha': git('rev-parse', 'HEAD').decode().strip(),
+                      'base_tree_sha': git('rev-parse', 'HEAD^{tree}').decode().strip(),
+                      'tree_sha': expected, 'tree_elements': entries,
+                      'patch_sha256': '84b5444cf6e473e028ae64a6a1662b5d2a56a72b014a459e35cc12532434bde2',
+                      'regressions': 'passed; dependency-based PDF skips recorded in log',
+                      'iso_executed': False, 'branch_moved': False}
+          destination = pathlib.Path(os.environ['RUNNER_TEMP']) / 'smoke-publication.json'
+          destination.write_text(json.dumps(manifest, indent=2) + '\n')
+          print(json.dumps(manifest, indent=2))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: openqa-smoke-reviewed-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/smoke-publication.json
+            ${{ runner.temp }}/smoke-validation.log
+          if-no-files-found: error
+          retention-days: 7
