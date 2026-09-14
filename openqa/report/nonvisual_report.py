@@ -31,6 +31,8 @@ def load_nonvisual(root: Path) -> list[dict]:
                     and result.get("screen_reader") == "presenter-passed"
                 ):
                     result.update(status="inconclusive", error="aprovação sem todas as evidências")
+                if result.get("status") == "skipped" and result.get("skip_reason") != "not-installed":
+                    result.update(status="inconclusive", error="exclusão sem ausência comprovada")
                 results.append(result)
         except (OSError, ValueError, TypeError) as error:
             results.append({"name": str(path.relative_to(root)), "status": "inconclusive", "error": str(error)})
@@ -44,7 +46,7 @@ def render_nonvisual_html(results: list[dict]) -> str:
     return ("<section aria-labelledby='nonvisual-title'><h2 id='nonvisual-title'>Percursos não visuais</h2>"
             + ("<table><thead><tr><th>Percurso</th><th>Função</th><th>Teclado</th><th>Orca</th>"
                "<th>Resultado</th><th>Motivo</th></tr></thead><tbody>" + rows + "</tbody></table>"
-               if results else "<p>Não há evidência de execução dos percursos não visuais.</p>")
+               if results else "<p>Não há evidência de execução dos percursos profundos; eles são opcionais no smoke padrão.</p>")
             + "<p>" + LIMITS + "</p></section>")
 
 

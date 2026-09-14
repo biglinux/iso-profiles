@@ -29,7 +29,7 @@ RESULT_LABEL = {
     "unknown": "Inconclusivo",
     "ok": "Passou",
     "passed": "Passou",
-    "skipped": "Ignorado",
+    "skipped": "Não aplicável",
 }
 
 
@@ -139,15 +139,23 @@ def load_application_metrics(
         ],
         key=lambda path: path.suffix == ".gz",
     )
-    if not candidates:
-        return {}, []
-    payload = load_json(candidates[0])
+    payload = load_json(candidates[0]) if candidates else {}
     system_value = payload.get("system")
     system: dict[str, Any] = system_value if isinstance(system_value, dict) else {}
     applications = payload.get("applications")
     if not isinstance(applications, list):
         applications = []
-    return system, [item for item in applications if isinstance(item, dict)]
+    applications = [item for item in applications if isinstance(item, dict)]
+    coverage = payload.get("coverage", {})
+    if isinstance(coverage, dict):
+        for desktop_id in coverage.get("not_installed_desktop_ids", []):
+            applications.append({"name": desktop_id, "desktop_id": desktop_id, "status": "skipped",
+                                 "skip_reason": "Not installed in this ISO; not applicable"})
+    installed = load_json(job_dir / "testresults" / "installed-application-smoke.json")
+    for item in installed.get("applications", []):
+        if isinstance(item, dict):
+            applications.append({"name": item.get("desktop_id", "unknown") + " (installed)", **item})
+    return system, applications
 
 
 def load_application_metrics_from_jobs(
@@ -388,7 +396,7 @@ def render_report(
     <div class="card"><span class="label">Resultado geral</span><strong>{status_badge(overall)}</strong></div>
     <div class="card"><span class="label">Módulos</span><strong>{passed} passaram · {failed} falharam</strong></div>
     <div class="card"><span class="label">Duração observada</span><strong>{esc(duration(total_duration) if modules else "Não coletada")}</strong></div>
-    <div class="card"><span class="label">Aplicativos</span><strong>{passed_apps} passaram · {failed_apps} falharam · {skipped_apps} ignorados</strong></div>
+    <div class="card"><span class="label">Aplicativos</span><strong>{passed_apps} passaram · {failed_apps} falharam · {skipped_apps} não aplicáveis</strong></div>
   </div>
 
   <section aria-labelledby="modules-title">
@@ -419,7 +427,7 @@ def render_report(
 
   <section aria-labelledby="method-title">
     <div class="section-head"><h2 id="method-title">Como interpretar</h2></div>
-    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. A varredura de aplicativos verifica somente abertura e semântica AT-SPI. Processo vivo e janela X11 não substituem acessibilidade. Os percursos de teclado e a saída do Orca têm evidência separada em nonvisual-contracts.json; abertura isolada não certifica funcionamento nem acessibilidade completa. RSS e PSS são os picos agregados do processo e dos descendentes; PSS evita contar repetidamente bibliotecas compartilhadas. Screenshots podem ser preservadas como diagnóstico de falha, mas nunca são usadas como prova de que um programa abriu.</div>
+    <div class="method">Os tempos dos módulos vêm dos registros do os-autoinst. A varredura verifica abertura, conteúdo acessível e encerramento pelo atalho com saída zero. Aplicativos ausentes são não aplicáveis, não aprovados. Processo vivo e janela X11 não substituem acessibilidade. Os percursos profundos e a saída do Orca são opcionais, com evidência separada em nonvisual-contracts.json; abertura isolada não certifica funcionamento nem acessibilidade completa. A checagem simples coleta apenas uma amostra de memória, não um pico; métricas de pico de execuções antigas são apresentadas somente quando disponíveis. Screenshots podem ser preservadas como diagnóstico de falha, mas nunca são usadas como prova de que um programa abriu.</div>
   </section>
   <footer>Relatório estático e autocontido · nenhum dado é enviado para serviços externos</footer>
 </main>

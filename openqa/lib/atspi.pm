@@ -110,8 +110,8 @@ sub reset_baseline {
     my $environment = join ' ',
       'export XDG_RUNTIME_DIR=/run/user/$(id -u);',
       'export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus;',
-      'unset DISPLAY XAUTHORITY WAYLAND_DISPLAY AT_SPI_BUS_ADDRESS;',
-      'for name in DISPLAY XAUTHORITY WAYLAND_DISPLAY; do',
+      'unset DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP AT_SPI_BUS_ADDRESS;',
+      'for name in DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP; do',
       'value=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^$name=//p" | head -1);',
       '[ -n "$value" ] && export "$name=$value";',
       'done;',
@@ -125,8 +125,7 @@ sub reset_baseline {
     my $baseline = $class->result('baseline', 10);
     if (ref $baseline ne 'HASH'
         || !exists $baseline->{mem_available_mib}
-        || ref $baseline->{windows} ne 'ARRAY'
-        || !@{$baseline->{windows}}) {
+        || ref $baseline->{windows} ne 'ARRAY') {
         die 'the AT-SPI baseline has an unexpected shape: '
           . (ref $baseline ? JSON::PP->new->canonical->encode($baseline) : 'not a structure');
     }
@@ -148,7 +147,7 @@ sub result {
     # through a serial marker, and no test needs one. It is an operator's tool,
     # run from a console inside the guest (see openqa/README.md).
     die "invalid AT-SPI operation '$operation'"
-      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|wait-gone|focused-widget|audit-window|activate-widget|close|cleanup|memory|inventory|inventory-chunk)\z/;
+      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|wait-gone|focused-widget|audit-window|smoke-window|active-window|activate-widget|close|cleanup|memory|inventory|inventory-chunk)\z/;
     die 'invalid AT-SPI timeout' unless defined $timeout && $timeout =~ /\A[0-9]+(?:\.[0-9]+)?\z/;
 
     my @command = (
@@ -239,7 +238,7 @@ sub launch_command {
 }
 
 sub launch_desktop_entry {
-    my ($class, $entry, $timeout) = @_;
+    my ($class, $entry, $timeout, $sample_memory) = @_;
     die 'desktop entry is not a mapping' unless ref $entry eq 'HASH';
     my $path = $entry->{path};
     die 'desktop entry has no absolute path'
@@ -250,7 +249,7 @@ sub launch_desktop_entry {
     # Identity comes from provenance: the launcher execs the application, so its
     # window must belong to the launched process tree. Matching a window title
     # would only add toolkit- and release-specific brittleness.
-    return $class->_launch_argv(\@argv, '', $timeout, 'process-tree');
+    return $class->_launch_argv(\@argv, '', $timeout, 'process-tree', $sample_memory);
 }
 
 sub x11_wait_open {
@@ -370,11 +369,12 @@ sub activate_widget_until_gone {
 }
 
 sub _launch_argv {
-    my ($class, $argv, $expected_name, $timeout, $expected_pid) = @_;
+    my ($class, $argv, $expected_name, $timeout, $expected_pid, $sample_memory) = @_;
+    $sample_memory //= 1;
     my $started = time;
     my $baseline = $class->result('baseline', 3);
     die 'application baseline is incomplete'
-      unless ref $baseline->{windows} eq 'ARRAY' && @{$baseline->{windows}};
+      unless ref $baseline->{windows} eq 'ARRAY';
     my $status_path = sprintf('/tmp/openqa-gui-status-%d-%d', $$, int(time * 1000) % 1_000_000);
     my $user_launcher_arguments = join ' ',
       shell_quote($user_launcher_path),
@@ -403,8 +403,9 @@ sub _launch_argv {
       : $expected_pid eq 'process-tree'   ? $launch_pid
       : $expected_pid eq 'pending'        ? undef
       :                                     $expected_pid;
-    my $launch_memory = eval { $class->result('memory', 1, '--pid', $launch_pid) };
+    my $launch_memory = $sample_memory ? eval { $class->result('memory', 1, '--pid', $launch_pid) } : undef;
     my @wait_arguments = ('--name', $expected_name);
+    push @wait_arguments, '--no-memory-sample' unless $sample_memory;
     push @wait_arguments, ('--pid', $window_pid) if defined $window_pid;
     my $opened = $class->result('wait-open', $timeout, @wait_arguments);
     $class->set_widget_scope($opened->{pid}) if ($opened->{status} // '') eq 'passed';
@@ -436,6 +437,31 @@ sub cleanup {
     %session_launch_pids = ();
     select_console 'sut';
     return $class->result('cleanup', $timeout);
+}
+
+# The generic smoke sends exactly one normal close shortcut. It never invokes
+# an AT action, native quit command or kill to make the close test pass.
+sub close_with_shortcut {
+    my ($class, $pid, $status_path, $launch_pid, $timeout, $key) = @_;
+    $timeout //= 15;
+    $key //= 'alt-f4';
+    die 'invalid close timeout' unless $timeout =~ /\A[1-9][0-9]*\z/;
+    die 'invalid close shortcut' unless $key =~ /\A(?:alt-f4|ctrl-q)\z/;
+    die 'invalid application PID' unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
+    die 'invalid supervisor status file' unless defined $status_path
+      && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};
+    my $active = $class->result('active-window', 5, '--pid', $pid);
+    die 'cannot close an unobserved or inactive application: ' . ($active->{error} // '')
+      unless ($active->{status} // '') eq 'passed' && $active->{active} && $active->{pid} == $pid;
+    select_console 'sut';
+    send_key $key;
+    my $wait = $class->run_command(_wait_for_exit_command($pid, $timeout), $timeout + 5);
+    my $code = _read_exit_code($status_path, 3);
+    my $gone = defined $wait && $wait == 0;
+    delete $session_launch_pids{$launch_pid} if defined $launch_pid && $gone;
+    return {close_action => 'keyboard.' . $key, process_gone => $gone,
+        graceful_exit => $gone, raw_application_exit_code => $code,
+        application_exit_code => $code, application_crashed => is_crash_exit_code($code)};
 }
 
 sub terminate_window {

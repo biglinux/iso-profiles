@@ -48,7 +48,7 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             AGGREGATOR.canonical_json(self.inventory).encode("utf-8")
         ).hexdigest()
         coverage = {
-            "schema_version": 3,
+            "schema_version": 4,
             "iso_filename": "candidate.iso",
             "iso_sha256": "a" * 64,
             "build_id": "test-build",
@@ -62,27 +62,35 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             "shard_count": 4,
             "shard_index": 0,
             "inventory": self.inventory,
-            "inventory_total": 3,
-            "launchable_total": 2,
-            "excluded_total": 1,
+            "inventory_total": len(self.inventory),
+            "launchable_total": sum(i["classification"] == "launchable" for i in self.inventory),
+            "excluded_total": sum(i["classification"] == "excluded" for i in self.inventory),
             "duplicate_total": 0,
             "invalid_total": 0,
-            "critical_desktop_ids": ["app.desktop"],
-            "missing_critical": [],
+            "critical_desktop_ids": sorted(i["desktop_id"] for i in self.policy["critical"]),
+            "not_installed_desktop_ids": sorted(
+                {i["desktop_id"] for i in self.policy["critical"]}
+                - {i["desktop_id"] for i in self.inventory}),
         }
         root.mkdir(parents=True, exist_ok=True)
         for shard_index in range(4):
             coverage["shard_index"] = shard_index
             applications = []
-            for desktop_id in ("app.desktop", "other.desktop"):
-                if AGGREGATOR.shard_for(desktop_id, 4) == shard_index:
+            for item in self.inventory:
+                desktop_id = item["desktop_id"]
+                if item["classification"] == "launchable" and AGGREGATOR.shard_for(desktop_id, 4) == shard_index:
                     applications.append(
                         {
                             "desktop_id": desktop_id,
                             "classification": "launchable",
-                            "validation_mode": "atspi-open",
+                            "validation_mode": "atspi-smoke",
                             "accessible_window": True,
-                            "accessibility_status": "semantics-only",
+                            "accessibility_status": "available",
+                            "functional_status": "open-close",
+                            "graceful_exit": True,
+                            "application_exit_code": 0,
+                            "close_action": "keyboard.alt-f4",
+                            "cleanup_status": "passed",
                             "status": status_by_id.get(desktop_id, "passed"),
                         }
                     )
@@ -181,6 +189,70 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             self._rewrite_payloads(root, lambda payload: [item.pop("accessibility_status", None)
                 for item in payload["applications"]])
             with self.assertRaises(ValueError):
+                AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+
+    def test_policy_program_absent_from_iso_is_not_applicable(self):
+        self.policy["critical"].append({"desktop_id": "optional-kde-app.desktop", "functional_test": "kde-app"})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            summary = AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["not_installed_desktop_ids"], ["optional-kde-app.desktop"])
+        self.assertNotIn("optional-kde-app.desktop", summary["critical"]["tested"])
+
+    def test_policy_exclusion_and_alias_may_be_absent(self):
+        self.policy["exclude"].append({"desktop_id": "optional-service.desktop", "reason": "service"})
+        self.policy["aliases"].append({"desktop_id": "optional-alias.desktop", "canonical": "missing.desktop"})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            summary = AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+        self.assertEqual(summary["status"], "passed")
+
+    def test_empty_complete_inventory_has_no_applicable_tests(self):
+        self.inventory = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            summary = AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+        self.assertEqual(summary["application_result"], "not-applicable")
+        self.assertEqual(summary["coverage"]["passed_total"], 0)
+
+    def test_installed_but_not_applicable_to_desktop_is_not_mandatory(self):
+        self.inventory[0].update(classification="excluded", exclusion_reason="OnlyShowIn=KDE on GNOME")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            summary = AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+        self.assertEqual(summary["status"], "passed")
+        self.assertNotIn("app.desktop", summary["critical"]["applicable"])
+
+    def test_exit_error_or_missing_close_evidence_cannot_be_passed(self):
+        for changes in ({"application_exit_code": 139}, {"application_exit_code": 1},
+                        {"application_exit_code": None}, {"application_exit_code": False},
+                        {"graceful_exit": False}, {"close_action": "process-group.sigterm"},
+                        {"functional_status": "launch-only"}, {"cleanup_status": "failed"}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._write_metrics(root)
+                self._rewrite_payloads(root, lambda p: [item.update(changes) for item in p["applications"]])
+                with self.assertRaises(ValueError):
+                    AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+
+    def test_installed_app_cannot_be_silently_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root, {"app.desktop": "skipped"})
+            with self.assertRaisesRegex(ValueError, "invalid status"):
+                AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+
+    def test_invented_absence_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            self._rewrite_payloads(root, lambda p: p["coverage"].update(not_installed_desktop_ids=["app.desktop"]))
+            with self.assertRaisesRegex(ValueError, "not-installed list"):
                 AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
 
     def test_shard_assignment_is_deterministic_for_unicode(self):

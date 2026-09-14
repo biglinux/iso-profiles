@@ -40,7 +40,7 @@ session_wayland_display=$(printf '%s\n' "$session_environment" | awk -F= '$1 == 
 [ -n "$session_display" ] && export DISPLAY="$session_display"
 [ -n "$session_xauthority" ] && export XAUTHORITY="$session_xauthority"
 [ -n "$session_wayland_display" ] && export WAYLAND_DISPLAY="$session_wayland_display"
-for session_variable in QT_QPA_PLATFORM GDK_BACKEND XDG_SESSION_TYPE KDE_FULL_SESSION KDE_SESSION_VERSION; do
+for session_variable in XDG_CURRENT_DESKTOP QT_QPA_PLATFORM GDK_BACKEND XDG_SESSION_TYPE KDE_FULL_SESSION KDE_SESSION_VERSION; do
 	session_value=$(printf '%s\n' "$session_environment" | awk -F= -v key="$session_variable" '$1 == key {print substr($0, index($0, "=") + 1); exit}')
 	[ -n "$session_value" ] && export "$session_variable=$session_value"
 done

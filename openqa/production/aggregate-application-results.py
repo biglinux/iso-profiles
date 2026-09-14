@@ -55,8 +55,8 @@ def validate_inventory(
             f"all application shards must use APPLICATION_SHARD_COUNT={expected_count}"
         )
     inventory = coverage.get("inventory")
-    if not isinstance(inventory, list) or not inventory:
-        raise ValueError("application inventory is missing or empty")
+    if not isinstance(inventory, list):
+        raise ValueError("application inventory is missing")
     desktop_ids: dict[str, dict[str, Any]] = {}
     for item in inventory:
         if not isinstance(item, dict):
@@ -131,8 +131,8 @@ def validate_policy(
             raise ValueError(f"excluded application is duplicated: {desktop_id}")
         seen_excluded.add(desktop_id)
         current = inventory.get(desktop_id)
-        if current is None or current["classification"] != "excluded":
-            raise ValueError(f"excluded application is absent or not excluded: {desktop_id}")
+        if current is not None and current["classification"] != "excluded":
+            raise ValueError(f"installed application is not excluded as configured: {desktop_id}")
 
     seen_aliases: set[str] = set()
     for item in aliases:
@@ -149,8 +149,10 @@ def validate_policy(
             raise ValueError(f"alias application is duplicated: {desktop_id}")
         seen_aliases.add(desktop_id)
         current = inventory.get(desktop_id)
-        if current is None or current["classification"] != "duplicate-alias":
-            raise ValueError(f"alias application is absent or not an alias: {desktop_id}")
+        if current is None:
+            continue  # This ISO need not ship every configured alias.
+        if current["classification"] != "duplicate-alias":
+            raise ValueError(f"installed application is not an alias: {desktop_id}")
         if (
             current.get("canonical") != canonical
             or canonical not in inventory
@@ -172,10 +174,8 @@ def validate_policy(
             raise ValueError(f"critical application is duplicated: {desktop_id}")
         critical_ids.append(desktop_id)
         current = inventory.get(desktop_id)
-        if current is None:
-            raise ValueError(f"critical application is absent from the ISO: {desktop_id}")
-        if current["classification"] != "launchable":
-            raise ValueError(f"critical application is not launchable: {desktop_id}")
+        if current is not None and current["classification"] == "invalid":
+            raise ValueError(f"installed application entry is invalid: {desktop_id}")
     return critical_ids
 
 
@@ -230,8 +230,10 @@ def validate_shards(
     critical_ids = validate_policy(policy, inventory)
     if set(first.get("critical_desktop_ids", [])) != set(critical_ids):
         raise ValueError("metrics critical application list differs from policy")
-    if first.get("missing_critical"):
-        raise ValueError("metrics report missing critical applications")
+    not_installed = sorted(set(critical_ids) - set(inventory))
+    for coverage in coverages:
+        if coverage.get("not_installed_desktop_ids") != not_installed:
+            raise ValueError("not-installed list does not match the observed inventory")
     # No policy hash. Every shard of a run checks out the same commit_sha, which
     # is compared above and which is what actually pins the policy file; hashing
     # it only proved that a file at a commit matches itself, and it cost three
@@ -242,7 +244,7 @@ def validate_shards(
     shard_summaries: list[dict[str, Any]] = []
     for path, payload, coverage in zip(metrics_files, payloads, coverages, strict=True):
         assert isinstance(coverage, dict)
-        if payload.get("schema_version") != 2 or coverage.get("schema_version") != 3:
+        if payload.get("schema_version") != 2 or coverage.get("schema_version") != 4:
             raise ValueError(f"unsupported application metrics schema: {path}")
         shard_index = coverage.get("shard_index")
         if not isinstance(shard_index, int) or not 0 <= shard_index < expected_count:
@@ -284,14 +286,16 @@ def validate_shards(
             if item.get("status") not in {"passed", "failed"}:
                 raise ValueError(f"application result has invalid status: {desktop_id}")
             if item.get("status") == "passed":
-                mode = item.get("validation_mode")
-                if mode == "process-start":
-                    if (inventory_item.get("execution_contract") != "process"
-                            or item.get("launch_exit_code") != 0):
-                        raise ValueError(f"process-only approval lacks an explicit contract: {desktop_id}")
-                elif (mode != "atspi-open" or item.get("accessible_window") is not True
-                      or item.get("accessibility_status") != "semantics-only"):
-                    raise ValueError(f"graphical approval lacks accessible evidence: {desktop_id}")
+                if (item.get("validation_mode") != "atspi-smoke"
+                        or item.get("accessible_window") is not True
+                        or item.get("accessibility_status") != "available"
+                        or item.get("functional_status") != "open-close"
+                        or item.get("graceful_exit") is not True
+                        or type(item.get("application_exit_code")) is not int
+                        or item["application_exit_code"] != 0
+                        or item.get("close_action") not in {"keyboard.alt-f4", "keyboard.ctrl-q"}
+                        or item.get("cleanup_status") != "passed"):
+                    raise ValueError(f"graphical approval lacks complete smoke evidence: {desktop_id}")
             if desktop_id in seen_launchables:
                 raise ValueError(
                     f"launchable desktop ID appears in multiple shards: {desktop_id}"
@@ -329,7 +333,9 @@ def validate_shards(
     critical_failed = sorted(set(critical_ids) & set(failed_ids))
     summary: dict[str, Any] = {
         "status": "failed" if failed_ids else "passed",
-        "scope": "application startup and accessible semantics; not whole-desktop certification",
+        "scope": "open, accessible content, close shortcut and exit 0; not full accessibility certification",
+        "application_result": "not-applicable" if not seen_launchables else ("failed" if failed_ids else "passed"),
+        "not_installed_desktop_ids": not_installed,
         "metadata": {key: first.get(key) for key in metadata_keys},
         "coverage": {
             "inventory_total": len(inventory),
@@ -349,7 +355,9 @@ def validate_shards(
             "failed_total": len(failed_ids),
         },
         "critical": {
-            "expected": critical_ids,
+            "configured": critical_ids,
+            "applicable": sorted(set(critical_ids) & launchable_ids),
+            "not_installed": not_installed,
             "tested": critical_tested,
             "failed": critical_failed,
         },
@@ -382,6 +390,7 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
         f"- Tested: {coverage.get('tested_total', 0)}",
         f"- Passed: {coverage.get('passed_total', 0)}",
         f"- Failed: {coverage.get('failed_total', 0)}",
+        f"- Not installed (not applicable): {len(summary.get('not_installed_desktop_ids', []))}",
         "",
         "## Shards",
         "",
@@ -393,6 +402,10 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
             f"| {shard['shard_index']} | {shard['tested']} | "
             f"{shard['passed']} | {shard['failed']} |"
         )
+    absent = summary.get("not_installed_desktop_ids", [])
+    if absent:
+        lines.extend(["", "## Not installed in this ISO (not applicable)", ""])
+        lines.extend(f"- `{desktop_id}`" for desktop_id in absent)
     failed_ids = summary.get("failed_desktop_ids", [])
     if failed_ids:
         lines.extend(["", "## Failed applications", ""])
@@ -412,6 +425,9 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
         f"<li><code>{html.escape(desktop_id)}</code></li>" for desktop_id in failed_ids
     )
     failure_section = f"<h2>Failed applications</h2><ul>{failures}</ul>" if failures else ""
+    if absent:
+        failure_section += "<h2>Not installed (not applicable)</h2><ul>" + "".join(
+            f"<li>{html.escape(desktop_id)}</li>" for desktop_id in absent) + "</ul>"
     error = (
         f"<p><code>{html.escape(str(summary['error']))}</code></p>"
         if summary.get("error")

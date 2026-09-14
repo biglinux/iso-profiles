@@ -19,6 +19,28 @@ from generate_report import (
 
 
 class GenerateReportTest(unittest.TestCase):
+    def test_absent_policy_app_is_reported_as_not_applicable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "application-metrics.json").write_text(json.dumps({
+                "coverage": {"not_installed_desktop_ids": ["optional.desktop"]},
+                "applications": [], "system": {"desktop": "GNOME"}}))
+            system, applications = load_application_metrics(root)
+        self.assertEqual(system["desktop"], "GNOME")
+        self.assertEqual(applications[0]["status"], "skipped")
+        self.assertEqual(applications[0]["desktop_id"], "optional.desktop")
+
+    def test_installed_only_smoke_results_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "testresults").mkdir()
+            (root / "testresults" / "installed-application-smoke.json").write_text(json.dumps({
+                "applications": [{"desktop_id": "editor.desktop", "status": "passed",
+                                  "application_exit_code": 0}]}))
+            _, applications = load_application_metrics(root)
+        self.assertEqual(applications[0]["desktop_id"], "editor.desktop")
+        self.assertEqual(applications[0]["application_exit_code"], 0)
+
     def test_reads_module_duration_and_worst_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "result-applications.json")

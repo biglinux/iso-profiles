@@ -24,6 +24,8 @@ class DesktopEntry:
     no_display: bool
     terminal: bool
     dbus_activatable: bool
+    only_show_in: tuple[str, ...] = ()
+    not_show_in: tuple[str, ...] = ()
 
     @property
     def launchable(self) -> bool:
@@ -46,6 +48,29 @@ class DesktopEntry:
             return "DBusActivatable entry requires gio, which is not installed"
         return None
 
+    def not_applicable_reason(self) -> str | None:
+        """Applicability is not a package-installation requirement for this ISO."""
+        if self.hidden:
+            return "desktop entry is hidden"
+        if self.entry_type in {"Link", "Directory"}:
+            return f"desktop entry type is {self.entry_type!r}"
+        # XDG_CURRENT_DESKTOP is ordered; the first matching name decides.
+        shown = not self.only_show_in
+        for desktop in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":"):
+            if desktop and desktop in self.only_show_in:
+                shown = True
+                break
+            if desktop and desktop in self.not_show_in:
+                shown = False
+                break
+        if not shown:
+            return "desktop entry does not apply to the current desktop"
+        if self.try_exec and shutil.which(self.try_exec) is None:
+            return f"not installed (TryExec): {self.try_exec}"
+        if self.terminal:
+            return "terminal command is outside the graphical application smoke test"
+        return None
+
     def as_dict(self, root: Path) -> dict[str, object]:
         launch_binary = None
         if self.skip_reason() is None:
@@ -66,6 +91,7 @@ class DesktopEntry:
             "terminal": self.terminal,
             "dbus_activatable": self.dbus_activatable,
             "skip_reason": self.skip_reason(),
+            "not_applicable_reason": self.not_applicable_reason(),
         }
 
 
@@ -131,6 +157,8 @@ def parse_desktop_entry(path: Path) -> DesktopEntry:
         no_display=_parse_boolean(values.get("NoDisplay")),
         terminal=_parse_boolean(values.get("Terminal")),
         dbus_activatable=_parse_boolean(values.get("DBusActivatable")),
+        only_show_in=tuple(filter(None, values.get("OnlyShowIn", "").split(";"))),
+        not_show_in=tuple(filter(None, values.get("NotShowIn", "").split(";"))),
     )
 
 

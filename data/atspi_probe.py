@@ -214,7 +214,8 @@ def _window_records(deadline: float | None = None) -> Iterable[tuple[Any, dict[s
 
 def accessible_snapshot() -> dict[str, Any]:
     windows = [record for _window, record in _window_records()]
-    return {"windows": windows, "mem_available_mib": mem_available_mib()}
+    return {"windows": windows, "mem_available_mib": mem_available_mib(),
+            "desktop": os.environ.get("XDG_CURRENT_DESKTOP", "unknown")}
 
 
 def save_baseline(state_path: Path) -> dict[str, Any]:
@@ -412,6 +413,7 @@ def wait_for_window_change(
     opening: bool,
     expected_pid: int | None = None,
     expected_name: str | None = None,
+    sample_memory: bool = True,
 ) -> dict[str, Any]:
     baseline = baseline_keys(state_path)
     deadline = time.monotonic() + timeout
@@ -473,7 +475,7 @@ def wait_for_window_change(
                         "role": window["role"],
                         "accessible_children": window["children"],
                         "pid": window["pid"],
-                        "memory": sample_process_memory(window["pid"]),
+                        "memory": sample_process_memory(window["pid"]) if sample_memory else process_memory(window["pid"]),
                     }
                 )
             return result
@@ -873,6 +875,89 @@ def focused_widget(timeout: float, expected_pid: int | None = None) -> dict[str,
     return {"status": "passed", "widget": focused[0], "complete": True}
 
 
+def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, Any] | None:
+    """Find one usable descendant, not audit or snapshot the entire tree.
+
+    Iterators fetch children lazily, so a wide view does not require allocating
+    thousands of proxies. Success proves existence only, never completeness.
+    No text values (potentially sensitive) are included in the evidence.
+    """
+    stack = [iter([window])]
+    seen = set()
+    references = []
+    visited = 0
+    while stack:
+        if time.monotonic() > deadline or visited >= limit:
+            raise WalkTruncated("no accessible content found within the smoke budget")
+        node = next(stack[-1], None)
+        if node is None:
+            stack.pop()
+            continue
+        if id(node) in seen:
+            raise WalkTruncated("cyclic accessibility tree")
+        seen.add(id(node))
+        references.append(node)
+        visited += 1
+        if node is not window:
+            record = _widget_record(node)
+            if record["showing"] and not record["defunct"]:
+                text = node.get_text_iface()
+                action = node.get_action_iface()
+                value = node.get_value_iface()
+                text_available = text is not None and text.get_character_count() >= 0
+                action_available = action is not None and action.get_n_actions() > 0
+                named = bool(record["name"].strip())
+                informational = record["role"] in {
+                    "label", "static", "heading", "list item", "tree item", "table cell", "link"
+                }
+                if text_available or (named and (action_available or value is not None
+                                                or record.get("focusable") or informational)):
+                    return {"role": record["role"], "has_name": named,
+                            "text_interface": text_available, "action_interface": action_available,
+                            "value_interface": value is not None, "nodes_visited": visited}
+        count = node.get_child_count()
+        if count < 0:
+            raise ProbeError("invalid child count in smoke query")
+        # Bind node now: a generator expression otherwise follows the next node.
+        stack.append(map(node.get_child_at_index, range(count)))
+    return None
+
+
+def smoke_window(timeout: float, expected_pid: int, active_only: bool = False) -> dict[str, Any]:
+    """Observe the launched application's window/content without moving focus."""
+    Atspi, GLib = _atspi_import()
+    deadline = time.monotonic() + timeout
+    reason = "no accessible window/content for the launched application"
+    while True:
+        try:
+            for window, record in _window_records(deadline):
+                if record["pid"] != expected_pid:
+                    continue
+                states = window.get_state_set()
+                if not states.contains(Atspi.StateType.SHOWING):
+                    continue
+                if states.contains(Atspi.StateType.DEFUNCT):
+                    continue
+                if record["role"] not in {"frame", "window", "dialog"}:
+                    continue
+                if active_only:
+                    if states.contains(Atspi.StateType.ACTIVE):
+                        return {"status": "passed", "pid": expected_pid, "active": True}
+                    reason = "target window is not active; close shortcut was not sent"
+                    continue
+                evidence = _smoke_content(window, deadline)
+                if evidence is not None:
+                    return {"status": "passed", "pid": expected_pid,
+                            "coverage": "accessible-content-present", "evidence": evidence}
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            raise ProbeError(f"smoke query could not read the application: {error}") from error
+        if launch_process_exited(expected_pid):
+            return {"status": "failed", "error": "application exited before the smoke check"}
+        if time.monotonic() >= deadline:
+            return {"status": "failed", "error": reason}
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+
+
 def audit_window(timeout: float, expected_pid: int) -> dict[str, Any]:
     """Minimum semantics check, deliberately not a functional certification."""
     pairs = _visible_widgets(expected_pid, time.monotonic() + timeout)
@@ -1090,6 +1175,8 @@ def main() -> int:
             "wait-gone",
             "focused-widget",
             "audit-window",
+            "smoke-window",
+            "active-window",
             "activate-widget",
             "dump-widgets",
             "close",
@@ -1109,6 +1196,7 @@ def main() -> int:
     parser.add_argument("--accessible-id")
     parser.add_argument("--window")
     parser.add_argument("--checked", choices=("true", "false"))
+    parser.add_argument("--no-memory-sample", action="store_true")
     args = parser.parse_args()
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     os.environ.setdefault(
@@ -1156,9 +1244,14 @@ def main() -> int:
                 args.operation == "wait-open",
                 args.pid,
                 args.name,
+                sample_memory=not args.no_memory_sample,
             )
         elif args.operation == "focused-widget":
             result = focused_widget(args.timeout, args.pid)
+        elif args.operation in {"smoke-window", "active-window"}:
+            if args.pid is None:
+                raise ProbeError("--pid is required for window smoke checks")
+            result = smoke_window(args.timeout, args.pid, args.operation == "active-window")
         elif args.operation == "audit-window":
             if args.pid is None:
                 raise ProbeError("--pid is required for audit-window")

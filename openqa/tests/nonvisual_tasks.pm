@@ -168,7 +168,6 @@ sub run {
       . shell_quote(data_url('nonvisual-fixture.html')) . ' -o ' . shell_quote("$root/fixture.html"));
     # Fixture preparation is not the action under test.
     command_ok('touch -- ' . shell_quote("$root/source-$nonce.txt"));
-    reader('start');
     atspi->reset_baseline;
     my @cases = (
         ['kate-save-reopen', 'kate --new', \&kate],
@@ -178,11 +177,23 @@ sub run {
           . '--user-data-dir=' . shell_quote("$root/browser") . ' '
           . shell_quote("file://$root/fixture.html#$nonce"), \&brave],
     );
+    my $reader_started = 0;
     for my $case (@cases) {
         my ($name, $command, $exercise) = @$case;
         my $record = {name => $name, status => 'failed', functional => 'not-confirmed',
             accessibility => 'not-confirmed', screen_reader => 'not-confirmed'};
         push @results, $record;
+        my ($binary) = split / /, $command;
+        my $available = atspi->run_command('command -v ' . shell_quote($binary) . ' >/dev/null 2>&1', 5);
+        die 'could not query application availability' unless defined $available;
+        if ($available != 0) {
+            $record->{status} = 'skipped';
+            $record->{skip_reason} = 'not-installed';
+            $record->{error} = 'Not installed in this ISO; not applicable';
+            save_results();
+            next;
+        }
+        unless ($reader_started) { reader('start'); $reader_started = 1; }
         $current = $record;
         my $ok = eval {
             my (undef, $opened, undef, undef, $path, $launch_pid) =
@@ -209,9 +220,9 @@ sub run {
         record_info $name, encode_json($record);
     }
     $current = undef;
-    reader('stop');
+    reader('stop') if $reader_started;
     die 'one or more nonvisual tasks failed; see nonvisual-contracts.json'
-      if grep { $_->{status} ne 'passed' } @results;
+      if grep { $_->{status} eq 'failed' } @results;
 }
 
 sub post_fail_hook {

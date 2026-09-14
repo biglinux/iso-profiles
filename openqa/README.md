@@ -11,22 +11,41 @@ imagem não são critérios de aprovação. Capturas e vídeo são apenas diagn�
 Não existem needles ativas. `production/check-nonvisual.py` impede a reintrodução
 dessas APIs nos módulos de teste.
 
-Uma janela existente, um processo vivo ou uma limpeza forçada não certificam
-uma tarefa nem sua acessibilidade. Há duas camadas deliberadamente distintas:
+O teste padrão é **simples e genérico**: executar o programa instalado, aguardar
+uma janela da aplicação, observar ao menos um conteúdo/controle útil no AT-SPI,
+enviar o atalho de fechar e confirmar encerramento com saída zero. Não percorre
+todas as funções ou todos os controles. O Orca não precisa estar rodando e sua
+API de gravação não é requisito do smoke.
 
-* **Varredura de aplicativos:** verifica abertura de janela vinculada ao processo
-  lançado e um contrato mínimo de semântica AT-SPI. É um smoke test, não uma
-  certificação funcional ou de leitor de tela. Programas explicitamente tratados
-  como comandos precisam de saída zero confirmada para esse contrato limitado.
-* **Percursos não visuais:** `tests/nonvisual_tasks.pm` executa tarefas concretas
-  por teclado em Kate, Konsole, Dolphin e Brave. Confirma efeitos funcionais e a
-  informação apresentada pelo Orca, em campos separados. Está nos schedules
-  `installer`, `release` e `release_uefi` e sua falha reprova o plano.
+`lib/application_smoke.pm` é compartilhado pela varredura live e pela seleção de
+aplicativos instalados. Há uma breve estabilização (2 s), uma consulta limitada de
+conteúdo e um prazo de fechamento (15 s). O atalho padrão é `Alt+F4`; não há clique
+nem ação interna de fechar. Uma janela inativa não recebe o atalho. Saída diferente
+de zero, falta de janela/conteúdo ou necessidade de matar o processo reprovam.
 
-Os antigos campos `functional_test` de `application-policy.yaml` ainda identificam
-aplicativos críticos para a varredura de abertura/fechamento; não significam que
-cada um ganhou um percurso funcional. Os quatro percursos implementados estão
-explicitamente nomeados em `nonvisual-contracts.json`.
+A política é **adaptável à ISO**, não uma lista de pacotes obrigatórios. Entradas
+configuradas ausentes aparecem como `skipped` / não aplicável, nunca como aprovação.
+`TryExec`, `Hidden`, `OnlyShowIn` e `NotShowIn` distinguem ausências e aplicabilidade
+à sessão. Comandos `Terminal=true` e serviços sem janela ficam fora do smoke gráfico.
+Um lançador presente mas quebrado (sem `Exec` válido, ou comando que falha) continua
+sendo erro; não é convertido em ausência para esconder falhas de empacotamento.
+
+A seção histórica `critical` seleciona smokes depois da instalação. Ausência de
+qualquer item não reprova. As quatro shards live descobrem os aplicativos desta ISO
+em `/usr/share/applications`, incluindo aplicativos GNOME sem novos scripts.
+Os módulos de boot/login/instalador continuam específicos do perfil da distribuição;
+a portabilidade dos smokes não significa que o login SDDM já suporte GDM.
+
+**Percursos profundos são opt-in:** definir `BIGLINUX_DEEP_APPLICATION_TESTS=1` em
+`settings` de um plano habilita `nonvisual_tasks.pm` e o diagnóstico extra do Brave.
+O padrão é `0`. Ausências também são ignoradas nesses percursos. Somente com esse
+opt-in o adaptador de fala do Orca e as pós-condições específicas são exigidos.
+Não é necessário ampliar esses percursos para cada aplicativo da ISO.
+
+Parâmetros opcionais: `BIGLINUX_APPLICATION_SETTLE_SECONDS` (0–10),
+`BIGLINUX_APPLICATION_CLOSE_TIMEOUT` (1–120) e `BIGLINUX_APPLICATION_CLOSE_KEY`
+(`alt-f4` ou `ctrl-q`). A varredura usa uma amostra de memória, sem amostragem
+repetida por aplicativo. Uma mudança apenas estética não exige novo teste.
 
 ## Semântica e teclado
 

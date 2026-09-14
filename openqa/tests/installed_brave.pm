@@ -10,6 +10,12 @@ sub test_flags {
 }
 
 sub run {
+    my $available = atspi->run_command('command -v brave >/dev/null 2>&1', 5);
+    die 'could not check optional Brave availability' unless defined $available;
+    if ($available != 0) {
+        record_info 'Brave / skipped', 'Not installed in this ISO; not applicable';
+        return;
+    }
     installed_system->assert_brave_cli;
     my $kernel = atspi->kernel_version;
     # No expected window title: Brave renames its window across releases and

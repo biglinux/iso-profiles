@@ -4,6 +4,35 @@ Base de integração: `openqa-single-instance-experiment` em
 `72005536ee6a8d71381a8f87dd7c637212343a3e`.
 Destino de trabalho: `fix/openqa-nonvisual-accessibility-20260914`, PR #11.
 
+## Revisão de escopo: smoke simples e programas opcionais
+
+O requisito atualizado prioriza abrir → observar janela/conteúdo AT-SPI → fechar
+pelo atalho → confirmar saída 0. A implementação compartilha esse caminho entre
+live e sistema instalado. Não exige todos os controles nomeados, tarefas específicas
+ou gravação do Orca. Os quatro percursos antigos ficam preservados, mas desativados
+por padrão (`BIGLINUX_DEEP_APPLICATION_TESTS=0`). As descrições históricas de
+obrigatoriedade abaixo aplicam-se agora apenas ao opt-in desses percursos.
+
+A seleção `critical` não obriga instalar programas. Ausência comprovada no inventário
+é não aplicável. A agregação aceita ausências da política (inclusive exclusões e
+aliases não presentes), mas ainda exige todas as shards e resultados dos aplicativos
+realmente selecionados. Não permite usar `skipped` para esconder crash de programa
+instalado. Metadados de cobertura passam ao schema 4, para não aceitar como smoke
+completo uma execução antiga que comprovou apenas abertura.
+
+O inventário respeita `TryExec`, `Hidden` e as listas de ambientes do Desktop Entry;
+programas de terminal e serviços não são certificados por este teste gráfico. A
+sessão é lida de `XDG_CURRENT_DESKTOP`, sem nome KDE fixo no relatório. Os testes de
+aplicativos podem ser reutilizados em GNOME; a adaptação de login/instalador permanece
+responsabilidade do perfil de ISO. Ver README para parâmetros e limites.
+
+Fontes adicionais conferidas: https://specifications.freedesktop.org/desktop-entry/latest/recognized-keys.html
+(semântica de TryExec/Hidden/OnlyShowIn/NotShowIn),
+https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/class.Accessible.html
+(conteúdo, interfaces e PID),
+https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/enum.StateType.html
+(estado da janela antes de enviar atalho) e https://open.qa/api/testapi/ (send_key).
+
 ## Mudanças de contrato
 
 | Área | Implementação | Validação esperada |
@@ -31,8 +60,8 @@ acessível e sua apresentação pelo Orca. Nenhuma ação é efetuada por screen
 
 A sonda usa um nonce por execução para evitar reutilização de saída anterior.
 Fixtures contêm apenas dados sintéticos. O console faz preparação/observação;
-ações de usuário passam pelo teclado de openQA. Os quatro percursos são inseridos
-após login nos três schedules de instalação. A varredura antiga de críticos é
+ações de usuário passam pelo teclado de openQA. Os quatro percursos podem ser inseridos
+após login nos três schedules de instalação somente com o opt-in explícito. A varredura antiga de críticos é
 um teste de abertura/fechamento e não foi renomeada em uma certificação funcional.
 
 ## Compatibilidade e limitações conhecidas

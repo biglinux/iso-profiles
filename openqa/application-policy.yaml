@@ -127,6 +127,8 @@ exclude:
 
 aliases: []
 
+# Legacy section name: selected installed-app smoke checks, not mandatory packages.
+# Missing entries are not applicable; the live shards discover all installed applications.
 critical:
   - desktop_id: org.kde.dolphin.desktop
     functional_test: dolphin

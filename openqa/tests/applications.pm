@@ -3,8 +3,10 @@
 use Mojo::Base 'basetest';
 use testapi;
 use atspi;
+use application_smoke;
 use application_policy;
 use Digest::SHA qw(sha256_hex);
+use Encode qw(encode);
 use JSON::PP qw(encode_json);
 use Math::BigInt;
 use MIME::Base64 'encode_base64';
@@ -16,6 +18,7 @@ my $metrics_uploaded = 0;
 my $metrics_upload_ok = 0;
 my $kernel_version;
 my $application_context;
+my $desktop;
 
 sub _record_info {
     my ($title, $output) = @_;
@@ -33,60 +36,6 @@ sub _entry_value {
     return exists $entry->{$key} && defined $entry->{$key} ? $entry->{$key} : $fallback;
 }
 
-sub _record_skipped {
-    my ($entry, $reason) = @_;
-    my $name = _entry_value($entry, 'name', _entry_value($entry, 'relative_path', 'Unnamed desktop entry'));
-    push @application_metrics, {
-        name => $name,
-        category => _entry_value($entry, 'relative_path', 'unknown'),
-        desktop_entry => _entry_value($entry, 'path', undef),
-        status => 'skipped',
-        skip_reason => $reason,
-        action => 'Not launchable in this desktop entry',
-    };
-    _record_info "$name / skipped", $reason;
-}
-
-sub _max_metric {
-    my (@values) = @_;
-    my @numbers = grep { _looks_like_number($_) } @values;
-    return undef unless @numbers;
-    my $maximum = $numbers[0];
-    for my $number (@numbers[1 .. $#numbers]) {
-        $maximum = $number if $number > $maximum;
-    }
-    return $maximum + 0;
-}
-
-sub _looks_like_number {
-    my ($value) = @_;
-    return defined $value && $value =~ /\A\d+(?:\.\d+)?\z/;
-}
-
-sub _merge_memory {
-    my ($metric, @snapshots) = @_;
-    for my $field (qw(rss_mib pss_mib process_count)) {
-        my @values = map { ref $_ eq 'HASH' ? $_->{$field} : undef } @snapshots;
-        $metric->{"${field}_peak"} = _max_metric(@values);
-    }
-}
-
-sub _entry_metric {
-    my ($entry) = @_;
-    return {
-        name => _entry_value($entry, 'name', _entry_value($entry, 'relative_path', 'Unnamed desktop entry')),
-        category => _entry_value($entry, 'relative_path', 'unknown'),
-        desktop_entry => _entry_value($entry, 'path', undef),
-        launcher => _entry_value($entry, 'exec', undef),
-        status => 'failed',
-        action => _entry_value($entry, 'terminal', JSON::PP::false)
-          ? 'Process start'
-          : 'Application window open check',
-        dbus_activatable => _entry_value($entry, 'dbus_activatable', JSON::PP::false),
-        terminal => _entry_value($entry, 'terminal', JSON::PP::false),
-    };
-}
-
 sub _entry_priority {
     my ($entry) = @_;
     my $path = lc(_entry_value($entry, 'path', _entry_value($entry, 'relative_path', '')));
@@ -100,16 +49,6 @@ sub _entry_timeout {
     return $heavy
       if $path =~ m{(?:gimp|libreoffice|soffice|lstopo|big-themes-gui|snapshotrestore|cups)[^/]*\.desktop\z};
     return $default;
-}
-
-sub _uses_process_only {
-    my ($entry) = @_;
-    my $launch_binary = lc(_entry_value($entry, 'launch_binary', ''));
-    my $path = lc(_entry_value($entry, 'path', ''));
-    return $launch_binary eq 'fcitx5'
-      || $launch_binary eq 'orca'
-      || $path =~ m{/org\.fcitx\.fcitx5\.desktop\z}
-      || $path =~ m{/orca\.desktop\z};
 }
 
 sub _entry_matches_filter {
@@ -179,7 +118,7 @@ sub _application_policy {
 
 sub _shard_for {
     my ($desktop_id, $shard_count) = @_;
-    my $digest = sha256_hex($desktop_id);
+    my $digest = sha256_hex(encode('UTF-8', $desktop_id));
     my $number = Math::BigInt->new('0x' . $digest);
     return ($number % $shard_count)->numify;
 }
@@ -193,7 +132,9 @@ sub _build_application_context {
           unless $desktop_id =~ /\A[^\r\n\/]+(?:\/[^\r\n\/]+)*\.desktop\z/;
         die 'desktop entry inventory contains a duplicate desktop ID'
           if grep { $_->{desktop_id} eq $desktop_id } @inventory;
-        my $classification = exists $policy->{excluded}{$desktop_id}
+        my $not_applicable = $policy->{excluded}{$desktop_id}
+          // application_smoke->not_applicable_reason($entry);
+        my $classification = defined $not_applicable
           ? 'excluded'
           : exists $policy->{aliases}{$desktop_id}
           ? 'duplicate-alias'
@@ -210,14 +151,14 @@ sub _build_application_context {
               ? _entry_value($entry, 'skip_reason', 'invalid desktop entry')
               : undef,
             canonical => $policy->{aliases}{$desktop_id},
-            exclusion_reason => $policy->{excluded}{$desktop_id},
+            exclusion_reason => $not_applicable,
             critical_functional_test => $policy->{critical}{$desktop_id},
-            execution_contract => (_entry_value($entry, 'terminal', 0) || _uses_process_only($entry)) ? 'process' : 'graphical',
+            execution_contract => 'graphical',
             assigned_shard => _shard_for($desktop_id, $shard_count),
         };
     }
     @inventory = sort { $a->{desktop_id} cmp $b->{desktop_id} } @inventory;
-    my $inventory_json = JSON::PP->new->canonical(1)->encode(\@inventory);
+    my $inventory_json = JSON::PP->new->canonical(1)->utf8(1)->encode(\@inventory);
     my %totals;
     for my $classification (qw(launchable excluded duplicate-alias invalid)) {
         $totals{$classification} = scalar grep {
@@ -226,7 +167,7 @@ sub _build_application_context {
     }
     my @critical = sort keys %{$policy->{critical}};
     my %known = map { $_->{desktop_id} => 1 } @inventory;
-    my @missing_critical = grep { !$known{$_} } @critical;
+    my @not_installed = grep { !$known{$_} } @critical;
     # An alias drops its desktop entry from testing, so its canonical target
     # must itself exist and be tested; otherwise both silently lose coverage.
     my %classification_by_id = map { $_->{desktop_id} => $_->{classification} } @inventory;
@@ -237,7 +178,7 @@ sub _build_application_context {
           unless ($classification_by_id{$entry->{canonical}} // '') eq 'launchable';
     }
     my $context = {
-        schema_version => 3,
+        schema_version => 4,
         iso_filename => get_var('BIGLINUX_ISO_FILENAME', ''),
         iso_sha256 => get_var('BIGLINUX_ISO_SHA256', ''),
         build_id => get_var('BIGLINUX_OPENQA_BUILD', ''),
@@ -253,160 +194,25 @@ sub _build_application_context {
         duplicate_total => $totals{'duplicate-alias'},
         invalid_total => $totals{invalid},
         critical_desktop_ids => \@critical,
-        missing_critical => \@missing_critical,
+        not_installed_desktop_ids => \@not_installed,
     };
     return $context;
 }
 
 sub _test_entry {
     my ($entry, $timeout) = @_;
-    my $metric = _entry_metric($entry);
-    my $coverage = $entry->{_coverage} // {};
-    $metric->{desktop_id} = $coverage->{desktop_id} // _desktop_id($entry);
-    $metric->{classification} = $coverage->{classification} // 'launchable';
-    $metric->{assigned_shard} = $coverage->{assigned_shard};
-    $metric->{critical_functional_test} = $coverage->{critical_functional_test}
-      if defined $coverage->{critical_functional_test};
-    my $name = $metric->{name};
-    my ($status_path, $window_pid, $launch_pid);
-    my $failure;
-    my $process_started = 0;
-    my $started = time;
-
-    _record_info "$name / starting",
-      'desktop_entry=' . _entry_value($entry, 'relative_path', _entry_value($entry, 'path', 'unknown'));
-    eval {
-        my ($baseline, $opened, $launch_method, $open_seconds, $path, $child_pid, $launch_memory) =
-          atspi->launch_desktop_entry($entry, $timeout);
-        $status_path = $path;
-        $launch_pid = $child_pid;
-        _record_info "$name / launched",
-          sprintf('pid=%s; method=%s', $launch_pid // 'unknown', $launch_method // 'unknown');
-        my $validation_mode = 'atspi-open';
-        # A graphical application must expose its own accessible window.
-        # Neither X11 visibility, another application's window, nor a live PID
-        # is evidence that a person can use it without sight.
-        $metric->{launch_method} = $launch_method;
-        $metric->{launch_pid} = $launch_pid;
-        $metric->{launch_timeout_seconds} = $timeout + 0;
-        $metric->{open_seconds} = sprintf('%.2f', $open_seconds) + 0;
-        $metric->{mem_available_before_mib} = $baseline->{mem_available_mib};
-        $metric->{mem_available_after_open_mib} = $opened->{mem_available_mib};
-        $metric->{accessible_window} = $opened->{accessible_window} ? JSON::PP::true : JSON::PP::false;
-        $metric->{accessible_application} = $opened->{application};
-        $metric->{accessible_window_name} = $opened->{window};
-        $metric->{accessible_children} = $opened->{accessible_children};
-        $window_pid = $opened->{pid};
-        $metric->{window_pid} = $window_pid;
-        my $window_memory = $window_pid
-          ? eval { atspi->result('memory', 1, '--pid', $window_pid) }
-          : undef;
-        _merge_memory(
-            $metric,
-            $launch_memory && $launch_memory->{memory},
-            $opened->{memory},
-            $window_memory && $window_memory->{memory},
-        );
-        $metric->{memory_sample_status} = defined $metric->{rss_mib_peak}
-          || defined $metric->{pss_mib_peak}
-          ? 'collected'
-          : 'process exited before memory sampling';
-        _record_info "$name / " . ($opened->{status} eq 'passed' ? 'opened' : 'started'),
-          sprintf('%s; peak RSS=%s MiB; peak PSS=%s MiB',
-            $opened->{status} eq 'passed' ? 'Accessible window observed (not functional certification)' : 'process started without accessible window',
-            $metric->{rss_mib_peak} // 'not collected',
-            $metric->{pss_mib_peak} // 'not collected');
-
-        if ($opened->{status} ne 'passed') {
-            # A declared process-only entry requires a confirmed successful
-            # exit. It never earns a keyboard or screen-reader certification.
-            if ($metric->{terminal} || _uses_process_only($entry)) {
-                my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
-                die "process-only entry did not confirm successful exit"
-                  if !defined $exit_code || $exit_code != 0;
-                $metric->{launch_exit_code} = $exit_code;
-                $metric->{validation_mode} = 'process-start';
-                $metric->{accessibility_status} = 'not-applicable';
-                $metric->{functional_status} = 'exit-zero';
-                $metric->{screen_reader_status} = 'not-applicable';
-                $metric->{interaction} = 'process.started';
-                $metric->{interaction_status} = 'passed';
-                $metric->{interaction_result} = JSON::PP::true;
-                $metric->{status} = 'passed';
-                $process_started = 1;
-            }
-            die $opened->{error} || 'application did not expose an accessible window'
-              unless $process_started;
-        }
-
-        if (!$process_started) {
-            my $semantics = atspi->result('audit-window', 15, '--pid', $window_pid);
-            die 'accessible controls were not validated: ' . ($semantics->{error} // '')
-              unless ($semantics->{status} // '') eq 'passed' && $semantics->{complete};
-            $metric->{accessibility_status} = 'semantics-only';
-            $metric->{functional_status} = 'launch-only';
-            $metric->{screen_reader_status} = 'not-tested';
-            $metric->{validation_mode} = $validation_mode;
-            $metric->{interaction} = 'application.opened';
-            $metric->{interaction_status} = 'passed';
-            $metric->{interaction_result} = JSON::PP::true;
-            $metric->{status} = 'passed';
-            _record_info "$name / visual evidence",
-              sprintf('window=%s; pid=%s; mode=%s',
-                $metric->{accessible_window_name} // 'unknown',
-                $window_pid // 'unknown',
-                $validation_mode);
-            save_screenshot;
-            $metric->{open_screenshot} = JSON::PP::true;
-        }
-    };
-    $failure = $@ if $@;
-    if ($failure && eval { save_screenshot; 1 }) {
-        $metric->{failure_screenshot} = JSON::PP::true;
-    }
-    _record_info "$name / cleaning", 'terminating the application process tree';
-    my $cleanup;
-    my $cleanup_error;
-    eval { $cleanup = atspi->cleanup($timeout); 1 } or $cleanup_error = $@ || 'application cleanup failed';
-    if (!$cleanup_error && (!ref $cleanup || $cleanup->{status} ne 'passed')) {
-        $cleanup_error = ref $cleanup && $cleanup->{error}
-          ? $cleanup->{error} : 'application cleanup failed';
-    }
-    $metric->{cleanup_status} = ref $cleanup ? $cleanup->{status} : 'failed';
-    $metric->{cleanup_closed} = $cleanup->{closed} if ref $cleanup;
-    $metric->{cleanup_killed} = $cleanup->{killed} if ref $cleanup;
-    _record_info "$name / cleanup",
-      sprintf('status=%s; closed=%s; killed=%s',
-        $metric->{cleanup_status},
-        $metric->{cleanup_closed} // 'unknown',
-        $metric->{cleanup_killed} // 'unknown');
-    if (!$failure && $cleanup_error) {
-        $failure = $cleanup_error;
-        if (eval { save_screenshot; 1 }) {
-            $metric->{cleanup_failure_screenshot} = JSON::PP::true;
-        }
-    }
-    if ($failure) {
-        $failure =~ s/\s+\z//;
-        $metric->{error} = $failure || 'application test failed';
-        $metric->{cleanup_error} = $cleanup_error if $cleanup_error;
-        $metric->{status} = 'failed';
-    }
-    $metric->{duration_seconds} = sprintf('%.2f', time - $started) + 0;
+    my $id = _desktop_id($entry);
+    _record_info "$id / starting", $entry->{name} // $id;
+    my $metric = application_smoke->check($entry, $timeout);
+    $metric->{desktop_id} = $id;
+    $metric->{name} = $entry->{name} // $id;
+    $metric->{desktop_entry} = $entry->{path};
+    $metric->{category} = $id;
+    $metric->{classification} = $entry->{_coverage}{classification};
+    $metric->{assigned_shard} = $entry->{_coverage}{assigned_shard};
     push @application_metrics, $metric;
-
-    if ($metric->{status} eq 'passed') {
-        my $mode = $metric->{validation_mode} // 'unknown';
-        _record_info "$name / passed",
-          sprintf('%s action=%s; peak RSS=%s MiB; peak PSS=%s MiB',
-            $mode,
-            $metric->{interaction} // 'unknown',
-            $metric->{rss_mib_peak} // 'not collected',
-            $metric->{pss_mib_peak} // 'not collected');
-    }
-    else {
-        _record_info "$name / failed", $metric->{error};
-    }
+    _record_info "$id / $metric->{status}",
+      $metric->{error} // $metric->{skip_reason} // 'Accessible window opened; close shortcut completed with exit 0';
 }
 
 sub _write_guest_metrics {
@@ -474,7 +280,7 @@ sub upload_application_metrics {
         schema_version => 2,
         system => {
             kernel => $kernel_version,
-            desktop => 'KDE Plasma',
+            desktop => $desktop // 'unknown',
             accessibility_bus => 'Active and validated with AT-SPI',
         },
         summary => {
@@ -522,10 +328,11 @@ sub post_fail_hook {
 
 sub run {
     $kernel_version = atspi->kernel_version;
-    atspi->reset_baseline;
-    _record_info 'Accessibility', 'AT-SPI is active and exposes the KDE live session';
+    my $baseline = atspi->reset_baseline;
+    $desktop = $baseline->{desktop} // 'unknown';
+    _record_info 'Accessibility', 'AT-SPI session: ' . $desktop;
     my $entries = atspi->inventory;
-    die 'No desktop entries were discovered under /usr/share/applications'
+    _record_info 'Applications / not applicable', 'No installed desktop applications were discovered'
       unless @$entries;
 
     my $timeout = get_var('BIGLINUX_APPLICATION_TIMEOUT', 30);
@@ -561,7 +368,7 @@ sub run {
           && $coverage->{assigned_shard} == $shard_index
           && ($filter eq '' || _entry_matches_filter($_, $filter));
     } @$entries;
-    die 'BIGLINUX_APPLICATION_FILTER matched no desktop entries'
+    _record_info 'Applications / not applicable', 'No installed application matches the filter'
       if $filter ne '' && !@selected_entries;
     _record_info 'Application inventory', sprintf(
         '%d desktop entries discovered recursively; shard %d/%d selected %d',
@@ -585,9 +392,9 @@ sub run {
     die 'Application coverage contains invalid desktop entries: '
       . $application_context->{invalid_total}
       if $application_context->{invalid_total};
-    die 'Critical application entries are missing: '
-      . join(', ', @{$application_context->{missing_critical}})
-      if @{$application_context->{missing_critical}};
+    for my $id (@{$application_context->{not_installed_desktop_ids}}) {
+        _record_info "$id / skipped", 'Not installed in this ISO; not applicable';
+    }
     die sprintf('%d of %d desktop applications failed; see application-metrics.json',
         scalar @failed, scalar @application_metrics)
       if @failed;
