@@ -180,7 +180,7 @@ def main() -> int:
                 finalize(root, args.output_dir, pdf=args.pdf, context=context)
                 return 1
             return finalize(root, args.output_dir, pdf=args.pdf, context=context)
-    return finalize(args.results_root, args.output_dir, pdf=args.pdf, context=context)
+    return finalize(args.results_root, args.output_dir, pdf=args.pdf)
 
 
 if __name__ == "__main__":

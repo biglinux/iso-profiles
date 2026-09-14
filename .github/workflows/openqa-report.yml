@@ -1,0 +1,127 @@
+name: Publish openQA report
+
+on:
+  workflow_call:
+    inputs:
+      iso_filename:
+        required: true
+        type: string
+      build_id:
+        required: true
+        type: string
+      execution_context:
+        required: false
+        type: string
+        default: '{}'
+      expected_plans:
+        required: false
+        type: string
+        default: '[]'
+      artifact_pattern:
+        required: true
+        type: string
+    outputs:
+      verdict:
+        description: Test verdict, independent of successful report publication
+        value: ${{ jobs.report.outputs.verdict }}
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Validation report (always)
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      verdict: ${{ steps.build.outputs.verdict }}
+    env:
+      ISO_FILENAME: ${{ inputs.iso_filename }}
+      OPENQA_BUILD: ${{ inputs.build_id }}
+      REPORT_NAME: release-gate
+      REPORT_NEEDS_JSON: ${{ inputs.execution_context }}
+      REPORT_EXPECTED_PLANS: ${{ inputs.expected_plans }}
+    steps:
+      - name: Initialize emergency workflow report
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/report" "$RUNNER_TEMP/openqa-artifacts"
+          python3 - <<'PYTHON'
+          import html, json, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'report'
+          jobs = json.loads(os.environ['REPORT_NEEDS_JSON'])
+          results = {name: job.get('result', 'unknown') for name, job in jobs.items()}
+          text = ('# Relatório openQA — execução não finalizada\n\n'
+                  + '\n'.join(f'{name}: {result}' for name, result in results.items())
+                  + '\n\nRelatório detalhado indisponível. Consulte os logs do workflow.\n')
+          (root / 'RESULTADO.md').write_text(text, encoding='utf-8')
+          (root / 'biglinux-validation-report.html').write_text(
+              '<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>openQA</title>'
+              '<main><pre>' + html.escape(text) + '</pre></main></html>', encoding='utf-8')
+          (root / 'RESULTADO.json').write_text(json.dumps({'jobs': results, 'report': 'incomplete'}))
+          PYTHON
+
+      - name: Check out the tested sources
+        id: checkout
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download every plan's results
+        id: download
+        if: ${{ always() }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          # A partial re-run retains successful plans from previous attempts.
+          # finalize_report selects only the newest attempt of each artifact.
+          pattern: ${{ inputs.artifact_pattern }}
+          path: ${{ runner.temp }}/openqa-artifacts
+          merge-multiple: false
+
+      - name: Install optional detailed PDF dependencies
+        id: pdf_dependencies
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        timeout-minutes: 3
+        run: python3 -m pip install --quiet --disable-pip-version-check --retries 1 --timeout 20 -r openqa/report/requirements.txt
+
+      - name: Build reports from all available evidence
+        id: build
+        if: ${{ always() }}
+        env:
+          REPORT_STATUS: ${{ job.status }}
+          REPORT_STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          # Preserve the renderer failure while still exporting its test verdict.
+          set +e
+          python3 openqa/report/finalize_report.py \
+            --results-root "$RUNNER_TEMP/openqa-artifacts" \
+            --output-dir "$RUNNER_TEMP/report" --latest-attempts --pdf
+          report_status=$?
+          set -e
+          python3 - <<'PYTHON' >> "$GITHUB_OUTPUT"
+          import json, os, pathlib
+          report = pathlib.Path(os.environ['RUNNER_TEMP']) / 'report' / 'RESULTADO.json'
+          verdict = json.loads(report.read_text(encoding='utf-8')).get('result', 'unknown')
+          print('verdict=' + (verdict if verdict in {'ok', 'softfail', 'fail', 'unknown', 'skipped'} else 'unknown'))
+          PYTHON
+          exit "$report_status"
+
+      - name: Publish report in the Actions summary
+        if: ${{ always() }}
+        run: |
+          if [[ -s "$RUNNER_TEMP/report/RESULTADO.md" ]]; then
+            cat "$RUNNER_TEMP/report/RESULTADO.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Relatório openQA indisponível: falha na infraestrutura de publicação.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: biglinux-iso-validation-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/report/
+          if-no-files-found: error
+          retention-days: 14

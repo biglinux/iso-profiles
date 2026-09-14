@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Install report test dependencies
+        run: python3 -m pip install --disable-pip-version-check -r openqa/report/requirements.txt
       - name: Check Python harness and report regressions
         run: |
           set -euo pipefail
@@ -31,6 +33,8 @@ jobs:
           prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
           for script in openqa/production/*.sh data/*.sh; do bash -n "$script"; done
           git diff --check
+      - name: Check shell sources
+        run: shellcheck -x openqa/production/*.sh data/*.sh
       - name: Archive tracked sources for reproducible harness diagnostics
         if: always()
         run: |
@@ -45,3 +49,108 @@ jobs:
             ${{ runner.temp }}/openqa-source-commit.txt
           retention-days: 3
           if-no-files-found: error
+
+  workflow-syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install pinned actionlint
+        run: GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate openQA workflows and their caller
+        run: '"$RUNNER_TEMP/bin/actionlint" -color .github/workflows/openqa*.yml'
+
+  report-fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        outcome: [success, failure, incomplete]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Simulate a producer (failure is deliberate)
+        id: producer
+        continue-on-error: true
+        env:
+          SCENARIO: ${{ matrix.outcome }}
+        run: python3 openqa/report/report_fixture.py create "$SCENARIO" "$RUNNER_TEMP/fixture"
+      - name: Confirm the expected producer exit
+        if: ${{ always() }}
+        env:
+          SCENARIO: ${{ matrix.outcome }}
+          OUTCOME: ${{ steps.producer.outcome }}
+        run: |
+          expected=success
+          [[ "$SCENARIO" != failure ]] || expected=failure
+          test "$OUTCOME" = "$expected"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() }}
+        with:
+          name: openqa-reportcheck-${{ matrix.outcome }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fixture/
+          if-no-files-found: error
+          retention-days: 3
+
+  report-pipeline:
+    if: ${{ always() }}
+    needs: report-fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        outcome: [success, failure, incomplete]
+    uses: ./.github/workflows/openqa-report.yml
+    with:
+      iso_filename: synthetic-report-check.iso
+      build_id: reportcheck-${{ matrix.outcome }}
+      expected_plans: '[{"name":"bios"}]'
+      artifact_pattern: openqa-reportcheck-${{ matrix.outcome }}-${{ github.run_id }}-*
+
+  verify-published-reports:
+    if: ${{ always() }}
+    needs: [report-fixtures, report-pipeline]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          pattern: biglinux-iso-validation-reportcheck-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/published-reports/
+      - name: Check downloaded HTML, Markdown, JSON and PDF
+        run: python3 openqa/report/report_fixture.py verify "$RUNNER_TEMP/published-reports"
+      - name: Require producer and publication jobs to succeed
+        env:
+          PRODUCER: ${{ needs.report-fixtures.result }}
+          PUBLICATION: ${{ needs.report-pipeline.result }}
+        run: test "$PRODUCER" = success && test "$PUBLICATION" = success
+
+  accessible-gui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install isolated GUI test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-gi gir1.2-gtk-3.0 gir1.2-atspi-2.0 at-spi2-core dbus-x11 xvfb openbox xdotool
+      - name: Test real accessible window, close shortcut, empty window and crash
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          dbus-run-session -- xvfb-run -a /usr/bin/python3 openqa/integration/accessible_smoke.py | tee "$RUNNER_TEMP/accessible-gui.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() }}
+        with:
+          name: openqa-accessible-gui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/accessible-gui.log
+          if-no-files-found: warn
+          retention-days: 3

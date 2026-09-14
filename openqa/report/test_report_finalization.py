@@ -209,11 +209,15 @@ class WorkflowTests(unittest.TestCase):
         workflow = REPOSITORY / ".github/workflows/openqa-single-instance-experiment.yml"
         command = ["ruby", "-rjson", "-ryaml", "-e", "puts JSON.generate(YAML.safe_load_file(ARGV[0], permitted_classes: [], aliases: false))", str(workflow)]
         cls.jobs = json.loads(subprocess.check_output(command, text=True))["jobs"]
+        command[-1] = str(REPOSITORY / ".github/workflows/openqa-report.yml")
+        cls.report_jobs = json.loads(subprocess.check_output(command, text=True))["jobs"]
 
     def test_report_waits_for_all_results_and_runs_after_failures(self):
         report = self.jobs["report"]
         self.assertIn("always()", report["if"])
         self.assertEqual(set(report["needs"]), {"static", "plan", "applications-aggregate"})
+        self.assertEqual(report["uses"], "./.github/workflows/openqa-report.yml")
+        report = self.report_jobs["report"]
         for name in ("Build reports from all available evidence", "Publish report in the Actions summary", "Upload the report"):
             step = next(s for s in report["steps"] if s.get("name") == name)
             self.assertIn("always()", step["if"])
@@ -226,11 +230,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('"$report_verdict" =~ ^(ok|softfail)$', gate["steps"][0]["run"])
 
     def test_plan_paths_exist_in_environment_before_setup_can_fail(self):
-        self.assertIn("OPENQA_DIAGNOSTICS_DIR", self.jobs["plan"]["env"])
-        self.assertIn("OPENQA_PLAN_REPORT_DIR", self.jobs["plan"]["env"])
+        first = self.jobs["plan"]["steps"][0]
+        self.assertIn("OPENQA_DIAGNOSTICS_DIR", first["env"])
+        self.assertIn("OPENQA_PLAN_REPORT_DIR", first["env"])
+        self.assertIn('"$GITHUB_ENV"', first["run"])
+        self.assertNotIn("runner.", json.dumps(self.jobs["plan"]["env"]))
         report = next(s for s in self.jobs["plan"]["steps"] if s.get("id") == "report")
         self.assertIn("always()", report["if"])
         self.assertIn("finalize_report.py", report["run"])
+
+    def test_reusable_report_publishes_even_after_caller_failure(self):
+        report = self.report_jobs["report"]
+        self.assertIn("always()", report["if"])
+        build = next(s for s in report["steps"] if s.get("id") == "build")
+        self.assertIn('report_status=$?', build["run"])
+        self.assertIn('exit "$report_status"', build["run"])
+
+    def test_static_failure_skips_matrix_before_json_expansion(self):
+        self.assertIn("needs.static.result == 'success'", self.jobs["plan"]["if"])
 
 
 if __name__ == "__main__":

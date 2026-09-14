@@ -157,6 +157,8 @@ jobs:
   plan:
     name: openQA ${{ matrix.plan.name }}
     needs: static
+    # Test the dependency before expanding its possibly empty JSON matrix.
+    if: ${{ success() && needs.static.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -177,15 +179,20 @@ jobs:
       OPENQA_BUILD: ${{ inputs.build_id }}
       OPENQA_ASSET_DIR: /mnt/openqa/assets
       OPENQA_RUN_DIR: /mnt/openqa/run/${{ matrix.plan.name }}
-      OPENQA_DIAGNOSTICS_DIR: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.plan.name }}
-      OPENQA_PLAN_REPORT_DIR: ${{ runner.temp }}/openqa-plan-report/${{ matrix.plan.name }}
-      OPENQA_PASSWORD_FILE: ${{ runner.temp }}/openqa-test-password
-      OPENQA_OVMF_RUNTIME: ${{ runner.temp }}/openqa-ovmf
 
     steps:
       - name: Initialize emergency report and deadline
         if: ${{ always() }}
+        env:
+          OPENQA_DIAGNOSTICS_DIR: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.plan.name }}
+          OPENQA_PLAN_REPORT_DIR: ${{ runner.temp }}/openqa-plan-report/${{ matrix.plan.name }}
+          OPENQA_PASSWORD_FILE: ${{ runner.temp }}/openqa-test-password
+          OPENQA_OVMF_RUNTIME: ${{ runner.temp }}/openqa-ovmf
         run: |
+          # Resolve runner paths in the first step, before checkout/preparation.
+          for variable in OPENQA_DIAGNOSTICS_DIR OPENQA_PLAN_REPORT_DIR OPENQA_PASSWORD_FILE OPENQA_OVMF_RUNTIME; do
+            printf '%s=%s\n' "$variable" "${!variable}" >> "$GITHUB_ENV"
+          done
           mkdir -p -- "$OPENQA_PLAN_REPORT_DIR"
           printf '# openQA %s — Inconclusivo\n\nA execução não chegou a finalizar o relatório detalhado. Consulte as etapas do workflow.\n' "$PLAN" > "$OPENQA_PLAN_REPORT_DIR/RESULTADO.md"
           printf 'OPENQA_PLAN_STARTED_EPOCH=%s\n' "$(date +%s)" >> "$GITHUB_ENV"
@@ -619,93 +626,13 @@ jobs:
     name: Validation report (always)
     if: ${{ always() }}
     needs: [static, plan, applications-aggregate]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      verdict: ${{ steps.build.outputs.verdict }}
-    env:
-      ISO_FILENAME: ${{ inputs.iso_filename }}
-      OPENQA_BUILD: ${{ inputs.build_id }}
-      REPORT_NAME: release-gate
-      REPORT_NEEDS_JSON: ${{ toJSON(needs) }}
-      REPORT_EXPECTED_PLANS: ${{ needs.static.outputs.plans || '[]' }}
-    steps:
-      - name: Initialize emergency workflow report
-        if: ${{ always() }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/report" "$RUNNER_TEMP/openqa-artifacts"
-          python3 - <<'PYTHON'
-          import html, json, os, pathlib
-          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'report'
-          jobs = json.loads(os.environ['REPORT_NEEDS_JSON'])
-          results = {name: job.get('result', 'unknown') for name, job in jobs.items()}
-          text = ('# Relatório openQA — execução não finalizada\n\n'
-                  + '\n'.join(f'{name}: {result}' for name, result in results.items())
-                  + '\n\nRelatório detalhado indisponível. Consulte os logs do workflow.\n')
-          (root / 'RESULTADO.md').write_text(text, encoding='utf-8')
-          (root / 'biglinux-validation-report.html').write_text(
-              '<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>openQA</title>'
-              '<main><pre>' + html.escape(text) + '</pre></main></html>', encoding='utf-8')
-          (root / 'RESULTADO.json').write_text(json.dumps({'jobs': results, 'report': 'incomplete'}))
-          PYTHON
-
-      - name: Check out the tested sources
-        id: checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-
-      - name: Download every plan's results
-        id: download
-        if: ${{ always() }}
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          # A partial re-run retains successful plans from previous attempts.
-          # finalize_report selects only the newest attempt of each artifact.
-          pattern: openqa-*-${{ github.run_id }}-*
-          path: ${{ runner.temp }}/openqa-artifacts
-          merge-multiple: false
-
-      - name: Install optional detailed PDF dependencies
-        id: pdf_dependencies
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        timeout-minutes: 3
-        run: python3 -m pip install --quiet --disable-pip-version-check --retries 1 --timeout 20 fpdf2 pillow
-
-      - name: Build reports from all available evidence
-        id: build
-        if: ${{ always() }}
-        env:
-          REPORT_STATUS: ${{ job.status }}
-          REPORT_STEPS_JSON: ${{ toJSON(steps) }}
-        run: |
-          python3 openqa/report/finalize_report.py \
-            --results-root "$RUNNER_TEMP/openqa-artifacts" \
-            --output-dir "$RUNNER_TEMP/report" --latest-attempts --pdf
-          python3 - <<'PYTHON' >> "$GITHUB_OUTPUT"
-          import json, os, pathlib
-          report = pathlib.Path(os.environ['RUNNER_TEMP']) / 'report' / 'RESULTADO.json'
-          verdict = json.loads(report.read_text(encoding='utf-8')).get('result', 'unknown')
-          print('verdict=' + (verdict if verdict in {'ok', 'softfail', 'fail', 'unknown', 'skipped'} else 'unknown'))
-          PYTHON
-
-      - name: Publish report in the Actions summary
-        if: ${{ always() }}
-        run: |
-          if [[ -s "$RUNNER_TEMP/report/RESULTADO.md" ]]; then
-            cat "$RUNNER_TEMP/report/RESULTADO.md" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'Relatório openQA indisponível: falha na infraestrutura de publicação.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload the report
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: biglinux-iso-validation-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/report/
-          if-no-files-found: error
-          retention-days: 14
+    uses: ./.github/workflows/openqa-report.yml
+    with:
+      iso_filename: ${{ inputs.iso_filename }}
+      build_id: ${{ inputs.build_id }}
+      execution_context: ${{ toJSON(needs) }}
+      expected_plans: ${{ needs.static.outputs.plans || '[]' }}
+      artifact_pattern: openqa-*-${{ github.run_id }}-*
 
   openqa-release-gate:
     name: openQA release gate
