@@ -297,12 +297,80 @@ def accessible_snapshot(
             "desktop": os.environ.get("XDG_CURRENT_DESKTOP", "unknown")}
 
 
+def _baseline_window_records(deadline: float) -> list[dict[str, Any]]:
+    """Read only the identities needed to distinguish pre-existing windows.
+
+    A launch baseline is not a semantic accessibility audit. Calling Name,
+    Role and child-count methods on every top-level window made a three-second
+    baseline spend its whole budget on unrelated providers, while returning
+    those fields over the serial console could also exceed openQA's capture
+    buffer. The state file needs only stable window keys and their owning PIDs.
+
+    Provider failures remain strict: only a proxy whose PID has demonstrably
+    exited may disappear during the read. A live or unidentified provider
+    error invalidates the complete baseline and is retried by the caller within
+    the original shared deadline.
+    """
+    Atspi, GLib = _atspi_import()
+    try:
+        desktop = Atspi.get_desktop(0)
+        if desktop is None:
+            raise ProbeError("AT-SPI desktop is unavailable: null desktop root")
+        application_count = desktop.get_child_count()
+    except ProbeError:
+        raise
+    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+        raise ProbeError(f"AT-SPI desktop is unavailable: {error}") from error
+
+    records: list[dict[str, Any]] = []
+    for app_index in range(application_count):
+        if time.monotonic() > deadline:
+            raise WalkTruncated("baseline application enumeration exceeded its deadline")
+        app_pid: int | None = None
+        try:
+            app = desktop.get_child_at_index(app_index)
+            if app is None:
+                continue
+            app_pid = app.get_process_id()
+            window_count = app.get_child_count()
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            if app_pid is not None and launch_process_exited(app_pid):
+                continue
+            raise ProbeError(
+                f"baseline application enumeration was incomplete "
+                f"(index {app_index}, {type(error).__name__})"
+            ) from error
+
+        for window_index in range(window_count):
+            if time.monotonic() > deadline:
+                raise WalkTruncated("baseline window enumeration exceeded its deadline")
+            try:
+                window = app.get_child_at_index(window_index)
+                if window is None:
+                    continue
+                identity = getattr(window, "path", "") or str(window_index)
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                if launch_process_exited(app_pid):
+                    break
+                raise ProbeError(
+                    f"baseline window enumeration was incomplete "
+                    f"(PID {app_pid}, index {window_index}, {type(error).__name__})"
+                ) from error
+            records.append({"key": f"{app_pid}\0{identity}", "pid": app_pid})
+    return records
+
+
 def save_baseline(state_path: Path, timeout: float = 10) -> dict[str, Any]:
     # Session applications may be registering or disappearing while one test
     # hands the desktop to the next. Retry a complete read within one shared
     # deadline; never persist a partial baseline.
     deadline = time.monotonic() + timeout
-    snapshot = _read_until_ready(lambda: accessible_snapshot(deadline), deadline)
+    windows = _read_until_ready(lambda: _baseline_window_records(deadline), deadline)
+    snapshot = {
+        "windows": windows,
+        "mem_available_mib": mem_available_mib(),
+        "desktop": os.environ.get("XDG_CURRENT_DESKTOP", "unknown"),
+    }
     x11_windows = _x11_window_records()
     state_path.write_text(
         json.dumps(
@@ -314,7 +382,16 @@ def save_baseline(state_path: Path, timeout: float = 10) -> dict[str, Any]:
         ),
         encoding="utf-8",
     )
-    return snapshot
+    # Keep the serial response intentionally small. The authoritative window
+    # identities are already persisted in state_path and are consumed by
+    # wait-open/cleanup inside the guest; the host needs only completeness,
+    # memory and desktop metadata.
+    return {
+        "status": "passed",
+        "window_count": len(snapshot["windows"]),
+        "mem_available_mib": snapshot["mem_available_mib"],
+        "desktop": snapshot["desktop"],
+    }
 
 
 def baseline_keys(state_path: Path) -> set[str]:

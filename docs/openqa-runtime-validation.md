@@ -287,3 +287,28 @@ a ação **Exit** e conecta essa ação a `QApplication::exit()`. Seu contrato �
 portanto estrito: a janela deve ser acessível e o processo testado deve terminar
 normalmente com código zero. Esses contratos são individuais; `Escape` e
 `Ctrl+Q` não são inferidos para outros aplicativos.
+
+## Baseline mínima e resposta serial compacta
+
+A primeira reexecução do runtime v6 (`34983271661`) revelou dois efeitos
+independentes da mesma coleta excessiva. Um shard concluiu a leitura, mas o JSON
+hexadecimal com todos os nomes, papéis e contagens de filhos ultrapassou o
+buffer de captura serial: o marcador inicial saiu da janela observada e o host
+recebeu apenas o fim da resposta. No instalador UEFI, a baseline curta gastou o
+prazo consultando semântica de janelas que ainda não seriam usadas e terminou
+como enumeração incompleta.
+
+A baseline de lançamento agora consulta somente o PID da aplicação, a
+quantidade de janelas de nível superior e a identidade de cada proxy. Esses são
+os únicos dados necessários para formar as chaves persistidas que distinguem
+janelas anteriores das janelas abertas pelo teste. Nome, papel, título e árvore
+de conteúdo continuam sendo lidos apenas nas operações que realmente os
+validam.
+
+O arquivo no convidado permanece autoritativo e conserva todas as chaves e PIDs
+necessários para `wait-open` e `cleanup`. Pela serial, a operação devolve apenas
+`status`, quantidade de janelas, memória disponível e desktop. Isso elimina o
+payload proporcional ao número de janelas sem relaxar a prova: erro de provedor
+vivo ou não identificado continua invalidando a leitura; somente um PID já
+encerrado pode desaparecer durante a enumeração. O prazo de três segundos da
+baseline por lançamento não foi ampliado.

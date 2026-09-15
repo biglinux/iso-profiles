@@ -91,4 +91,15 @@ no warnings 'redefine';
 }
 ok(atspi::is_crash_exit_code(133), 'SIGTRAP is not globally ignored');
 ok(!atspi::is_crash_exit_code(0), 'normal exit is not a crash');
+ok(atspi::_baseline_is_complete({
+        status => 'passed', window_count => 5,
+        mem_available_mib => 2048.0, desktop => 'KDE',
+    }), 'compact baseline summary is complete');
+ok(!atspi::_baseline_is_complete({
+        windows => [], mem_available_mib => 2048.0, desktop => 'KDE',
+    }), 'legacy full-window payload cannot bypass the compact baseline contract');
+ok(!atspi::_baseline_is_complete({
+        status => 'passed', window_count => 'many',
+        mem_available_mib => 2048.0, desktop => 'KDE',
+    }), 'baseline window count is typed and bounded to an integer');
 done_testing;

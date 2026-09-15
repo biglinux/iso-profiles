@@ -52,6 +52,16 @@ sub is_crash_exit_code {
     return $crash_exit_code{$code} ? 1 : 0;
 }
 
+sub _baseline_is_complete {
+    my ($baseline) = @_;
+    return ref $baseline eq 'HASH'
+      && ($baseline->{status} // '') eq 'passed'
+      && defined $baseline->{window_count}
+      && $baseline->{window_count} =~ /\A[0-9]+\z/
+      && exists $baseline->{mem_available_mib}
+      && defined $baseline->{desktop};
+}
+
 # Install the guest side of the probe. Once per boot, because the installed
 # system reboots into a filesystem where /tmp is empty again.
 #
@@ -116,9 +126,7 @@ sub reset_baseline {
       unless defined $ready && $ready == 0;
 
     my $baseline = $class->result('baseline', 10);
-    if (ref $baseline ne 'HASH'
-        || !exists $baseline->{mem_available_mib}
-        || ref $baseline->{windows} ne 'ARRAY') {
+    if (!_baseline_is_complete($baseline)) {
         die 'the AT-SPI baseline has an unexpected shape: '
           . (ref $baseline ? JSON::PP->new->canonical->encode($baseline) : 'not a structure');
     }
@@ -376,8 +384,7 @@ sub _launch_argv {
     $sample_memory //= 1;
     my $started = time;
     my $baseline = $class->result('baseline', 3);
-    die 'application baseline is incomplete'
-      unless ref $baseline->{windows} eq 'ARRAY';
+    die 'application baseline is incomplete' unless _baseline_is_complete($baseline);
     my $status_path = sprintf('/tmp/openqa-gui-status-%d-%d', $$, int(time * 1000) % 1_000_000);
     my $user_launcher_arguments = join ' ',
       shell_quote($user_launcher_path),

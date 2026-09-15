@@ -127,21 +127,28 @@ class ReadinessWaitsTest(unittest.TestCase):
 
 
     def test_baseline_retries_transient_registry_failure_before_persisting(self):
-        snapshot = {"windows": [{"key": "42\0/window", "pid": 42}],
-                    "mem_available_mib": 100.0, "desktop": "KDE"}
-        with mock.patch.object(probe, "accessible_snapshot", side_effect=[
-                 probe.ProbeError("registry transition"), snapshot]) as read, \
+        windows = [{"key": "42\0/window", "pid": 42}]
+        with mock.patch.object(probe, "_baseline_window_records", side_effect=[
+                 probe.ProbeError("registry transition"), windows]) as read, \
+             mock.patch.object(probe, "mem_available_mib", return_value=100.0), \
              mock.patch.object(probe, "_x11_window_records", return_value=[]), \
+             mock.patch.dict(probe.os.environ, {"XDG_CURRENT_DESKTOP": "KDE"}), \
              mock.patch.object(Path, "write_text") as write:
             result = probe.save_baseline(Path("baseline.json"), 1)
-        self.assertEqual(result, snapshot)
+        self.assertEqual(result, {
+            "status": "passed",
+            "window_count": 1,
+            "mem_available_mib": 100.0,
+            "desktop": "KDE",
+        })
+        self.assertNotIn("windows", result)
         self.assertEqual(read.call_count, 2)
         self.assertEqual(self.sleeps, [0.1])
         payload = write.call_args.args[0]
         self.assertIn("42\\u0000/window", payload)
 
     def test_baseline_persistent_registry_failure_expires_without_writing(self):
-        with mock.patch.object(probe, "accessible_snapshot",
+        with mock.patch.object(probe, "_baseline_window_records",
                                side_effect=probe.ProbeError("registry unavailable")), \
              mock.patch.object(Path, "write_text") as write, \
              self.assertRaisesRegex(probe.ProbeError, "registry unavailable"):

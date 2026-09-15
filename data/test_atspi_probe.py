@@ -291,6 +291,49 @@ class AtspiNullChildrenTest(unittest.TestCase):
              self.assertRaisesRegex(atspi_probe.ProbeError, "window enumeration was incomplete"):
             list(atspi_probe._window_records())
 
+    def test_baseline_reads_only_window_identity_and_pid(self):
+        window = FakeAccessible("Sensitive title", 42)
+        window.path = "/org/a11y/window/42"
+        window.get_name = mock.Mock(
+            side_effect=AssertionError("baseline must not read a window name")
+        )
+        window.get_role_name = mock.Mock(
+            side_effect=AssertionError("baseline must not read a window role")
+        )
+        window.get_child_count = mock.Mock(
+            side_effect=AssertionError("baseline must not walk window content")
+        )
+        application = FakeAccessible("editor", 42, [window], "application")
+        application.get_name = mock.Mock(
+            side_effect=AssertionError("baseline must not read an application name")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ), mock.patch.object(atspi_probe.time, "monotonic", return_value=0):
+            records = atspi_probe._baseline_window_records(1)
+
+        self.assertEqual(
+            records,
+            [{"key": "42\0/org/a11y/window/42", "pid": 42}],
+        )
+        application.get_name.assert_not_called()
+        window.get_name.assert_not_called()
+        window.get_role_name.assert_not_called()
+        window.get_child_count.assert_not_called()
+
+    def test_baseline_keeps_live_provider_errors_strict(self):
+        application = FakeAccessible("editor", 42, [], "application")
+        application.get_child_count = mock.Mock(side_effect=FakeError("busy"))
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ), mock.patch.object(atspi_probe.time, "monotonic", return_value=0), \
+             mock.patch.object(atspi_probe, "launch_process_exited", return_value=False), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "baseline application"):
+            atspi_probe._baseline_window_records(1)
+
     def test_empty_scope_returns_no_window(self):
         FakeAtspi.desktop = FakeAccessible("desktop", 1, [FakeAccessible("other", 99)])
         with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
