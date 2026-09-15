@@ -1,6 +1,7 @@
 name: Verify the live prefix with the published ISO
 
 # Diagnose the first failing module once before spending six release runners.
+# Uses the reviewed 2026-09-09 publication, not the obsolete July default.
 # This review-branch workflow never approves or publishes an ISO release.
 on:
   push:
@@ -31,8 +32,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          RELEASE: biglinux_2026-07-31_k71-r7
-          ISO: biglinux_2026-07-31_k71.iso
+          RELEASE: biglinux_2026-09-09_k618-r30
+          ISO: biglinux_2026-09-09_k618.iso
         run: |
           set -euo pipefail
           sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/openqa-review-input
@@ -57,7 +58,7 @@ jobs:
       - name: Run the unchanged live test prefix
         run: |
           set -euo pipefail
-          iso=/mnt/openqa-review-input/biglinux_2026-07-31_k71.iso
+          iso=/mnt/openqa-review-input/biglinux_2026-09-09_k618.iso
           openqa/production/run-plan.sh --plan live --iso "$iso" --results "$RESULTS" \
             --password-file "$RUNNER_TEMP/live-test-password" --timeout 900 \
             --build "live-review-$GITHUB_RUN_ID" --commit "$GITHUB_SHA" \
@@ -67,7 +68,7 @@ jobs:
         env:
           REPORT_STATUS: ${{ job.status }}
           REPORT_NAME: live
-          ISO_FILENAME: biglinux_2026-07-31_k71.iso
+          ISO_FILENAME: biglinux_2026-09-09_k618.iso
           OPENQA_BUILD: live-review-${{ github.run_id }}
         run: |
           python3 openqa/report/finalize_report.py --results-root "$RESULTS" --output-dir "$RESULTS/report"
