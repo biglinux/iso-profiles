@@ -1,0 +1,48 @@
+name: Apply openQA runtime v7
+
+on:
+  push:
+    branches: [fix/openqa-nonvisual-accessibility-20260914]
+    paths: [.github/workflows/apply-openqa-runtime-v7.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-openqa-runtime-v7-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the staged branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Verify, apply and test the runtime correction
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' \
+            eb4f67e7e461f45a5b90fc257decca60612290c10206bb4e0565122025111d93 \
+            openqa/.runtime-v7.patch | sha256sum --check --strict -
+          git apply --index --whitespace=error-all openqa/.runtime-v7.patch
+          git rm openqa/.runtime-v7.patch
+          git diff --cached --check
+          python -m unittest discover -s data -p 'test_*.py' -q
+          python -m unittest discover -s openqa/data -p 'test_*.py' -q
+          prove -Iopenqa/lib -Iopenqa/t/lib openqa/t/*.t
+          python -m compileall -q data openqa
+          bash -n data/*.sh openqa/production/*.sh
+
+      - name: Publish the tested correction
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit \
+            -m 'fix(openqa): keep launch baselines compact and bounded' \
+            -m 'Persist only PID/window identity for launch baselines and return a constant-size serial summary. Avoid unrelated semantic calls under the existing three-second budget while preserving strict live-provider failures.'
+          git push origin HEAD:fix/openqa-nonvisual-accessibility-20260914
