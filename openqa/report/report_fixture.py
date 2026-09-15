@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 EXPECTED = {"success": "ok", "failure": "fail", "incomplete": "unknown"}
@@ -37,10 +38,28 @@ def create(scenario: str, root: Path) -> int:
     return 17 if scenario == "failure" else 0
 
 
+def published_artifacts(root: Path) -> list[Path]:
+    """Partial reruns keep successful artifacts from earlier attempts of this run."""
+    pattern = re.compile(r"biglinux-iso-validation-reportcheck-(success|failure|incomplete)-([0-9]+)-([1-9][0-9]*)")
+    selected: dict[str, tuple[int, Path]] = {}
+    runs = set()
+    for directory in sorted(root.glob("biglinux-iso-validation-reportcheck-*")):
+        match = pattern.fullmatch(directory.name)
+        if not match or not directory.is_dir() or directory.is_symlink():
+            raise ValueError("invalid published report artifact name or directory")
+        scenario, run, attempt = match.groups()
+        runs.add(run)
+        if int(attempt) > selected.get(scenario, (0, directory))[0]:
+            selected[scenario] = (int(attempt), directory)
+    if len(runs) > 1:
+        raise ValueError("published reports belong to different workflow runs")
+    if set(selected) != set(EXPECTED):
+        raise ValueError(f"expected three published artifacts, found {len(selected)} scenarios")
+    return [selected[key][1] for key in sorted(selected)]
+
+
 def verify(root: Path) -> None:
-    directories = list(root.glob("biglinux-iso-validation-reportcheck-*"))
-    if len(directories) != len(EXPECTED):
-        raise ValueError(f"expected three published artifacts, found {len(directories)}")
+    directories = published_artifacts(root)
     seen = set()
     for directory in directories:
         summary = json.loads((directory / "RESULTADO.json").read_text(encoding="utf-8"))

@@ -240,7 +240,8 @@ def cover(pdf: Report, suites: list[Suite], summary: dict[str, Any] | None = Non
     pdf.set_xy(16, 79)
     pdf.cell(PAGE[0] - 32, 12, {"ok": "PASSED", "fail": "FAILED", "unknown": "INCONCLUSIVE", "softfail": "WARNING", "skipped": "NOT APPLICABLE"}[verdict], align="C")
 
-    # One tile per firmware: the two paths a user can actually boot.
+    # Show the plan, not just firmware: a live-only check is not a complete
+    # BIOS release validation. All plans are detailed on the following pages.
     left = 16.0
     tiles = suites[:3]
     width = (PAGE[0] - 32 - 8) / max(len(tiles), 1)
@@ -252,7 +253,7 @@ def cover(pdf: Report, suites: list[Suite], summary: dict[str, Any] | None = Non
         pdf.set_text_color(*INK)
         pdf.set_font("helvetica", "B", 15)
         pdf.set_xy(left + 6, 114)
-        pdf.cell(0, 8, suite.firmware)
+        pdf.cell(width - 20, 8, f"{suite.name[:32]} ({suite.firmware})")
         pdf.badge(
             left + 6, 126, LABELS[suite.result], GOOD if suite.ok else BAD if suite.result == "fail" else WEAK
         )
@@ -270,6 +271,15 @@ def cover(pdf: Report, suites: list[Suite], summary: dict[str, Any] | None = Non
             else "",
         )
         left += width
+    pdf.set_text_color(*MUTED)
+    pdf.set_font("helvetica", "", 10)
+    pdf.set_xy(16, 165)
+    pdf.multi_cell(PAGE[0] - 32, 5,
+        "Resultado limitado aos planos e módulos registrados nesta execução. "
+        "Um teste live aprovado não comprova instalação nem validação completa da ISO.")
+    if len(suites) > len(tiles):
+        pdf.set_xy(16, 179)
+        pdf.cell(0, 6, f"{len(tiles)}/{len(suites)} planos na capa; resultados completos nas páginas seguintes.")
 
 
 def phase_pages(pdf: Report, suite: Suite) -> None:

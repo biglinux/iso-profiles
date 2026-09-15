@@ -125,7 +125,9 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          pattern: biglinux-iso-validation-reportcheck-*-${{ github.run_id }}-${{ github.run_attempt }}
+          # Successful jobs are not rerun by "Re-run failed jobs".
+          # Select each scenario's newest attempt in report_fixture.py.
+          pattern: biglinux-iso-validation-reportcheck-*-${{ github.run_id }}-*
           path: ${{ runner.temp }}/published-reports/
       - name: Check downloaded HTML, Markdown, JSON and PDF
         run: python3 openqa/report/report_fixture.py verify "$RUNNER_TEMP/published-reports"

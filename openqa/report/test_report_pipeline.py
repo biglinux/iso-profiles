@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from finalize_report import finalize
-from report_fixture import create, verify
+from report_fixture import create, verify, published_artifacts
 from report_outcome import summarize
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,3 +96,42 @@ class PipelineTests(unittest.TestCase):
             create("success", root)
             (root / "run-status.json").write_bytes(b"invalid JSON")
             self.assertEqual(summarize(root)["result"], "unknown")
+
+
+class PartialRerunReportsTest(unittest.TestCase):
+    def artifacts(self, root, names):
+        paths = []
+        for name in names:
+            path = root / ("biglinux-iso-validation-reportcheck-" + name)
+            path.mkdir()
+            paths.append(path)
+        return paths
+
+    def test_partial_rerun_retains_prior_successful_scenario(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self.artifacts(root, ["success-123-1", "failure-123-2", "incomplete-123-2"])
+            self.assertEqual(set(published_artifacts(root)), set(paths))
+
+    def test_attempt_order_is_numeric(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self.artifacts(root, ["success-123-1", "failure-123-2", "failure-123-10", "incomplete-123-1"])
+            self.assertNotIn(paths[1], published_artifacts(root))
+            self.assertIn(paths[2], published_artifacts(root))
+
+    def test_broken_new_attempt_does_not_restore_old_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self.artifacts(root, ["failure-123-1", "failure-123-2", "incomplete-123-1", "success-123-1"])
+            (paths[0] / "RESULTADO.json").write_text('{"result":"fail"}')
+            (paths[1] / "RESULTADO.json").write_text('broken JSON')
+            with self.assertRaises(json.JSONDecodeError):
+                verify(root)
+
+    def test_mixed_run_evidence_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.artifacts(root, ["success-123-1", "failure-123-1", "incomplete-456-1"])
+            with self.assertRaisesRegex(ValueError, "different workflow runs"):
+                published_artifacts(root)
