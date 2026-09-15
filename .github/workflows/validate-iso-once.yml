@@ -1,0 +1,49 @@
+name: Verify openQA with the published ISO
+
+# One-time validation on the review branch; this never publishes an ISO release.
+on:
+  push:
+    branches: [fix/openqa-nonvisual-accessibility-20260914]
+    paths: [.github/workflows/validate-iso-once.yml]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch the existing published candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE: biglinux_2026-07-31_k71-r7
+          ISO: biglinux_2026-07-31_k71.iso
+        run: |
+          set -euo pipefail
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/openqa-review-input
+          gh release download "$RELEASE" --repo "$REPOSITORY" --dir /mnt/openqa-review-input \
+            --pattern "$ISO.7z.*" --pattern "$ISO.sha256" --pattern "$ISO.md5"
+          cd /mnt/openqa-review-input
+          7z x -y "$ISO.7z.001"
+          sha256sum --check "$ISO.sha256"
+          md5sum --check "$ISO.md5"
+          rm -- "$ISO.7z."*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: review-iso-${{ github.run_id }}
+          path: /mnt/openqa-review-input/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  validation:
+    needs: candidate
+    uses: ./.github/workflows/openqa-single-instance-experiment.yml
+    with:
+      candidate_artifact: review-iso-${{ github.run_id }}
+      iso_filename: biglinux_2026-07-31_k71.iso
+      version: review
+      build_id: review-${{ github.run_id }}
