@@ -2,7 +2,7 @@ name: Validate bounded accessible readiness waits
 on:
   push:
     branches: [fix/openqa-nonvisual-accessibility-20260914]
-    paths: [.github/workflows/openqa-stage-waits.yml, .openqa-readiness-waits.b64]
+    paths: [.github/workflows/openqa-stage-waits.yml, .openqa-readiness-waits.b64, .openqa-call-budget.b64]
 permissions:
   contents: write
 jobs:
@@ -17,15 +17,19 @@ jobs:
       - name: Apply and verify exact reviewed tree
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = d0892709fb4b3609a435ee2cdf0960f943dd9259
+          test "$(git rev-parse HEAD^)" = 1a555ad8b8aaf52c3d9815a308392c988cd8a91c
           python3 - <<'PY'
           import base64, hashlib, lzma, pathlib, subprocess
-          patch = lzma.decompress(base64.b64decode(pathlib.Path('.openqa-readiness-waits.b64').read_bytes(), validate=True))
-          assert hashlib.sha256(patch).hexdigest() == 'a2891043f1639590d1d8af62837560402fcec9f5f128b8f9381145f51bbeffb4'
-          subprocess.run(['git', 'apply', '--index', '-'], input=patch, check=True)
+          patches = [
+              ('.openqa-readiness-waits.b64', 'a2891043f1639590d1d8af62837560402fcec9f5f128b8f9381145f51bbeffb4'),
+              ('.openqa-call-budget.b64', '7fbe80c451545504dbf9ac84a7b01467bb55520e49e9b33c366154a386408fa9')]
+          for name, checksum in patches:
+              patch = lzma.decompress(base64.b64decode(pathlib.Path(name).read_bytes(), validate=True))
+              assert hashlib.sha256(patch).hexdigest() == checksum
+              subprocess.run(['git', 'apply', '--index', '-'], input=patch, check=True)
           PY
-          git rm .openqa-readiness-waits.b64 .github/workflows/openqa-stage-waits.yml
-          test "$(git write-tree)" = 12d7ed5276cb9377430bd3923728d5bc81e202e1
+          git rm .openqa-readiness-waits.b64 .openqa-call-budget.b64 .github/workflows/openqa-stage-waits.yml
+          test "$(git write-tree)" = 812fe26b627e7b20b2282690b843dee484822e08
       - name: Install isolated test dependencies
         run: |
           python3 -m pip install --disable-pip-version-check -r openqa/report/requirements.txt
@@ -53,7 +57,7 @@ jobs:
           import base64, json, os, pathlib, subprocess, urllib.request
           def git(*args):
               return subprocess.check_output(['git', *args])
-          expected = '12d7ed5276cb9377430bd3923728d5bc81e202e1'
+          expected = '812fe26b627e7b20b2282690b843dee484822e08'
           assert git('write-tree').decode().strip() == expected
           entries = []
           for raw in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
