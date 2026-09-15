@@ -45,7 +45,17 @@ sub run {
     # session coming up, and it is the accessibility bus that answers - not a
     # picture of a wizard whose icons change between builds.
     atspi->install;
-    atspi->reset_baseline;
+    # The live wizard runs under dbus-run-session. Querying the systemd user
+    # bus here starts a second AT-SPI launcher and can steal the wizard's socket.
+    # Join the existing wizard session BEFORE the first accessibility request.
+    my $session_url = data_url('wizard_session.py');
+    my $session_status = atspi->run_command(
+        'curl --fail --silent --show-error --max-time 15 ' . shell_quote($session_url)
+          . ' --output /tmp/openqa-wizard-session.py && '
+          . 'session_environment=$(python3 /tmp/openqa-wizard-session.py --timeout 90) && '
+          . 'eval "$session_environment"', 120);
+    die 'could not join the existing live wizard session'
+      unless defined $session_status && $session_status == 0;
     my $language = atspi->assert_widget('table', $PAGE{language}, 300);
     atspi->set_widget_scope($language->{widget}{pid});
 

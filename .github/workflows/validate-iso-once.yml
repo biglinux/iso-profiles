@@ -1,7 +1,7 @@
 name: Verify the live prefix with the published ISO
 
 # Diagnose the first failing module once before spending six release runners.
-# Uses the reviewed 2026-09-09 publication, not the obsolete July default.
+# Uses the reviewed 2026-09-09 publication and the wizard's own D-Bus session.
 # This review-branch workflow never approves or publishes an ISO release.
 on:
   push:
