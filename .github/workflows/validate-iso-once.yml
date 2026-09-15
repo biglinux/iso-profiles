@@ -1,7 +1,8 @@
 name: Verify openQA with the published ISO
 
-# Validate bounded retries of transient AT-SPI reads after run 34923508645.
-# Keep the complete production matrix and application contracts unchanged.
+# Validate application contracts v2 on the reviewed September ISO: Steam is an
+# explicit bootstrap exclusion, handlers/capabilities are classified, aliases
+# are canonicalized, and resident/dialog lifecycles remain crash-sensitive.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
