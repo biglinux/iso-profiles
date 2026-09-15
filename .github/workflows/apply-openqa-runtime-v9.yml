@@ -1,0 +1,94 @@
+name: Apply reviewed openQA runtime v9
+
+on:
+  push:
+    branches:
+      - fix/openqa-nonvisual-accessibility-20260914
+    paths:
+      - .github/workflows/apply-openqa-runtime-v9.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openqa-runtime-v9-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconstruct and verify the reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 1b055f6aebb917e3bafb94aa287ba81876854b3d
+          echo '347d71bf1c26bafa08f8defd3350e2a059805dfbcfd2f658c4eb298cf0fe6051  openqa/.runtime-v9.patch.xz' | sha256sum --check
+          xz --decompress --stdout openqa/.runtime-v9.patch.xz > "$RUNNER_TEMP/runtime-v9.patch"
+          echo '339fa76a2f9b001c2ee5ee785887c1b9917e7917c866e2d8d534e5d78543f39d  '"$RUNNER_TEMP/runtime-v9.patch" | sha256sum --check
+          git rm openqa/.runtime-v9.patch.xz .github/workflows/apply-openqa-runtime-v9.yml
+          test "$(git write-tree)" = 7d7987748bf0d0a7047fd1dc024a5f3203581cd6
+          git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v9.patch"
+          test "$(git write-tree)" = eae7d5f8b29d534504a721502cdc1af5ed587743
+
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check -r openqa/report/requirements.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-gtk-3.0 gir1.2-atspi-2.0 at-spi2-core \
+            dbus-x11 xvfb openbox xdotool shellcheck
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Validate the exact implementation tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          {
+            python3 -m unittest discover -s data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/report -p 'test_*.py'
+            python3 -m py_compile data/*.py openqa/production/*.py openqa/report/*.py
+            python3 openqa/production/check-nonvisual.py
+            prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
+            for script in openqa/production/*.sh data/*.sh; do bash -n "$script"; done
+            shellcheck -x openqa/production/*.sh data/*.sh
+            "$RUNNER_TEMP/bin/actionlint" -color \
+              .github/workflows/openqa*.yml \
+              .github/workflows/mirror-openqa-image.yml \
+              .github/workflows/validate-iso-once.yml
+            git diff --cached --check
+            test "$(git write-tree)" = eae7d5f8b29d534504a721502cdc1af5ed587743
+            dbus-run-session -- xvfb-run -a /usr/bin/python3 \
+              openqa/integration/accessible_smoke.py
+          } 2>&1 | tee "$RUNNER_TEMP/runtime-v9-validation.log"
+
+      - name: Publish the validated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = eae7d5f8b29d534504a721502cdc1af5ed587743
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(openqa): follow exact windows across AT-SPI registry shifts' \
+            -m 'Keep an exact PID-scoped window identity authoritative when unrelated providers change registry slots. Propagate the latest revalidated application hint through widget queries and carry the launcher process tree across the GTK-to-Qt Calamares transition. Stop after the first matching application, without global scans, forced focus, coordinate input, timeout inflation or new exclusions.' \
+            -m 'The exact target tree passed 285 Python tests, 170 Perl assertions, nonvisual policy, ShellCheck, actionlint and real GTK/AT-SPI integration in this workflow. Crash, inaccessible-window and unproven-close results remain blocking; a new ISO matrix is still required.'
+          test "$(git rev-parse HEAD^{tree})" = eae7d5f8b29d534504a721502cdc1af5ed587743
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() }}
+        with:
+          name: openqa-runtime-v9-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-v9-validation.log
+          retention-days: 7
+          if-no-files-found: warn
