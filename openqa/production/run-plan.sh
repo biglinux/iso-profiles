@@ -86,6 +86,8 @@ repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # executor's original failure; a reporting failure only changes a successful run.
 phase=preflight
 status=
+# Invoked by the EXIT trap; tested with a failing preflight in the report suite.
+# shellcheck disable=SC2317
 finish_report() {
     local result=$? report_status=success
     trap - EXIT

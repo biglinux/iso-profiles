@@ -118,3 +118,34 @@ uma ISO ou validação de GUI/Orca reais**.
   https://open.qa/docs/#_run_isotovideo_directly_in_the_ci_runner
 - os-autoinst, resultado e tempo do módulo:
   https://github.com/os-autoinst/os-autoinst/blob/master/basetest.pm
+
+## Integração e prevenção de regressões de workflow
+
+O relatório consolidado usa `.github/workflows/openqa-report.yml`, chamado
+pelo gate e pelo CI. O CI publica três conjuntos **sintéticos** (sucesso,
+falha deliberada do produtor e execução incompleta), executa esse mesmo
+workflow e baixa os relatórios para conferir PDF, HTML, Markdown e JSON.
+Os resultados da ISO não são simulados ou substituídos no gate de produção.
+
+O download de um único artefato é extraído diretamente no destino por
+`download-artifact`; o finalizador reconhece esse layout por `run-status.json`
+ou `vars.json` na raiz. Com artefatos nomeados, continua selecionando a
+última tentativa numericamente, sem ressuscitar uma tentativa verde antiga.
+
+O CI também executa actionlint (validação semântica, não apenas parsing YAML),
+ShellCheck, todos os testes de PDF com dependências declaradas e uma integração
+GTK/AT-SPI real em Xvfb. A integração verifica janela própria, conteúdo acessível,
+fechamento por Alt+F4 e rejeição de janela vazia/processo com SIGSEGV.
+Essa aplicação é uma fixture de teste, não os aplicativos da ISO.
+
+`runner.temp` pertence ao ambiente das **etapas**, não ao `env` do job.
+Os caminhos dependentes do runner são inicializados na primeira etapa e
+exportados por `GITHUB_ENV`. A função do trap EXIT tem uma supressão local
+SC2317: ela é invocada indiretamente e seu funcionamento é exercitado pelo
+teste de CLI com erro de preflight. Nenhuma checagem ShellCheck é desligada
+globalmente.
+
+Referências: tabela de contextos do GitHub Actions
+<https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability>
+e exceção de funções chamadas por trap do ShellCheck
+<https://www.shellcheck.net/wiki/SC2317>.

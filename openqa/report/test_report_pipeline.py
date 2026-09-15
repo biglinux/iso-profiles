@@ -50,3 +50,49 @@ class PipelineTests(unittest.TestCase):
             create("success", root)
             self.assertFalse(list(root.rglob("*.png")))
             self.assertFalse(list(root.rglob("*.svg")))
+    def test_cli_reads_single_flattened_download(self):
+        # Reproduce download-artifact's real single-match extraction layout.
+        for scenario, expected in (("success", "ok"), ("failure", "fail"), ("incomplete", "unknown")):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                create(scenario, root / "download")
+                output = root / "report"
+                run = subprocess.run([sys.executable, str(ROOT / "openqa/report/finalize_report.py"),
+                    "--results-root", str(root / "download"), "--output-dir", str(output), "--latest-attempts"],
+                    env={"PATH": os.environ["PATH"], "GITHUB_RUN_ID": "123"},
+                    capture_output=True, text=True, timeout=15)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                summary = json.loads((output / "RESULTADO.json").read_text())
+                self.assertEqual(summary["result"], expected)
+                self.assertEqual(summary["application_counts"], {"skipped": 1})
+
+    def test_named_newest_attempt_wins_over_flat_files(self):
+        from finalize_report import latest_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            create("success", root)
+            create("success", root / "openqa-bios-123-1")
+            create("failure", root / "openqa-bios-123-2")
+            self.assertEqual(latest_artifacts(root, "123"), [root / "openqa-bios-123-2"])
+
+    def test_other_run_directory_is_not_a_flat_download(self):
+        from finalize_report import latest_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            create("success", root / "openqa-bios-999-1")
+            self.assertEqual(latest_artifacts(root, "123"), [])
+
+    def test_isotovideo_failure_cannot_be_hidden_by_outer_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            create("success", root)
+            result = summarize(root, {"runner_exit_code": "0", "isotovideo_exit_code": "101"})
+            self.assertEqual(result["result"], "fail")
+            self.assertTrue(any("isotovideo" in problem for problem in result["problems"]))
+
+    def test_corrupt_execution_metadata_cannot_approve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            create("success", root)
+            (root / "run-status.json").write_bytes(b"invalid JSON")
+            self.assertEqual(summarize(root)["result"], "unknown")

@@ -35,7 +35,15 @@ def latest_artifacts(root: Path, run_id: str) -> list[Path]:
         key, attempt = match.group(1), int(match.group(2))
         if attempt > selected.get(key, (-1, path))[0]:
             selected[key] = (attempt, path)
-    return [item[1] for _, item in sorted(selected.items())]
+    if selected:
+        return [item[1] for _, item in sorted(selected.items())]
+    # download-artifact extracts a single match directly into its destination,
+    # even with merge-multiple=false. Only accept the explicit flat layout;
+    # never recursively accept an artifact from a different run/attempt.
+    if any((root / name).is_file() and not (root / name).is_symlink()
+           for name in ("run-status.json", "vars.json")):
+        return [root]
+    return []
 
 
 def summary_lines(summary: dict[str, Any]) -> list[str]:

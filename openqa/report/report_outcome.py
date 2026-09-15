@@ -160,7 +160,13 @@ def summarize(root: Path, context: dict[str, Any] | None = None) -> dict[str, An
             else:
                 statuses.extend(normalize(c.get("status")) if isinstance(c, dict) else "unknown" for c in cases)
 
-    contexts = [read_json(p) for p in sorted(root.rglob("run-status.json"))]
+    contexts = []
+    for path in sorted(root.rglob("run-status.json")):
+        current = read_json(path)
+        if not current:
+            statuses.append("unknown")
+            problems.append("Contexto de execução run-status.json ilegível ou vazio.")
+        contexts.append(current)
     if context:
         contexts.append(context)
     for current in contexts:
@@ -169,10 +175,11 @@ def summarize(root: Path, context: dict[str, Any] | None = None) -> dict[str, An
             observed_plans.add(name)
         if current.get("status"):
             statuses.append(normalize(current["status"]))
-        code = current.get("runner_exit_code")
-        if code is not None and str(code) != "0":
-            statuses.append("fail")
-            problems.append(f"{name}: executor terminou com código {code}")
+        for field, label in (("runner_exit_code", "executor"), ("isotovideo_exit_code", "isotovideo")):
+            code = current.get(field)
+            if code is not None and str(code) != "0":
+                statuses.append("fail")
+                problems.append(f"{name}: {label} terminou com código {code}")
         jobs = current.get("jobs", {})
         steps = current.get("steps", {})
         if not isinstance(jobs, dict) or not isinstance(steps, dict):
