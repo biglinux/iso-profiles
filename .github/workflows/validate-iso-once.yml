@@ -1,9 +1,10 @@
 name: Verify openQA with the published ISO
 
-# Revalidate the reviewed September ISO after runtime-v8 cleanup attribution,
-# exact window lifecycle tracking and bounded target-focused accessibility reads.
-# Steam remains an explicit bootstrap exclusion. This trigger follows the
-# validated implementation commit 5a5204b176cbb82cc4a35a9ae022943967e5294c.
+# Revalidate the reviewed September ISO after runtime-v9 follows an exact
+# PID-scoped window across AT-SPI registry shifts and preserves the launch tree
+# through the GTK-to-Qt Calamares transition. Steam remains an explicit
+# bootstrap exclusion. This trigger follows validated implementation commit
+# a6665889762ccb1de6eba0eb30274c25201d7d83.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
