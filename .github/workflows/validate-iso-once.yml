@@ -1,7 +1,7 @@
 name: Verify openQA with the published ISO
 
-# The unchanged live prefix passed in run 34919411392. Exercise the complete
-# production matrix now, against the explicitly reviewed September publication.
+# Validate the session-readiness correction after run 34919737154 exposed
+# the wizard-to-desktop race. Keep the complete production matrix unchanged.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:

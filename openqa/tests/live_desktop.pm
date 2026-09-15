@@ -123,6 +123,9 @@ sub run {
       unless defined wait_serial($closed, no_regex => 1, timeout => 150);
     select_console 'sut';
     atspi->set_widget_scope(undef);
+    # A closed wizard alone is not a ready desktop. This also ensures that
+    # the live-prefix plan observes the same transition as later modules.
+    atspi->reset_baseline;
 }
 
 # Failure evidence is read-only and best effort; it never repairs a broken GUI

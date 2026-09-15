@@ -104,23 +104,16 @@ sub reset_baseline {
     %session_launch_pids = ();
 
     $widget_pid = undef;
-    # Observe the delivered session. Do not repair its accessibility bus, force
-    # toolkit bridges, or guess DISPLAY: those would hide a user-facing defect.
-    select_console 'user-virtio-terminal';
-    my $environment = join ' ',
-      'export XDG_RUNTIME_DIR=/run/user/$(id -u);',
-      'export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus;',
-      'unset DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP AT_SPI_BUS_ADDRESS;',
-      'for name in DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP; do',
-      'value=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^$name=//p" | head -1);',
-      '[ -n "$value" ] && export "$name=$value";',
-      'done;',
-      'printf ', shell_quote(marker_format('__OA_A11Y_SESSION__') . '\\n');
-    type_string $environment;
-    send_key 'ret';
-    die 'the graphical session environment could not be read'
-      unless defined wait_serial('__OA_A11Y_SESSION__', no_regex => 1, timeout => 30);
-    select_console 'sut';
+    # The wizard's exit precedes the next desktop's readiness. Wait for the
+    # delivered session and its actual endpoints, without restarting services.
+    my $session_url = data_url('desktop_session.py');
+    my $ready = $class->run_command(
+        'curl --fail --silent --show-error --max-time 15 ' . shell_quote($session_url)
+          . ' --output /tmp/openqa-desktop-session.py && '
+          . 'session_environment=$(python3 /tmp/openqa-desktop-session.py --timeout 90) && '
+          . 'eval "$session_environment"', 120);
+    die 'the desktop session did not become ready; no accessibility repair was attempted'
+      unless defined $ready && $ready == 0;
 
     my $baseline = $class->result('baseline', 10);
     if (ref $baseline ne 'HASH'
