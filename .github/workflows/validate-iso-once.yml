@@ -4,13 +4,19 @@ name: Verify openQA with the published ISO
 on:
   push:
     branches: [fix/openqa-nonvisual-accessibility-20260914]
-    paths: [.github/workflows/validate-iso-once.yml]
+    paths: [.github/workflows/validate-iso-once.yml, openqa/openqa-image.txt]
 
 permissions:
   contents: read
   packages: read
 
 jobs:
+  runner-image:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/mirror-openqa-image.yml
+
   candidate:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -40,7 +46,8 @@ jobs:
           if-no-files-found: error
 
   validation:
-    needs: candidate
+    if: ${{ always() }}
+    needs: [candidate, runner-image]
     uses: ./.github/workflows/openqa-single-instance-experiment.yml
     with:
       candidate_artifact: review-iso-${{ github.run_id }}
