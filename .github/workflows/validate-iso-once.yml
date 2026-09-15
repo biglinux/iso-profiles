@@ -1,9 +1,9 @@
 name: Verify openQA with the published ISO
 
-# Revalidate the reviewed September ISO after runtime-v6 exact application
-# tracking, coherent AT-SPI baselines and source-backed close contracts.
+# Revalidate the reviewed September ISO after runtime-v7 compact launch
+# baselines, exact application tracking and source-backed close contracts.
 # Steam remains an explicit bootstrap exclusion. This trigger follows the
-# validated implementation commit 69152329158c79a7513f098ffa30f65959f066be.
+# validated implementation commit 190abbbd70111be48a79c38db48f5f6ea32b27ba.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
