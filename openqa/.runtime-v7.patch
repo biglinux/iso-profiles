@@ -1,0 +1,292 @@
+diff --git a/data/atspi_probe.py b/data/atspi_probe.py
+index 3d1dc9f..632117b 100644
+--- a/data/atspi_probe.py
++++ b/data/atspi_probe.py
+@@ -297,12 +297,80 @@ def accessible_snapshot(
+             "desktop": os.environ.get("XDG_CURRENT_DESKTOP", "unknown")}
+ 
+ 
++def _baseline_window_records(deadline: float) -> list[dict[str, Any]]:
++    """Read only the identities needed to distinguish pre-existing windows.
++
++    A launch baseline is not a semantic accessibility audit. Calling Name,
++    Role and child-count methods on every top-level window made a three-second
++    baseline spend its whole budget on unrelated providers, while returning
++    those fields over the serial console could also exceed openQA's capture
++    buffer. The state file needs only stable window keys and their owning PIDs.
++
++    Provider failures remain strict: only a proxy whose PID has demonstrably
++    exited may disappear during the read. A live or unidentified provider
++    error invalidates the complete baseline and is retried by the caller within
++    the original shared deadline.
++    """
++    Atspi, GLib = _atspi_import()
++    try:
++        desktop = Atspi.get_desktop(0)
++        if desktop is None:
++            raise ProbeError("AT-SPI desktop is unavailable: null desktop root")
++        application_count = desktop.get_child_count()
++    except ProbeError:
++        raise
++    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
++        raise ProbeError(f"AT-SPI desktop is unavailable: {error}") from error
++
++    records: list[dict[str, Any]] = []
++    for app_index in range(application_count):
++        if time.monotonic() > deadline:
++            raise WalkTruncated("baseline application enumeration exceeded its deadline")
++        app_pid: int | None = None
++        try:
++            app = desktop.get_child_at_index(app_index)
++            if app is None:
++                continue
++            app_pid = app.get_process_id()
++            window_count = app.get_child_count()
++        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
++            if app_pid is not None and launch_process_exited(app_pid):
++                continue
++            raise ProbeError(
++                f"baseline application enumeration was incomplete "
++                f"(index {app_index}, {type(error).__name__})"
++            ) from error
++
++        for window_index in range(window_count):
++            if time.monotonic() > deadline:
++                raise WalkTruncated("baseline window enumeration exceeded its deadline")
++            try:
++                window = app.get_child_at_index(window_index)
++                if window is None:
++                    continue
++                identity = getattr(window, "path", "") or str(window_index)
++            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
++                if launch_process_exited(app_pid):
++                    break
++                raise ProbeError(
++                    f"baseline window enumeration was incomplete "
++                    f"(PID {app_pid}, index {window_index}, {type(error).__name__})"
++                ) from error
++            records.append({"key": f"{app_pid}\0{identity}", "pid": app_pid})
++    return records
++
++
+ def save_baseline(state_path: Path, timeout: float = 10) -> dict[str, Any]:
+     # Session applications may be registering or disappearing while one test
+     # hands the desktop to the next. Retry a complete read within one shared
+     # deadline; never persist a partial baseline.
+     deadline = time.monotonic() + timeout
+-    snapshot = _read_until_ready(lambda: accessible_snapshot(deadline), deadline)
++    windows = _read_until_ready(lambda: _baseline_window_records(deadline), deadline)
++    snapshot = {
++        "windows": windows,
++        "mem_available_mib": mem_available_mib(),
++        "desktop": os.environ.get("XDG_CURRENT_DESKTOP", "unknown"),
++    }
+     x11_windows = _x11_window_records()
+     state_path.write_text(
+         json.dumps(
+@@ -314,7 +382,16 @@ def save_baseline(state_path: Path, timeout: float = 10) -> dict[str, Any]:
+         ),
+         encoding="utf-8",
+     )
+-    return snapshot
++    # Keep the serial response intentionally small. The authoritative window
++    # identities are already persisted in state_path and are consumed by
++    # wait-open/cleanup inside the guest; the host needs only completeness,
++    # memory and desktop metadata.
++    return {
++        "status": "passed",
++        "window_count": len(snapshot["windows"]),
++        "mem_available_mib": snapshot["mem_available_mib"],
++        "desktop": snapshot["desktop"],
++    }
+ 
+ 
+ def baseline_keys(state_path: Path) -> set[str]:
+diff --git a/data/test_atspi_probe.py b/data/test_atspi_probe.py
+index 76d1bbf..ade1f60 100644
+--- a/data/test_atspi_probe.py
++++ b/data/test_atspi_probe.py
+@@ -291,6 +291,49 @@ class AtspiNullChildrenTest(unittest.TestCase):
+              self.assertRaisesRegex(atspi_probe.ProbeError, "window enumeration was incomplete"):
+             list(atspi_probe._window_records())
+ 
++    def test_baseline_reads_only_window_identity_and_pid(self):
++        window = FakeAccessible("Sensitive title", 42)
++        window.path = "/org/a11y/window/42"
++        window.get_name = mock.Mock(
++            side_effect=AssertionError("baseline must not read a window name")
++        )
++        window.get_role_name = mock.Mock(
++            side_effect=AssertionError("baseline must not read a window role")
++        )
++        window.get_child_count = mock.Mock(
++            side_effect=AssertionError("baseline must not walk window content")
++        )
++        application = FakeAccessible("editor", 42, [window], "application")
++        application.get_name = mock.Mock(
++            side_effect=AssertionError("baseline must not read an application name")
++        )
++        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
++
++        with mock.patch.object(
++            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
++        ), mock.patch.object(atspi_probe.time, "monotonic", return_value=0):
++            records = atspi_probe._baseline_window_records(1)
++
++        self.assertEqual(
++            records,
++            [{"key": "42\0/org/a11y/window/42", "pid": 42}],
++        )
++        application.get_name.assert_not_called()
++        window.get_name.assert_not_called()
++        window.get_role_name.assert_not_called()
++        window.get_child_count.assert_not_called()
++
++    def test_baseline_keeps_live_provider_errors_strict(self):
++        application = FakeAccessible("editor", 42, [], "application")
++        application.get_child_count = mock.Mock(side_effect=FakeError("busy"))
++        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
++        with mock.patch.object(
++            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
++        ), mock.patch.object(atspi_probe.time, "monotonic", return_value=0), \
++             mock.patch.object(atspi_probe, "launch_process_exited", return_value=False), \
++             self.assertRaisesRegex(atspi_probe.ProbeError, "baseline application"):
++            atspi_probe._baseline_window_records(1)
++
+     def test_empty_scope_returns_no_window(self):
+         FakeAtspi.desktop = FakeAccessible("desktop", 1, [FakeAccessible("other", 99)])
+         with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+diff --git a/data/test_readiness_waits.py b/data/test_readiness_waits.py
+index c9302c0..be53a8c 100644
+--- a/data/test_readiness_waits.py
++++ b/data/test_readiness_waits.py
+@@ -127,21 +127,28 @@ class ReadinessWaitsTest(unittest.TestCase):
+ 
+ 
+     def test_baseline_retries_transient_registry_failure_before_persisting(self):
+-        snapshot = {"windows": [{"key": "42\0/window", "pid": 42}],
+-                    "mem_available_mib": 100.0, "desktop": "KDE"}
+-        with mock.patch.object(probe, "accessible_snapshot", side_effect=[
+-                 probe.ProbeError("registry transition"), snapshot]) as read, \
++        windows = [{"key": "42\0/window", "pid": 42}]
++        with mock.patch.object(probe, "_baseline_window_records", side_effect=[
++                 probe.ProbeError("registry transition"), windows]) as read, \
++             mock.patch.object(probe, "mem_available_mib", return_value=100.0), \
+              mock.patch.object(probe, "_x11_window_records", return_value=[]), \
++             mock.patch.dict(probe.os.environ, {"XDG_CURRENT_DESKTOP": "KDE"}), \
+              mock.patch.object(Path, "write_text") as write:
+             result = probe.save_baseline(Path("baseline.json"), 1)
+-        self.assertEqual(result, snapshot)
++        self.assertEqual(result, {
++            "status": "passed",
++            "window_count": 1,
++            "mem_available_mib": 100.0,
++            "desktop": "KDE",
++        })
++        self.assertNotIn("windows", result)
+         self.assertEqual(read.call_count, 2)
+         self.assertEqual(self.sleeps, [0.1])
+         payload = write.call_args.args[0]
+         self.assertIn("42\\u0000/window", payload)
+ 
+     def test_baseline_persistent_registry_failure_expires_without_writing(self):
+-        with mock.patch.object(probe, "accessible_snapshot",
++        with mock.patch.object(probe, "_baseline_window_records",
+                                side_effect=probe.ProbeError("registry unavailable")), \
+              mock.patch.object(Path, "write_text") as write, \
+              self.assertRaisesRegex(probe.ProbeError, "registry unavailable"):
+diff --git a/docs/openqa-runtime-validation.md b/docs/openqa-runtime-validation.md
+index 836885a..f1d39e8 100644
+--- a/docs/openqa-runtime-validation.md
++++ b/docs/openqa-runtime-validation.md
+@@ -287,3 +287,28 @@ a ação **Exit** e conecta essa ação a `QApplication::exit()`. Seu contrato é
+ portanto estrito: a janela deve ser acessível e o processo testado deve terminar
+ normalmente com código zero. Esses contratos são individuais; `Escape` e
+ `Ctrl+Q` não são inferidos para outros aplicativos.
++
++## Baseline mínima e resposta serial compacta
++
++A primeira reexecução do runtime v6 (`34983271661`) revelou dois efeitos
++independentes da mesma coleta excessiva. Um shard concluiu a leitura, mas o JSON
++hexadecimal com todos os nomes, papéis e contagens de filhos ultrapassou o
++buffer de captura serial: o marcador inicial saiu da janela observada e o host
++recebeu apenas o fim da resposta. No instalador UEFI, a baseline curta gastou o
++prazo consultando semântica de janelas que ainda não seriam usadas e terminou
++como enumeração incompleta.
++
++A baseline de lançamento agora consulta somente o PID da aplicação, a
++quantidade de janelas de nível superior e a identidade de cada proxy. Esses são
++os únicos dados necessários para formar as chaves persistidas que distinguem
++janelas anteriores das janelas abertas pelo teste. Nome, papel, título e árvore
++de conteúdo continuam sendo lidos apenas nas operações que realmente os
++validam.
++
++O arquivo no convidado permanece autoritativo e conserva todas as chaves e PIDs
++necessários para `wait-open` e `cleanup`. Pela serial, a operação devolve apenas
++`status`, quantidade de janelas, memória disponível e desktop. Isso elimina o
++payload proporcional ao número de janelas sem relaxar a prova: erro de provedor
++vivo ou não identificado continua invalidando a leitura; somente um PID já
++encerrado pode desaparecer durante a enumeração. O prazo de três segundos da
++baseline por lançamento não foi ampliado.
+diff --git a/openqa/lib/atspi.pm b/openqa/lib/atspi.pm
+index 0e99341..a2a375a 100644
+--- a/openqa/lib/atspi.pm
++++ b/openqa/lib/atspi.pm
+@@ -52,6 +52,16 @@ sub is_crash_exit_code {
+     return $crash_exit_code{$code} ? 1 : 0;
+ }
+ 
++sub _baseline_is_complete {
++    my ($baseline) = @_;
++    return ref $baseline eq 'HASH'
++      && ($baseline->{status} // '') eq 'passed'
++      && defined $baseline->{window_count}
++      && $baseline->{window_count} =~ /\A[0-9]+\z/
++      && exists $baseline->{mem_available_mib}
++      && defined $baseline->{desktop};
++}
++
+ # Install the guest side of the probe. Once per boot, because the installed
+ # system reboots into a filesystem where /tmp is empty again.
+ #
+@@ -116,9 +126,7 @@ sub reset_baseline {
+       unless defined $ready && $ready == 0;
+ 
+     my $baseline = $class->result('baseline', 10);
+-    if (ref $baseline ne 'HASH'
+-        || !exists $baseline->{mem_available_mib}
+-        || ref $baseline->{windows} ne 'ARRAY') {
++    if (!_baseline_is_complete($baseline)) {
+         die 'the AT-SPI baseline has an unexpected shape: '
+           . (ref $baseline ? JSON::PP->new->canonical->encode($baseline) : 'not a structure');
+     }
+@@ -376,8 +384,7 @@ sub _launch_argv {
+     $sample_memory //= 1;
+     my $started = time;
+     my $baseline = $class->result('baseline', 3);
+-    die 'application baseline is incomplete'
+-      unless ref $baseline->{windows} eq 'ARRAY';
++    die 'application baseline is incomplete' unless _baseline_is_complete($baseline);
+     my $status_path = sprintf('/tmp/openqa-gui-status-%d-%d', $$, int(time * 1000) % 1_000_000);
+     my $user_launcher_arguments = join ' ',
+       shell_quote($user_launcher_path),
+diff --git a/openqa/t/atspi_contracts.t b/openqa/t/atspi_contracts.t
+index 1cb04ef..bc5e39d 100644
+--- a/openqa/t/atspi_contracts.t
++++ b/openqa/t/atspi_contracts.t
+@@ -91,4 +91,15 @@ no warnings 'redefine';
+ }
+ ok(atspi::is_crash_exit_code(133), 'SIGTRAP is not globally ignored');
+ ok(!atspi::is_crash_exit_code(0), 'normal exit is not a crash');
++ok(atspi::_baseline_is_complete({
++        status => 'passed', window_count => 5,
++        mem_available_mib => 2048.0, desktop => 'KDE',
++    }), 'compact baseline summary is complete');
++ok(!atspi::_baseline_is_complete({
++        windows => [], mem_available_mib => 2048.0, desktop => 'KDE',
++    }), 'legacy full-window payload cannot bypass the compact baseline contract');
++ok(!atspi::_baseline_is_complete({
++        status => 'passed', window_count => 'many',
++        mem_available_mib => 2048.0, desktop => 'KDE',
++    }), 'baseline window count is typed and bounded to an integer');
+ done_testing;
