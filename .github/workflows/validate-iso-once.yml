@@ -1,8 +1,8 @@
-name: Verify the live prefix with the published ISO
+name: Verify openQA with the published ISO
 
-# Diagnose the first failing module once before spending six release runners.
-# Uses the 2026-09-09 publication; shared accessible panels are visited once.
-# This review-branch workflow never approves or publishes an ISO release.
+# The unchanged live prefix passed in run 34919411392. Exercise the complete
+# production matrix now, against the explicitly reviewed September publication.
+# This review-branch workflow never publishes an ISO release.
 on:
   push:
     branches: [fix/openqa-nonvisual-accessibility-20260914]
@@ -14,21 +14,17 @@ permissions:
   packages: read
 
 jobs:
-  live:
+  runner-image:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/mirror-openqa-image.yml
+
+  candidate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: Initialize emergency summary
-        env:
-          RESULTS: ${{ runner.temp }}/live-results
-        run: |
-          mkdir -p "$RESULTS/report"
-          printf '# openQA live — Inconclusivo\n\nA execução não finalizou.\n' > "$RESULTS/report/RESULTADO.md"
-          printf 'RESULTS=%s\n' "$RESULTS" >> "$GITHUB_ENV"
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-      - name: Fetch and verify the published candidate
+      - name: Fetch the reviewed published candidate
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -44,45 +40,20 @@ jobs:
           sha256sum --check "$ISO.sha256"
           md5sum --check "$ISO.md5"
           rm -- "$ISO.7z."*
-      - name: Prepare the pinned executor
-        env:
-          REGISTRY_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker pull --quiet "$(tr -d '[:space:]' < openqa/openqa-image.txt)"
-          test -c /dev/kvm
-          sudo chmod 0666 /dev/kvm
-          umask 077
-          openssl rand -hex 18 > "$RUNNER_TEMP/live-test-password"
-      - name: Run the unchanged live test prefix
-        run: |
-          set -euo pipefail
-          iso=/mnt/openqa-review-input/biglinux_2026-09-09_k618.iso
-          openqa/production/run-plan.sh --plan live --iso "$iso" --results "$RESULTS" \
-            --password-file "$RUNNER_TEMP/live-test-password" --timeout 900 \
-            --build "live-review-$GITHUB_RUN_ID" --commit "$GITHUB_SHA" \
-            --iso-sha256 "$(sha256sum "$iso" | cut -d ' ' -f1)"
-      - name: Finalize diagnostic report even on failure
-        if: ${{ always() }}
-        env:
-          REPORT_STATUS: ${{ job.status }}
-          REPORT_NAME: live
-          ISO_FILENAME: biglinux_2026-09-09_k618.iso
-          OPENQA_BUILD: live-review-${{ github.run_id }}
-        run: |
-          python3 openqa/report/finalize_report.py --results-root "$RESULTS" --output-dir "$RESULTS/report"
-          cat "$RESULTS/report/RESULTADO.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: ${{ always() }}
         with:
-          name: diagnostic-openqa-live-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/live-results/report/
-            ${{ runner.temp }}/live-results/testresults/
-            ${{ runner.temp }}/live-results/ulogs/
-            ${{ runner.temp }}/live-results/autoinst-log.txt
-            ${{ runner.temp }}/live-results/vars.json
-            ${{ runner.temp }}/live-results/virtio_console.log
+          name: review-iso-${{ github.run_id }}
+          path: /mnt/openqa-review-input/
+          compression-level: 0
+          retention-days: 1
           if-no-files-found: error
-          retention-days: 7
+
+  validation:
+    if: ${{ always() }}
+    needs: [candidate, runner-image]
+    uses: ./.github/workflows/openqa-single-instance-experiment.yml
+    with:
+      candidate_artifact: review-iso-${{ github.run_id }}
+      iso_filename: biglinux_2026-09-09_k618.iso
+      version: review
+      build_id: review-${{ github.run_id }}
