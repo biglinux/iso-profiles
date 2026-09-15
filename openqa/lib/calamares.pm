@@ -24,9 +24,25 @@ our @DONE = ('Done', 'Concluir', 'Concluído', 'Finish', 'Finalizar');
 # accept both so the toolkit Calamares happens to use is not a variable.
 our $BUTTON_ROLES = 'push button|button';
 
+my $launch_pid;
+
+sub set_launch_scope {
+    my ($class, $pid) = @_;
+    die 'Calamares requires a valid launch-tree PID'
+      unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
+    $launch_pid = $pid;
+    atspi->set_widget_scope($launch_pid);
+}
+
+sub _require_launch_scope {
+    die 'Calamares launch scope has not been established' unless defined $launch_pid;
+    return $launch_pid;
+}
+
 sub click_action {
     my ($class, $labels, $timeout) = @_;
-    return atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60);
+    return atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60,
+        pid => $class->_require_launch_scope);
 }
 
 # Each installer page is identified by a control only that page publishes,
@@ -69,8 +85,10 @@ sub page_anchor {
 sub assert_page {
     my ($class, $page, $timeout) = @_;
     my ($role, $labels) = $class->page_anchor($page);
-    my $found = atspi->assert_widget($role, $labels, $timeout // 60, pid => undef);
-    atspi->set_widget_scope($found->{widget}{pid});
+    # Do not rediscover globally or narrow to a transient GTK child: Calamares
+    # replaces that child with a Qt process, still owned by the same launch.
+    my $found = atspi->assert_widget($role, $labels, $timeout // 60,
+        pid => $class->_require_launch_scope);
     die "the installer did not show the '$page' page: "
       . ($found->{error} // 'unknown reason')
       unless ref $found eq 'HASH' && $found->{status} eq 'passed';

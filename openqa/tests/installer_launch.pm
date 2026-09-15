@@ -28,21 +28,24 @@ sub run {
 
     my $is_uefi = $biglinux_firmware_mode =~ /UEFI/;
 
-    # No expected window title: the launcher renames its windows between
-    # releases and localizes them. That a window appeared is enough here; the
-    # installer pages asserted below prove it is really Calamares.
+    # Follow the launch tree, not a title or any newly created desktop popup.
+    # The wrapper remains alive while its GTK dialogs and Qt installer change
+    # child PIDs. Keep that root as the scope across all installation pages.
     # The installer runs in the live desktop session, which live_desktop
     # already installed the probe into; only the baseline is per session.
     atspi->reset_baseline;
-    my (undef, $opened, undef, undef, $status_path) = atspi->launch_command(
+    my (undef, $opened, undef, undef, $status_path, $launch_pid) = atspi->launch_command(
         'calamares-biglinux_polkit --software-render',
         '',
-        120
+        120,
+        'process-tree'
     );
     unless ($opened->{status} eq 'passed') {
         atspi->abort_launch($status_path);
         die 'The BigLinux Calamares launcher did not expose its first AT-SPI window';
     }
+
+    calamares->set_launch_scope($launch_pid);
 
     if ($is_uefi) {
         # The EFI warning is one of the launcher's GTK4 dialogs, so its button

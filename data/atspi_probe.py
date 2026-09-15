@@ -162,7 +162,9 @@ def _atspi_import() -> tuple[Any, Any]:
     return Atspi, GLib
 
 
-def _window_records(deadline: float | None = None) -> Iterable[tuple[Any, dict[str, Any]]]:
+def _window_records(
+    deadline: float | None = None, allowed_pids: set[int] | None = None
+) -> Iterable[tuple[Any, dict[str, Any]]]:
     Atspi, GLib = _atspi_import()
     try:
         desktop = Atspi.get_desktop(0)
@@ -181,8 +183,12 @@ def _window_records(deadline: float | None = None) -> Iterable[tuple[Any, dict[s
             app = desktop.get_child_at_index(app_index)
             if app is None:
                 continue
-            app_name = app.get_name() or ""
+            # PID is resolved by the bus. Skip unrelated applications before
+            # any widget calls: a slow shell must not consume a browser's budget.
             app_pid = app.get_process_id()
+            if allowed_pids is not None and app_pid not in allowed_pids:
+                continue
+            app_name = app.get_name() or ""
             window_count = app.get_child_count()
         except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
             raise ProbeError("application enumeration was incomplete")
@@ -211,8 +217,10 @@ def _window_records(deadline: float | None = None) -> Iterable[tuple[Any, dict[s
             )
 
 
-def accessible_snapshot() -> dict[str, Any]:
-    windows = [record for _window, record in _window_records()]
+def accessible_snapshot(
+    deadline: float | None = None, allowed_pids: set[int] | None = None
+) -> dict[str, Any]:
+    windows = [record for _window, record in _window_records(deadline, allowed_pids)]
     return {"windows": windows, "mem_available_mib": mem_available_mib(),
             "desktop": os.environ.get("XDG_CURRENT_DESKTOP", "unknown")}
 
@@ -422,7 +430,7 @@ def wait_for_window_change(
         # forked helper, so identity is the launched process tree rather than a
         # single PID. Recompute it every poll: children appear over time.
         allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
-        last_snapshot = accessible_snapshot()
+        last_snapshot = accessible_snapshot(deadline, allowed_pids)
         extra = [
             window
             for window in last_snapshot["windows"]
@@ -708,7 +716,7 @@ def _visible_widgets(
     """Read a complete bounded scope. Propagate failure, including truncation."""
     allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
     widgets = []
-    for window, record in _window_records(deadline):
+    for window, record in _window_records(deadline, allowed_pids):
         if allowed_pids is not None and record["pid"] not in allowed_pids:
             continue
         for accessible in _walk(window, limit=_WIDGET_TREE_LIMIT, deadline=deadline):
@@ -893,20 +901,40 @@ def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, 
     thousands of proxies. Success proves existence only, never completeness.
     No text values (potentially sensitive) are included in the evidence.
     """
-    stack = [iter([window])]
+    # An iterator owns one active ancestor. A shared, already exhausted panel
+    # is not a cycle; keep references alive so proxy IDs cannot be recycled.
+    exhausted = object()
+    stack = [(iter([window]), None)]
     seen = set()
+    active = set()
     references = []
-    visited = 0
+    visited = examined = 0
+    missing_child = False
     while stack:
-        if time.monotonic() > deadline or visited >= limit:
-            raise WalkTruncated("no accessible content found within the smoke budget")
-        node = next(stack[-1], None)
-        if node is None:
+        if time.monotonic() > deadline:
+            raise WalkTruncated("no accessible content found within the smoke deadline")
+        iterator, parent = stack[-1]
+        node = next(iterator, exhausted)
+        if node is exhausted:
             stack.pop()
+            if parent is not None:
+                active.remove(parent)
             continue
-        if id(node) in seen:
+        if examined >= limit * 4:
+            raise WalkTruncated("smoke reference budget exhausted")
+        examined += 1
+        if node is None:
+            missing_child = True
+            continue
+        identity = id(node)
+        if identity in active:
             raise WalkTruncated("cyclic accessibility tree")
-        seen.add(id(node))
+        if identity in seen:
+            continue
+        if visited >= limit:
+            raise WalkTruncated("no accessible content found within the smoke node budget")
+        seen.add(identity)
+        active.add(identity)
         references.append(node)
         visited += 1
         if node is not window:
@@ -930,7 +958,9 @@ def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, 
         if count < 0:
             raise ProbeError("invalid child count in smoke query")
         # Bind node now: a generator expression otherwise follows the next node.
-        stack.append(map(node.get_child_at_index, range(count)))
+        stack.append((map(node.get_child_at_index, range(count)), identity))
+    if missing_child:
+        raise ProbeError("no content witness in an incomplete smoke tree")
     return None
 
 
@@ -941,7 +971,7 @@ def smoke_window(timeout: float, expected_pid: int, active_only: bool = False) -
     reason = "no accessible window/content for the launched application"
     while True:
         try:
-            for window, record in _window_records(deadline):
+            for window, record in _window_records(deadline, {expected_pid}):
                 if record["pid"] != expected_pid:
                     continue
                 states = window.get_state_set()

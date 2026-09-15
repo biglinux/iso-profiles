@@ -87,6 +87,38 @@ class SmokeContentTest(unittest.TestCase):
         root.children.append(root)
         with self.assertRaises(probe.WalkTruncated): self.content(root)
 
+    def test_shared_container_is_not_an_ancestor_cycle(self):
+        shared = Node()
+        root = Node(children=[Node(children=[shared]), Node(children=[shared]),
+                              Node(role="text", text=True)])
+        self.assertTrue(self.content(root)["text_interface"])
+
+    def test_shared_subtree_is_not_revisited(self):
+        shared = Node(children=[Node()])
+        shared.get_child_count = mock.Mock(wraps=shared.get_child_count)
+        root = Node(children=[shared, shared, Node("Menu", "button", action=True)])
+        self.assertTrue(self.content(root)["action_interface"])
+        shared.get_child_count.assert_called_once()
+
+    def test_empty_tree_at_exact_unique_budget_is_complete(self):
+        self.assertIsNone(self.content(Node(children=[Node()]), limit=2))
+
+    def test_null_child_does_not_hide_a_later_content_witness(self):
+        root = Node(children=[None, Node(role="text", text=True)])
+        self.assertTrue(self.content(root)["text_interface"])
+
+    def test_null_child_without_witness_is_inconclusive(self):
+        with self.assertRaises(probe.ProbeError):
+            self.content(Node(children=[None]))
+
+    def test_repeated_references_have_a_bounded_edge_budget(self):
+        root, shared = Node(), Node()
+        root.get_child_count = lambda: 1000000
+        root.get_child_at_index = mock.Mock(return_value=shared)
+        with self.assertRaises(probe.WalkTruncated):
+            self.content(root, limit=4)
+        self.assertLessEqual(root.get_child_at_index.call_count, 16)
+
     def window_result(self, pid=42, active=False, expected=42, active_only=False):
         root = Node("Editor", "frame", [Node(role="text", text=True)],
                     states=("SHOWING", "ACTIVE") if active else ("SHOWING",))

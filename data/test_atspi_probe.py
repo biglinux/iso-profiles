@@ -181,6 +181,31 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(records[0][1]["name"], "Settings")
         self.assertEqual(records[0][1]["pid"], 42)
 
+    def test_scoped_enumeration_does_not_query_unrelated_windows(self):
+        unrelated = FakeAccessible("shell", 99)
+        unrelated.get_name = mock.Mock(side_effect=FakeError("unrelated name unavailable"))
+        unrelated.get_child_count = mock.Mock(side_effect=FakeError("unrelated view unavailable"))
+        target = FakeAccessible("app", 42, [FakeAccessible("Window", 42)])
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [unrelated, target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            records = list(atspi_probe._window_records(allowed_pids={42}))
+        self.assertEqual([record["pid"] for _, record in records], [42])
+        unrelated.get_name.assert_not_called()
+        unrelated.get_child_count.assert_not_called()
+
+    def test_scoped_enumeration_does_not_hide_target_failure(self):
+        target = FakeAccessible("app", 42)
+        target.get_child_count = mock.Mock(side_effect=FakeError("target unavailable"))
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "incomplete"):
+            list(atspi_probe._window_records(allowed_pids={42}))
+
+    def test_empty_scope_returns_no_window(self):
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [FakeAccessible("other", 99)])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            self.assertEqual(list(atspi_probe._window_records(allowed_pids=set())), [])
+
     def test_walk_does_not_yield_null_children(self) -> None:
         child = FakeAccessible("child", 42)
         root = FakeAccessible("root", 42, [None, child])

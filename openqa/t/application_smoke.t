@@ -53,4 +53,12 @@ is(scalar @calls, 0, 'absence does not launch, inspect, or kill anything');
 is(application_smoke->check({terminal => 1}, 30)->{status}, 'skipped', 'CLI outside graphical smoke');
 is(application_smoke->check({not_applicable_reason => 'different desktop'}, 30)->{status}, 'skipped', 'other desktop entry is not applicable');
 
+for my $id (qw(gimp.desktop libreoffice-calc.desktop libreoffice-writer.desktop)) {
+    is(application_smoke->default_close_key({path => "/usr/share/applications/$id"}),
+        'ctrl-q', "$id uses its documented application Quit shortcut");
+}
+is(application_smoke->default_close_key({relative_path => 'org.gnome.TextEditor.desktop'}),
+    'alt-f4', 'other applications keep the desktop close shortcut');
+is(application_smoke->default_close_key({relative_path => 'not-libreoffice-calc.desktop'}),
+    'alt-f4', 'shortcut exception does not match an unrelated desktop ID');
 done_testing;

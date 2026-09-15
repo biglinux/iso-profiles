@@ -20,6 +20,18 @@ sub not_applicable_reason {
     return;
 }
 
+# These applications document Ctrl+Q as application Quit. Alt+F4 may close
+# only a document/tool window. Still send one ordinary shortcut, never a
+# sequence of guessed actions or a signal. The job setting remains an override.
+sub default_close_key {
+    my ($class, $entry) = @_;
+    my $id = $entry->{relative_path} // $entry->{path} // '';
+    $id =~ s{.*/}{};
+    return 'ctrl-q' if $id eq 'gimp.desktop'
+      || $id =~ /\Alibreoffice-(?:base|calc|draw|impress|math|startcenter|writer|xsltfilter)\.desktop\z/;
+    return 'alt-f4';
+}
+
 sub check {
     my ($class, $entry, $timeout) = @_;
     if (my $reason = $class->not_applicable_reason($entry)) {
@@ -29,7 +41,7 @@ sub check {
     }
     my $settle = get_var('BIGLINUX_APPLICATION_SETTLE_SECONDS', 2);
     my $close_timeout = get_var('BIGLINUX_APPLICATION_CLOSE_TIMEOUT', 15);
-    my $close_key = get_var('BIGLINUX_APPLICATION_CLOSE_KEY', 'alt-f4');
+    my $close_key = get_var('BIGLINUX_APPLICATION_CLOSE_KEY', $class->default_close_key($entry));
     die 'invalid application settle interval' unless $settle =~ /\A[0-9]+\z/ && $settle <= 10;
     die 'invalid application close timeout' unless $close_timeout =~ /\A[1-9][0-9]*\z/ && $close_timeout <= 120;
     die 'invalid application close shortcut' unless $close_key =~ /\A(?:alt-f4|ctrl-q)\z/;
@@ -79,6 +91,9 @@ sub check {
         $metric->{status} = 'passed';
         1;
     } or $failure = $@ || 'application smoke failed';
+    # Capture the actual failure before cleanup removes a welcome/save dialog.
+    # Diagnostic pixels are never used as the test's oracle.
+    eval { select_console 'sut'; save_screenshot; } if $failure;
     # Cleanup is isolation, never a replacement for the tested close operation.
     my $cleanup = eval { atspi->cleanup(5) };
     $metric->{cleanup_status} = ref $cleanup eq 'HASH' ? $cleanup->{status} : 'failed';
@@ -88,7 +103,6 @@ sub check {
     if ($failure) {
         $metric->{status} = 'failed';
         $metric->{error} = "$failure";
-        eval { select_console 'sut'; save_screenshot; };
     }
     $metric->{duration_seconds} = 0 + sprintf('%.2f', time - $started);
     return $metric;
