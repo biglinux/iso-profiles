@@ -91,6 +91,11 @@ status=
 finish_report() {
     local result=$? report_status=success
     trap - EXIT
+    # Killing the docker client does not stop its container. Interrupts and all
+    # failed exits must release QEMU/KVM before we collect the final report.
+    if ((result != 0)) && [[ -n "${container_name:-}" ]]; then
+        timeout --kill-after=5 15 docker rm --force "$container_name" >/dev/null 2>&1 || true
+    fi
     ((result == 0)) || report_status=failure
     if [[ -n "$results" ]]; then
         REPORT_NAME="$plan" REPORT_STATUS="$report_status" \
@@ -259,17 +264,20 @@ set +e
 timeout --kill-after=60 "$timeout_seconds" \
     docker "${docker_arguments[@]}" "$image" "${isotovideo_arguments[@]}" \
     2>&1 | tee "$results/autoinst-log.txt"
-status=${PIPESTATUS[0]}
+pipeline_status=("${PIPESTATUS[@]}")
+status=${pipeline_status[0]}
+log_status=${pipeline_status[1]}
 set -e
-phase=backend-verification
 
 if ((status == 124 || status == 137)); then
-    # SIGKILL reaches the docker client, which merely detaches: the container
-    # and its QEMU keep the disk and /dev/kvm until they are stopped by name.
-    docker rm --force "$container_name" >/dev/null 2>&1 || true
     echo "run-plan.sh: plan $plan exceeded $timeout_seconds seconds" >&2
-    exit 1
 fi
+# Preserve isotovideo/timeout's actual non-zero status, even when it could not
+# start QEMU or write a KVM command line. The EXIT trap still emits the report.
+((status == 0)) || exit "$status"
+phase=log-collection
+((log_status == 0)) || die "could not archive the executor log (tee status $log_status)"
+phase=backend-verification
 
 # KVM is not implied by QEMU_NO_KVM=0: os-autoinst adds -enable-kvm only when
 # /dev/kvm is readable *inside* the container (backend/qemu.pm), and silently

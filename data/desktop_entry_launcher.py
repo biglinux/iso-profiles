@@ -165,7 +165,21 @@ def parse_desktop_entry(path: Path) -> DesktopEntry:
 def discover_desktop_entries(
     root: Path = Path("/usr/share/applications"),
 ) -> list[DesktopEntry]:
-    entries = [parse_desktop_entry(path) for path in root.rglob("*.desktop")]
+    """Return a complete inventory, or raise when a directory cannot be read.
+
+    Path.rglob can suppress filesystem errors. An unreadable application tree
+    must not be mistaken for an ISO without applications. Do not follow directory
+    symlinks (which can cycle); individual packaged launcher symlinks stay valid.
+    """
+    entries: list[DesktopEntry] = []
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as children:
+            for child in children:
+                if child.is_dir(follow_symlinks=False):
+                    pending.append(Path(child.path))
+                elif child.name.endswith(".desktop"):
+                    entries.append(parse_desktop_entry(Path(child.path)))
     return sorted(entries, key=lambda entry: str(entry.path))
 
 

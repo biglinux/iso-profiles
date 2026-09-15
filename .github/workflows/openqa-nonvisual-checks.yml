@@ -6,6 +6,8 @@ on:
       - 'data/**'
       - 'openqa/**'
       - '.github/workflows/openqa*.yml'
+      - '.github/workflows/mirror-openqa-image.yml'
+      - '.github/workflows/validate-iso-once.yml'
       - 'docs/openqa*.md'
   workflow_dispatch:
 
@@ -60,7 +62,9 @@ jobs:
       - name: Install pinned actionlint
         run: GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Validate openQA workflows and their caller
-        run: '"$RUNNER_TEMP/bin/actionlint" -color .github/workflows/openqa*.yml'
+        run: |
+          "$RUNNER_TEMP/bin/actionlint" -color .github/workflows/openqa*.yml \
+            .github/workflows/mirror-openqa-image.yml .github/workflows/validate-iso-once.yml
 
   report-fixtures:
     runs-on: ubuntu-24.04
