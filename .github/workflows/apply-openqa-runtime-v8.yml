@@ -29,9 +29,23 @@ jobs:
         run: |
           set -euo pipefail
           git merge-base --is-ancestor 1d185a6f1f5d84d9b0f40048caeea2acd84fbcd8 HEAD
-          cat openqa/.runtime-v8.patch.part-{00..06} > "$RUNNER_TEMP/runtime-v8.patch"
+          cat \
+            openqa/.runtime-v8.transport-00 \
+            openqa/.runtime-v8.transport-01 \
+            openqa/.runtime-v8.transport-02 \
+            openqa/.runtime-v8.transport-03 \
+            openqa/.runtime-v8.transport-04-0 \
+            openqa/.runtime-v8.transport-04-1 \
+            openqa/.runtime-v8.transport-04-2 \
+            openqa/.runtime-v8.transport-05-0 \
+            openqa/.runtime-v8.transport-05-1 \
+            > "$RUNNER_TEMP/runtime-v8.patch.xz.b64"
+          echo '4ea574fcecd483272d8603e01639c78d04b2d9fad5fe494fbaf5c6f95a8104b7  '"$RUNNER_TEMP/runtime-v8.patch.xz.b64" | sha256sum --check
+          base64 --decode "$RUNNER_TEMP/runtime-v8.patch.xz.b64" > "$RUNNER_TEMP/runtime-v8.patch.xz"
+          echo '80868420b3c5a13c7c1111f7c2730818df010904e637b3c6e2105dcbb58b918f  '"$RUNNER_TEMP/runtime-v8.patch.xz" | sha256sum --check
+          xz --decompress --stdout "$RUNNER_TEMP/runtime-v8.patch.xz" > "$RUNNER_TEMP/runtime-v8.patch"
           echo 'ffcfe440a1de908dcb473fdfe21cf43c06cc994471ffad19dc069d427c10691b  '"$RUNNER_TEMP/runtime-v8.patch" | sha256sum --check
-          git rm openqa/.runtime-v8.patch.part-{00..06} .github/workflows/apply-openqa-runtime-v8.yml
+          git rm openqa/.runtime-v8.transport-* .github/workflows/apply-openqa-runtime-v8.yml
           test "$(git write-tree)" = bb0ac59b7c3fc0d70bf702f45da17e44a16107ec
           git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v8.patch"
           test "$(git write-tree)" = 913a66aa91c14a63780660b16cfc71ace3744030
