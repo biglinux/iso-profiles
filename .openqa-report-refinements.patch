@@ -1,0 +1,190 @@
+diff --git a/.github/workflows/openqa-nonvisual-checks.yml b/.github/workflows/openqa-nonvisual-checks.yml
+index 399e9cd..e017f9f 100644
+--- a/.github/workflows/openqa-nonvisual-checks.yml
++++ b/.github/workflows/openqa-nonvisual-checks.yml
+@@ -125,7 +125,9 @@ jobs:
+           persist-credentials: false
+       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+         with:
+-          pattern: biglinux-iso-validation-reportcheck-*-${{ github.run_id }}-${{ github.run_attempt }}
++          # Successful jobs are not rerun by "Re-run failed jobs".
++          # Select each scenario's newest attempt in report_fixture.py.
++          pattern: biglinux-iso-validation-reportcheck-*-${{ github.run_id }}-*
+           path: ${{ runner.temp }}/published-reports/
+       - name: Check downloaded HTML, Markdown, JSON and PDF
+         run: python3 openqa/report/report_fixture.py verify "$RUNNER_TEMP/published-reports"
+diff --git a/openqa/report/build_pdf_report.py b/openqa/report/build_pdf_report.py
+index 7e52d08..986ab1a 100755
+--- a/openqa/report/build_pdf_report.py
++++ b/openqa/report/build_pdf_report.py
+@@ -240,7 +240,8 @@ def cover(pdf: Report, suites: list[Suite], summary: dict[str, Any] | None = Non
+     pdf.set_xy(16, 79)
+     pdf.cell(PAGE[0] - 32, 12, {"ok": "PASSED", "fail": "FAILED", "unknown": "INCONCLUSIVE", "softfail": "WARNING", "skipped": "NOT APPLICABLE"}[verdict], align="C")
+ 
+-    # One tile per firmware: the two paths a user can actually boot.
++    # Show the plan, not just firmware: a live-only check is not a complete
++    # BIOS release validation. All plans are detailed on the following pages.
+     left = 16.0
+     tiles = suites[:3]
+     width = (PAGE[0] - 32 - 8) / max(len(tiles), 1)
+@@ -252,7 +253,7 @@ def cover(pdf: Report, suites: list[Suite], summary: dict[str, Any] | None = Non
+         pdf.set_text_color(*INK)
+         pdf.set_font("helvetica", "B", 15)
+         pdf.set_xy(left + 6, 114)
+-        pdf.cell(0, 8, suite.firmware)
++        pdf.cell(width - 20, 8, f"{suite.name[:32]} ({suite.firmware})")
+         pdf.badge(
+             left + 6, 126, LABELS[suite.result], GOOD if suite.ok else BAD if suite.result == "fail" else WEAK
+         )
+@@ -270,6 +271,15 @@ def cover(pdf: Report, suites: list[Suite], summary: dict[str, Any] | None = Non
+             else "",
+         )
+         left += width
++    pdf.set_text_color(*MUTED)
++    pdf.set_font("helvetica", "", 10)
++    pdf.set_xy(16, 165)
++    pdf.multi_cell(PAGE[0] - 32, 5,
++        "Resultado limitado aos planos e módulos registrados nesta execução. "
++        "Um teste live aprovado não comprova instalação nem validação completa da ISO.")
++    if len(suites) > len(tiles):
++        pdf.set_xy(16, 179)
++        pdf.cell(0, 6, f"{len(tiles)}/{len(suites)} planos na capa; resultados completos nas páginas seguintes.")
+ 
+ 
+ def phase_pages(pdf: Report, suite: Suite) -> None:
+diff --git a/openqa/report/report_fixture.py b/openqa/report/report_fixture.py
+index 2382f3b..f7b7567 100644
+--- a/openqa/report/report_fixture.py
++++ b/openqa/report/report_fixture.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ 
+ import argparse
+ import json
++import re
+ from pathlib import Path
+ 
+ EXPECTED = {"success": "ok", "failure": "fail", "incomplete": "unknown"}
+@@ -37,10 +38,28 @@ def create(scenario: str, root: Path) -> int:
+     return 17 if scenario == "failure" else 0
+ 
+ 
++def published_artifacts(root: Path) -> list[Path]:
++    """Partial reruns keep successful artifacts from earlier attempts of this run."""
++    pattern = re.compile(r"biglinux-iso-validation-reportcheck-(success|failure|incomplete)-([0-9]+)-([1-9][0-9]*)")
++    selected: dict[str, tuple[int, Path]] = {}
++    runs = set()
++    for directory in sorted(root.glob("biglinux-iso-validation-reportcheck-*")):
++        match = pattern.fullmatch(directory.name)
++        if not match or not directory.is_dir() or directory.is_symlink():
++            raise ValueError("invalid published report artifact name or directory")
++        scenario, run, attempt = match.groups()
++        runs.add(run)
++        if int(attempt) > selected.get(scenario, (0, directory))[0]:
++            selected[scenario] = (int(attempt), directory)
++    if len(runs) > 1:
++        raise ValueError("published reports belong to different workflow runs")
++    if set(selected) != set(EXPECTED):
++        raise ValueError(f"expected three published artifacts, found {len(selected)} scenarios")
++    return [selected[key][1] for key in sorted(selected)]
++
++
+ def verify(root: Path) -> None:
+-    directories = list(root.glob("biglinux-iso-validation-reportcheck-*"))
+-    if len(directories) != len(EXPECTED):
+-        raise ValueError(f"expected three published artifacts, found {len(directories)}")
++    directories = published_artifacts(root)
+     seen = set()
+     for directory in directories:
+         summary = json.loads((directory / "RESULTADO.json").read_text(encoding="utf-8"))
+diff --git a/openqa/report/test_build_pdf_report.py b/openqa/report/test_build_pdf_report.py
+index 2157ac0..03716fd 100755
+--- a/openqa/report/test_build_pdf_report.py
++++ b/openqa/report/test_build_pdf_report.py
+@@ -139,5 +139,31 @@ class ScreenshotEncodingTest(unittest.TestCase):
+             self.assertIsNone(encoded_screenshot(broken))
+ 
+ 
++@unittest.skipIf(MISSING, f"report dependencies unavailable: {MISSING}")
++class CoverScopeTest(unittest.TestCase):
++    def rendered_text(self, suites):
++        from unittest.mock import patch
++        from build_pdf_report import Report, cover
++        pdf = Report()
++        with patch.object(pdf, "cell", wraps=pdf.cell) as cell:
++            cover(pdf, suites, {"result": "ok", "context": {}})
++        return "\n".join(str(call.args[2]) for call in cell.call_args_list if len(call.args) > 2)
++
++    def test_live_is_identified_as_a_plan_not_only_firmware(self):
++        from build_pdf_report import Suite
++        text = self.rendered_text([Suite(name="live", firmware="BIOS", modules={"live_desktop": "ok"})])
++        self.assertIn("live (BIOS)", text)
++
++    def test_shard_name_is_not_replaced_by_bios(self):
++        from build_pdf_report import Suite
++        text = self.rendered_text([Suite(name="applications-2", firmware="BIOS", modules={"applications": "ok"})])
++        self.assertIn("applications-2 (BIOS)", text)
++
++    def test_cover_states_when_more_plans_follow(self):
++        from build_pdf_report import Suite
++        text = self.rendered_text([Suite(name=f"plan-{i}", firmware="BIOS", modules={"live_desktop": "ok"}) for i in range(6)])
++        self.assertIn("3/6 planos", text)
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/openqa/report/test_report_pipeline.py b/openqa/report/test_report_pipeline.py
+index 16599dd..d70c16a 100644
+--- a/openqa/report/test_report_pipeline.py
++++ b/openqa/report/test_report_pipeline.py
+@@ -10,7 +10,7 @@ from pathlib import Path
+ from unittest.mock import patch
+ 
+ from finalize_report import finalize
+-from report_fixture import create, verify
++from report_fixture import create, verify, published_artifacts
+ from report_outcome import summarize
+ 
+ ROOT = Path(__file__).resolve().parents[2]
+@@ -96,3 +96,42 @@ class PipelineTests(unittest.TestCase):
+             create("success", root)
+             (root / "run-status.json").write_bytes(b"invalid JSON")
+             self.assertEqual(summarize(root)["result"], "unknown")
++
++
++class PartialRerunReportsTest(unittest.TestCase):
++    def artifacts(self, root, names):
++        paths = []
++        for name in names:
++            path = root / ("biglinux-iso-validation-reportcheck-" + name)
++            path.mkdir()
++            paths.append(path)
++        return paths
++
++    def test_partial_rerun_retains_prior_successful_scenario(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            paths = self.artifacts(root, ["success-123-1", "failure-123-2", "incomplete-123-2"])
++            self.assertEqual(set(published_artifacts(root)), set(paths))
++
++    def test_attempt_order_is_numeric(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            paths = self.artifacts(root, ["success-123-1", "failure-123-2", "failure-123-10", "incomplete-123-1"])
++            self.assertNotIn(paths[1], published_artifacts(root))
++            self.assertIn(paths[2], published_artifacts(root))
++
++    def test_broken_new_attempt_does_not_restore_old_evidence(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            paths = self.artifacts(root, ["failure-123-1", "failure-123-2", "incomplete-123-1", "success-123-1"])
++            (paths[0] / "RESULTADO.json").write_text('{"result":"fail"}')
++            (paths[1] / "RESULTADO.json").write_text('broken JSON')
++            with self.assertRaises(json.JSONDecodeError):
++                verify(root)
++
++    def test_mixed_run_evidence_is_rejected(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            self.artifacts(root, ["success-123-1", "failure-123-1", "incomplete-456-1"])
++            with self.assertRaisesRegex(ValueError, "different workflow runs"):
++                published_artifacts(root)

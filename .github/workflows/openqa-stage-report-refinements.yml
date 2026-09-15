@@ -1,0 +1,73 @@
+name: Validate reviewed report refinements
+on:
+  push:
+    branches: [fix/openqa-nonvisual-accessibility-20260914]
+    paths: [.openqa-report-refinements.patch]
+permissions:
+  contents: read
+jobs:
+  reviewed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify and apply the exact reviewed patch
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = e815379b09476e1e45aff08c1358b3e079ca5e45
+          printf '%s\n' 'cac89ba2315eb5e2bc1ae6514d3485ec03b4e37fc3f07f5dff4106bad974ee8c  .openqa-report-refinements.patch' | sha256sum --check
+          git apply --index .openqa-report-refinements.patch
+          git rm -- .openqa-report-refinements.patch .github/workflows/openqa-stage-report-refinements.yml
+          test "$(git write-tree)" = 5e15dae797dd0bf7104d95049546615432d928b4
+          python3 -m pip install --quiet --disable-pip-version-check -r openqa/report/requirements.txt
+          python3 -m unittest discover -s openqa/report -p 'test_*.py'
+          python3 openqa/production/check-nonvisual.py
+          git diff --cached --check
+      - name: Transfer tested immutable blobs without changing branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, pathlib, subprocess, urllib.request
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          expected = '5e15dae797dd0bf7104d95049546615432d928b4'
+          assert os.environ['GITHUB_REPOSITORY'] == 'biglinux/iso-profiles'
+          assert git('write-tree').decode().strip() == expected
+          entries = []
+          for raw in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
+              if not raw:
+                  continue
+              name = raw.decode()
+              stage = git('ls-files', '--stage', '--', name).decode().strip()
+              if not stage:
+                  entries.append(dict(path=name, mode='100644', type='blob', sha=None))
+                  continue
+              mode, expected_blob = stage.split()[:2]
+              content = git('show', ':' + name)
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/biglinux/iso-profiles/git/blobs',
+                  data=json.dumps(dict(content=base64.b64encode(content).decode(), encoding='base64')).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Content-Type': 'application/json'},
+                  method='POST')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  blob = json.load(response)
+              assert blob['sha'] == expected_blob
+              entries.append(dict(path=name, mode=mode, type='blob', sha=blob['sha']))
+          manifest = dict(tree=expected, parent=git('rev-parse', 'HEAD').decode().strip(), entries=entries)
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'report-refinements.json'
+          path.write_text(json.dumps(manifest, indent=2) + '\n')
+          print(path.read_text())
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: openqa-report-refinements-${{ github.run_id }}
+          path: ${{ runner.temp }}/report-refinements.json
+          retention-days: 3
+          if-no-files-found: error
