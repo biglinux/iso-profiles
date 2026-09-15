@@ -1,0 +1,73 @@
+name: Validate the reviewed accessible graph traversal
+on:
+  push:
+    branches: [fix/openqa-nonvisual-accessibility-20260914]
+    paths: [.openqa-walk.patch]
+permissions:
+  contents: read
+jobs:
+  reviewed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify and apply the exact reviewed patch
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 954bc2492cc1060fe905f32c34ab05d2c286bf72
+          printf '%s\n' 'fac8f838fbb78e969713ef965a46b9936483f70fbf69c2f86cc4461e0ccc810e  .openqa-walk.patch' | sha256sum --check
+          git apply --index .openqa-walk.patch
+          git rm -- .openqa-walk.patch .github/workflows/openqa-stage-walk.yml
+          test "$(git write-tree)" = d06ccf582c52313844aede176f23c946dce0214c
+          python3 -m unittest discover -s data -p 'test_*.py'
+          prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
+          python3 openqa/production/check-nonvisual.py
+          git diff --cached --check
+      - name: Transfer tested immutable blobs without changing branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, pathlib, subprocess, urllib.request
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          expected = 'd06ccf582c52313844aede176f23c946dce0214c'
+          assert os.environ['GITHUB_REPOSITORY'] == 'biglinux/iso-profiles'
+          assert git('write-tree').decode().strip() == expected
+          entries = []
+          for raw in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
+              if not raw:
+                  continue
+              name = raw.decode()
+              stage = git('ls-files', '--stage', '--', name).decode().strip()
+              if not stage:
+                  entries.append(dict(path=name, mode='100644', type='blob', sha=None))
+                  continue
+              mode, expected_blob = stage.split()[:2]
+              content = git('show', ':' + name)
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/biglinux/iso-profiles/git/blobs',
+                  data=json.dumps(dict(content=base64.b64encode(content).decode(), encoding='base64')).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Content-Type': 'application/json'},
+                  method='POST')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  blob = json.load(response)
+              assert blob['sha'] == expected_blob
+              entries.append(dict(path=name, mode=mode, type='blob', sha=blob['sha']))
+          manifest = dict(tree=expected, parent=git('rev-parse', 'HEAD').decode().strip(), entries=entries)
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'walk-publication.json'
+          path.write_text(json.dumps(manifest, indent=2) + '\n')
+          print(path.read_text())
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: openqa-walk-publication-${{ github.run_id }}
+          path: ${{ runner.temp }}/walk-publication.json
+          retention-days: 3
+          if-no-files-found: error
