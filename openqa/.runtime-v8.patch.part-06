@@ -1,0 +1,7 @@
++is($overlay->{pre_close_action}, 'keyboard.esc',
++    'embedded auxiliary dismissal is reported separately');
++ok($overlay->{graceful_exit}, 'embedded overlay path still requires normal process exit');
++
+ ($wait, $code, $wait_close) = (0, 0, 1);
+ @keys = (); @operations = (); @active_responses = (
+     {status => 'passed', active => 1, pid => 42, window_role => 'dialog',

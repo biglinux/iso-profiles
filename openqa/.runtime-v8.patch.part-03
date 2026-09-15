@@ -1,0 +1,133 @@
++        self.assertFalse(result["process_gone"])
++
++    def test_defunct_exact_window_counts_as_closed(self):
++        target = {"key": "42\\0/tested", "identity": "/tested-window",
++                  "pid": 42, "application": "App", "name": "Window",
++                  "role": "frame", "children": 1, "showing": True,
++                  "defunct": True}
++        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
++             mock.patch.object(probe, "_process_tree", return_value={42}), \
++             mock.patch.object(probe, "accessible_snapshot", return_value={"windows": [target]}), \
++             mock.patch.object(probe, "launch_process_exited", return_value=False):
++            result = probe.wait_for_window_change(
++                Path("unused"), 0, False, 42,
++                expected_window_identity="/tested-window")
++        self.assertEqual(result["status"], "passed")
++
++    def test_hidden_window_is_not_accepted_as_open(self):
++        target = {"key": "42\\0/tested", "identity": "/tested-window",
++                  "pid": 42, "application": "App", "name": "Window",
++                  "role": "frame", "children": 1, "showing": False,
++                  "defunct": False}
++        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
++             mock.patch.object(probe, "_process_tree", return_value={42}), \
++             mock.patch.object(probe, "accessible_snapshot", return_value={"windows": [target]}), \
++             mock.patch.object(probe, "launch_process_exited", return_value=False):
++            result = probe.wait_for_window_change(
++                Path("unused"), 0, True, 42, sample_memory=False)
++        self.assertEqual(result["status"], "failed")
++        self.assertFalse(result["accessible_window"])
++
+     def test_smoke_retries_observation_but_never_an_action(self):
+         root = smoke_fixtures.Node("Editor", "frame", [smoke_fixtures.Node(role="text", text=True)])
+         with mock.patch.object(probe, "_atspi_import", return_value=(smoke_fixtures.API, smoke_fixtures.GLIB)), \
+@@ -236,6 +306,33 @@ class ReadinessWaitsTest(unittest.TestCase):
+         self.assertEqual(read.call_args.kwargs["preferred_application_index"], 7)
+         self.assertTrue(read.call_args.kwargs["stop_after_preferred_match"])
+ 
++    def test_smoke_uses_launch_tree_and_prefers_the_opened_window(self):
++        root = smoke_fixtures.Node(
++            "Editor", "frame", [smoke_fixtures.Node(role="text", text=True)]
++        )
++        record = {
++            "pid": 43,
++            "role": "frame",
++            "identity": "/opened",
++            "application_index": 6,
++        }
++        with mock.patch.object(
++            probe, "_atspi_import",
++            return_value=(smoke_fixtures.API, smoke_fixtures.GLIB),
++        ), mock.patch.object(probe, "_process_tree", return_value={42, 43}) as tree, \
++             mock.patch.object(probe, "_window_records", return_value=[(root, record)]) as read:
++            result = probe.smoke_window(
++                1, 42, application_index=7,
++                window_identity="/opened", root_pid=41,
++            )
++        self.assertEqual(result["status"], "passed")
++        self.assertEqual(result["pid"], 43)
++        self.assertEqual(result["window_identity"], "/opened")
++        tree.assert_called_once_with(41)
++        self.assertEqual(read.call_args.args[1], {42, 43})
++        self.assertEqual(read.call_args.kwargs["preferred_application_index"], 7)
++        self.assertEqual(read.call_args.kwargs["preferred_window_identity"], "/opened")
++
+     def test_smoke_permanent_failure_uses_one_shared_deadline(self):
+         with mock.patch.object(probe, "_atspi_import", return_value=(smoke_fixtures.API, smoke_fixtures.GLIB)), \
+              mock.patch.object(probe, "_window_records", side_effect=probe.ProbeError("bus")), \
+diff --git a/docs/openqa-runtime-validation.md b/docs/openqa-runtime-validation.md
+index f1d39e8..a4da1e8 100644
+--- a/docs/openqa-runtime-validation.md
++++ b/docs/openqa-runtime-validation.md
+@@ -312,3 +312,57 @@ payload proporcional ao número de janelas sem relaxar a prova: erro de provedor
+ vivo ou não identificado continua invalidando a leitura; somente um PID já
+ encerrado pode desaparecer durante a enumeração. O prazo de três segundos da
+ baseline por lançamento não foi ampliado.
++
++## Matriz compacta v7 e correções de atribuição v8
++
++A matriz real `34985013609`, fonte `1d185a6f`, confirmou que a baseline
++compacta eliminou o colapso total do primeiro shard: os quatro shards voltaram
++a executar sua partição do inventário. O inventário registrou 288 entradas,
++215 lançáveis, 70 exclusões justificadas e três aliases. Foram testadas 212
++entradas: 160 passaram e 52 falharam. Os relatórios de todos os planos e o
++consolidado foram publicados, enquanto o gate permaneceu reprovado.
++
++A triagem mostrou que 25 dessas falhas ocorreram **depois** de a aplicação já
++ter comprovado janela própria, conteúdo acessível e fechamento normal. Uma
++varredura global de limpeza encontrava um provedor AT-SPI alheio e já encerrado
++e convertia retroativamente a aplicação em falha. A limpeza agora separa duas
++provas: primeiro encerra e verifica somente os grupos de processos pertencentes
++ao lançamento; depois tenta a limpeza global. Uma leitura global inconclusiva
++pode ser registrada como `cleanup_degraded` apenas quando todos os processos
++do teste já estão comprovadamente ausentes. Janela remanescente, PID próprio
++vivo ou falha real da limpeza continuam bloqueantes.
++
++Quatro contratos de processos residentes também mantinham no registro o objeto
++de uma janela já ocultada. `wait-close` agora lê os estados de nível superior e
++considera a identidade exata encerrada quando deixa de estar `SHOWING` ou fica
++`DEFUNCT`. A abertura exige o inverso: a janela deve estar `SHOWING` e não pode
++estar `DEFUNCT`. A existência de um proxy ou de um processo residente não é
++suficiente para aprovar.
++
++As verificações de conteúdo, foco e fechamento carregam a identidade exata da
++janela, a árvore do processo lançado e a dica revalidada do aplicativo AT-SPI.
++Isso evita que provedores antigos consumam o prazo antes de Brave, RustDesk,
++gerenciadores BigLinux e outros aplicativos já identificados, sem aumentar
++globalmente os timeouts. Uma dica obsoleta sempre cai na busca normal e nunca
++substitui PID, identidade ou estado.
++
++Superfícies iniciais embutidas em uma única janela, como `Adw.Dialog`, não são
++visíveis como um segundo top-level. Nos contratos explicitamente revisados,
++uma única tecla `Escape` devolve o controle à aplicação antes do `Ctrl+Q` já
++documentado. Diálogos top-level continuam usando um único `Alt+F4` e precisam
++comprovar a transição para a janela principal. Audio Converter e Big Network
++Info foram incluídos nesse grupo porque seus próprios códigos exibem a tela de
++boas-vindas na primeira ativação e registram `Ctrl+Q` para a ação de sair.
++Outros aplicativos não recebem essa sequência.
++
++No instalador, a identidade do controle-alvo conhecido passa a ser localizada
++pela hierarquia estrutural antes de ler a semântica de todos os irmãos. Se o
++controle existe, mas ainda não tem foco, a resposta é `target-not-focused` e a
++navegação envia apenas `Tab`; o teste não força foco nem aciona o controle por
++AT-SPI. Incompletude sem o alvo continua bloqueante.
++
++Antes da publicação desta revisão, passaram 283 testes Python e 168 asserções
++Perl, além da política não visual, compilação Python, sintaxe Bash e
++`git diff --check`. A integração GTK/AT-SPI e a matriz da ISO continuam sendo
++provas separadas obrigatórias; esses testes locais não aprovam a instalação nem
++as aplicações reais.
+diff --git a/openqa/application-policy.yaml b/openqa/application-policy.yaml
+index 1867acd..7d3c89f 100644
+--- a/openqa/application-policy.yaml
++++ b/openqa/application-policy.yaml
