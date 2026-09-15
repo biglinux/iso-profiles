@@ -1,0 +1,360 @@
+diff --git a/.github/workflows/validate-iso-once.yml b/.github/workflows/validate-iso-once.yml
+index fbd9218..76d715d 100644
+--- a/.github/workflows/validate-iso-once.yml
++++ b/.github/workflows/validate-iso-once.yml
+@@ -1,7 +1,7 @@
+ name: Verify openQA with the published ISO
+ 
+-# The unchanged live prefix passed in run 34919411392. Exercise the complete
+-# production matrix now, against the explicitly reviewed September publication.
++# Validate the session-readiness correction after run 34919737154 exposed
++# the wizard-to-desktop race. Keep the complete production matrix unchanged.
+ # This review-branch workflow never publishes an ISO release.
+ on:
+   push:
+diff --git a/data/desktop_session.py b/data/desktop_session.py
+new file mode 100644
+index 0000000..5fb1e06
+--- /dev/null
++++ b/data/desktop_session.py
+@@ -0,0 +1,170 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Wait for the delivered desktop after the private live-wizard session ends.
++
++Observe the user manager, display socket and normal AT-SPI GetAddress path.
++Never restart a service, unlink a socket, or change accessibility settings.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import math
++import os
++from pathlib import Path
++import re
++import shlex
++import socket
++import subprocess
++import sys
++import time
++
++KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_CURRENT_DESKTOP",
++        "XDG_SESSION_TYPE", "QT_QPA_PLATFORM", "GDK_BACKEND",
++        "KDE_FULL_SESSION", "KDE_SESSION_VERSION")
++CLEAR = (*KEYS, "AT_SPI_BUS_ADDRESS", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR")
++
++
++class SessionPending(RuntimeError):
++    """The new graphical session has not yet provided coherent endpoints."""
++
++
++def command(argv: list[str], environment: dict[str, str], deadline: float) -> str:
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        raise SessionPending("session readiness deadline expired")
++    try:
++        result = subprocess.run(argv, env=environment, capture_output=True,
++                                text=True, timeout=min(3, remaining), check=False)
++    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
++        raise SessionPending("session query could not complete") from error
++    if result.returncode != 0 or len(result.stdout) > 262144:
++        # Do not echo arbitrary service output or environment values into logs.
++        raise SessionPending("session query failed")
++    return result.stdout
++
++
++def manager_environment(raw: str) -> dict[str, str]:
++    try:
++        record = json.loads(raw)
++        if not isinstance(record, dict) or record.get("type") != "as":
++            raise ValueError("expected string array")
++        values = record.get("data")
++        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
++            raise ValueError("invalid string array")
++        environment = {}
++        for field in values:
++            key, separator, value = field.partition("=")
++            if key not in KEYS:
++                continue
++            if not separator or key in environment or len(value) > 4096 or any(ord(c) < 32 for c in value):
++                raise ValueError("invalid session variable")
++            environment[key] = value
++        return environment
++    except (ValueError, TypeError) as error:
++        raise SessionPending("invalid user-manager environment") from error
++
++
++def display_ready(environment: dict[str, str], runtime: Path, deadline: float) -> None:
++    if not environment.get("XDG_CURRENT_DESKTOP"):
++        raise SessionPending("desktop identity has not been published")
++    wayland = environment.get("WAYLAND_DISPLAY")
++    if wayland:
++        endpoint = Path(wayland)
++        if not endpoint.is_absolute():
++            endpoint = runtime / endpoint
++    else:
++        match = re.fullmatch(r":([0-9]+)(?:\.[0-9]+)?", environment.get("DISPLAY", ""))
++        if not match:
++            raise SessionPending("desktop display has not been published")
++        endpoint = Path("/tmp/.X11-unix") / ("X" + match[1])
++    authority = environment.get("XAUTHORITY")
++    if authority and not os.access(authority, os.R_OK):
++        raise SessionPending("desktop authentication is not ready")
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        raise SessionPending("session readiness deadline expired")
++    try:
++        with socket.socket(socket.AF_UNIX) as connection:
++            connection.settimeout(min(0.5, remaining))
++            connection.connect(str(endpoint))
++    except OSError as error:
++        raise SessionPending("desktop display socket is not ready") from error
++
++
++def session_snapshot(deadline: float) -> tuple[dict[str, str], str]:
++    runtime = Path(f"/run/user/{os.getuid()}")
++    base = {key: value for key, value in os.environ.items() if key not in CLEAR}
++    base.update(XDG_RUNTIME_DIR=str(runtime), DBUS_SESSION_BUS_ADDRESS=f"unix:path={runtime}/bus")
++    raw = command(["busctl", "--user", "--json=short", "--timeout=2", "get-property",
++                   "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
++                   "org.freedesktop.systemd1.Manager", "Environment"], base, deadline)
++    environment = manager_environment(raw)
++    # The user manager outlives both sessions. Its availability alone does not
++    # mean Plasma/GNOME has finished importing its display environment.
++    if command(["systemctl", "--user", "is-active", "graphical-session.target"], base, deadline).strip() != "active":
++        raise SessionPending("graphical session is not active")
++    display_ready(environment, runtime, deadline)
++    raw = command(["busctl", "--user", "--json=short", "--timeout=2", "call",
++                   "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress"], base, deadline)
++    try:
++        reply = json.loads(raw)
++        values = reply.get("data") if isinstance(reply, dict) else None
++        if reply.get("type") != "s" or not isinstance(values, list) or len(values) != 1:
++            raise ValueError("unexpected address reply")
++        address = values[0]
++        if (not isinstance(address, str) or not address.startswith("unix:")
++                or ";" in address or len(address) > 4096 or any(ord(c) < 32 for c in address)):
++            raise ValueError("not a local bus")
++    except (ValueError, TypeError, AttributeError) as error:
++        raise SessionPending("accessibility bus address is not ready") from error
++    # GetAddress can still advertise the old wizard's deleted socket. Connect
++    # and query the bus itself; never repair it and never accept its path alone.
++    bus_id = command(["busctl", "--address=" + address, "--timeout=2", "call",
++                      "org.freedesktop.DBus", "/org/freedesktop/DBus",
++                      "org.freedesktop.DBus", "GetId"], base, deadline).strip()
++    if not bus_id:
++        raise SessionPending("accessibility bus did not identify itself")
++    environment.update(XDG_RUNTIME_DIR=str(runtime), DBUS_SESSION_BUS_ADDRESS=base["DBUS_SESSION_BUS_ADDRESS"])
++    return environment, bus_id
++
++
++def wait_session(timeout: float) -> dict[str, str]:
++    deadline = time.monotonic() + timeout
++    previous = None
++    reason = "desktop session was not ready"
++    while time.monotonic() < deadline:
++        try:
++            current = session_snapshot(deadline)
++            if current == previous:
++                return current[0]
++            previous = current
++            reason = "desktop session endpoints have not stabilized"
++        except SessionPending as error:
++            previous = None
++            reason = str(error)
++        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
++    raise SessionPending(reason)
++
++
++def shell_environment(environment: dict[str, str]) -> str:
++    return "; ".join(["unset " + " ".join(CLEAR)] +
++        [f"export {key}={shlex.quote(environment[key])}" for key in CLEAR
++         if key != "AT_SPI_BUS_ADDRESS" and key in environment])
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--timeout", type=float, default=90)
++    args = parser.parse_args()
++    if not math.isfinite(args.timeout) or not 0 < args.timeout <= 180:
++        parser.error("timeout must be greater than 0 and at most 180 seconds")
++    try:
++        print(shell_environment(wait_session(args.timeout)))
++        return 0
++    except SessionPending as error:
++        print(f"desktop session unavailable: {error}", file=sys.stderr)
++        return 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/data/test_desktop_session.py b/data/test_desktop_session.py
+new file mode 100644
+index 0000000..fcb5ec1
+--- /dev/null
++++ b/data/test_desktop_session.py
+@@ -0,0 +1,112 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++import json
++import os
++from pathlib import Path
++import socket
++import subprocess
++import tempfile
++import time
++import unittest
++from unittest import mock
++
++import desktop_session as session
++
++
++class DesktopSessionTests(unittest.TestCase):
++    def test_environment_is_typed_data_not_shell_source(self):
++        value = "text with spaces ' $() \\"
++        parsed = session.manager_environment(json.dumps({"type": "as", "data": [
++            "DISPLAY=:0", "XDG_CURRENT_DESKTOP=GNOME", "XAUTHORITY=" + value, "TOKEN=secret"]}))
++        self.assertEqual(parsed["XAUTHORITY"], value)
++        self.assertNotIn("TOKEN", parsed)
++
++    def test_environment_wrong_type_duplicates_and_controls_fail(self):
++        for record in ({"type": "s", "data": ["DISPLAY=:0"]}, {"type": "as", "data": [4]},
++                       {"type": "as", "data": ["DISPLAY=:0", "DISPLAY=:1"]},
++                       {"type": "as", "data": ["DISPLAY=:0\n"]}, []):
++            with self.subTest(record=record), self.assertRaises(session.SessionPending):
++                session.manager_environment(json.dumps(record))
++
++    def test_old_wizard_address_is_never_exported(self):
++        emitted = session.shell_environment({"DISPLAY": ":1", "AT_SPI_BUS_ADDRESS": "old"})
++        self.assertIn("AT_SPI_BUS_ADDRESS", emitted.split(";")[0])
++        self.assertNotIn("export AT_SPI_BUS_ADDRESS", emitted)
++
++    def test_export_quotes_values_and_preserves_only_whitelist(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            injected = Path(tmp) / "injected"
++            value = f"'; touch {injected}; echo '"
++            code = session.shell_environment({"DISPLAY": value, "TOKEN": "secret"})
++            self.assertNotIn("secret", code)
++            self.assertEqual(subprocess.check_output(["sh", "-c", code + '; printf %s "$DISPLAY"'], text=True), value)
++            self.assertFalse(injected.exists())
++
++    def test_missing_display_does_not_pass_on_user_bus_alone(self):
++        with self.assertRaisesRegex(session.SessionPending, "display"):
++            session.display_ready({"XDG_CURRENT_DESKTOP": "KDE"}, Path("/tmp"), time.monotonic() + 1)
++
++    def test_reachable_local_wayland_socket(self):
++        with tempfile.TemporaryDirectory() as tmp, socket.socket(socket.AF_UNIX) as server:
++            server.bind(tmp + "/wayland-1")
++            server.listen(1)
++            session.display_ready({"XDG_CURRENT_DESKTOP": "GNOME", "WAYLAND_DISPLAY": "wayland-1"},
++                                  Path(tmp), time.monotonic() + 1)
++
++    def test_missing_socket_is_pending_not_repaired(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            with self.assertRaisesRegex(session.SessionPending, "socket"):
++                session.display_ready({"XDG_CURRENT_DESKTOP": "KDE", "WAYLAND_DISPLAY": "missing"},
++                                      Path(tmp), time.monotonic() + 1)
++            self.assertEqual(list(Path(tmp).iterdir()), [])
++
++    def test_new_session_must_be_stable_twice(self):
++        first = ({"DISPLAY": ":0"}, "old-bus")
++        final = ({"DISPLAY": ":1"}, "new-bus")
++        with mock.patch.object(session, "session_snapshot", side_effect=[first, final, final]) as query, \
++             mock.patch.object(session.time, "sleep"):
++            self.assertEqual(session.wait_session(2), final[0])
++            self.assertEqual(query.call_count, 3)
++
++    def test_transient_socket_removal_resets_stability(self):
++        final = ({"DISPLAY": ":1"}, "new-bus")
++        with mock.patch.object(session, "session_snapshot", side_effect=[final, session.SessionPending("transition"), final, final]) as query, \
++             mock.patch.object(session.time, "sleep"):
++            self.assertEqual(session.wait_session(2), final[0])
++            self.assertEqual(query.call_count, 4)
++
++    def test_persistent_failure_expires(self):
++        with mock.patch.object(session, "session_snapshot", side_effect=session.SessionPending("stale bus")), \
++             self.assertRaisesRegex(session.SessionPending, "stale bus"):
++            session.wait_session(0.01)
++
++    def test_snapshot_queries_actual_bus_without_restarting_it(self):
++        calls = []
++        def response(argv, env, deadline):
++            calls.append((argv, env))
++            if "get-property" in argv:
++                return json.dumps({"type": "as", "data": ["DISPLAY=:0", "XDG_CURRENT_DESKTOP=KDE"]})
++            if "is-active" in argv:
++                return "active\n"
++            if "GetAddress" in argv:
++                return json.dumps({"type": "s", "data": ["unix:path=/run/user/42/at-spi/bus"]})
++            return 's "existing-bus-id"'
++        with mock.patch.object(session, "command", side_effect=response), \
++             mock.patch.object(session, "display_ready"), mock.patch.object(session.os, "getuid", return_value=42), \
++             mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "wizard-private", "AT_SPI_BUS_ADDRESS": "stale"}):
++            environment, bus = session.session_snapshot(time.monotonic() + 1)
++        self.assertEqual(environment["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/run/user/42/bus")
++        self.assertEqual(len(calls), 4)
++        self.assertIn("--address=unix:path=/run/user/42/at-spi/bus", calls[-1][0])
++        self.assertTrue(all("AT_SPI_BUS_ADDRESS" not in env for _, env in calls))
++        self.assertTrue(all("restart" not in argv and "start" not in argv for argv, _ in calls))
++
++    def test_query_error_does_not_leak_stderr(self):
++        failed = subprocess.CompletedProcess(["busctl"], 1, "", "TOKEN=secret")
++        with mock.patch.object(session.subprocess, "run", return_value=failed), \
++             self.assertRaisesRegex(session.SessionPending, "session query failed") as caught:
++            session.command(["busctl"], {}, time.monotonic() + 1)
++        self.assertNotIn("secret", str(caught.exception))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/openqa/lib/atspi.pm b/openqa/lib/atspi.pm
+index 1564276..adb9b69 100644
+--- a/openqa/lib/atspi.pm
++++ b/openqa/lib/atspi.pm
+@@ -104,23 +104,16 @@ sub reset_baseline {
+     %session_launch_pids = ();
+ 
+     $widget_pid = undef;
+-    # Observe the delivered session. Do not repair its accessibility bus, force
+-    # toolkit bridges, or guess DISPLAY: those would hide a user-facing defect.
+-    select_console 'user-virtio-terminal';
+-    my $environment = join ' ',
+-      'export XDG_RUNTIME_DIR=/run/user/$(id -u);',
+-      'export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus;',
+-      'unset DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP AT_SPI_BUS_ADDRESS;',
+-      'for name in DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP; do',
+-      'value=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^$name=//p" | head -1);',
+-      '[ -n "$value" ] && export "$name=$value";',
+-      'done;',
+-      'printf ', shell_quote(marker_format('__OA_A11Y_SESSION__') . '\\n');
+-    type_string $environment;
+-    send_key 'ret';
+-    die 'the graphical session environment could not be read'
+-      unless defined wait_serial('__OA_A11Y_SESSION__', no_regex => 1, timeout => 30);
+-    select_console 'sut';
++    # The wizard's exit precedes the next desktop's readiness. Wait for the
++    # delivered session and its actual endpoints, without restarting services.
++    my $session_url = data_url('desktop_session.py');
++    my $ready = $class->run_command(
++        'curl --fail --silent --show-error --max-time 15 ' . shell_quote($session_url)
++          . ' --output /tmp/openqa-desktop-session.py && '
++          . 'session_environment=$(python3 /tmp/openqa-desktop-session.py --timeout 90) && '
++          . 'eval "$session_environment"', 120);
++    die 'the desktop session did not become ready; no accessibility repair was attempted'
++      unless defined $ready && $ready == 0;
+ 
+     my $baseline = $class->result('baseline', 10);
+     if (ref $baseline ne 'HASH'
+diff --git a/openqa/tests/live_desktop.pm b/openqa/tests/live_desktop.pm
+index 736e619..da63daa 100644
+--- a/openqa/tests/live_desktop.pm
++++ b/openqa/tests/live_desktop.pm
+@@ -123,6 +123,9 @@ sub run {
+       unless defined wait_serial($closed, no_regex => 1, timeout => 150);
+     select_console 'sut';
+     atspi->set_widget_scope(undef);
++    # A closed wizard alone is not a ready desktop. This also ensures that
++    # the live-prefix plan observes the same transition as later modules.
++    atspi->reset_baseline;
+ }
+ 
+ # Failure evidence is read-only and best effort; it never repairs a broken GUI

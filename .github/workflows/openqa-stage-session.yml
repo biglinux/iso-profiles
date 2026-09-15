@@ -1,0 +1,77 @@
+name: Validate reviewed desktop session readiness
+on:
+  push:
+    branches: [fix/openqa-nonvisual-accessibility-20260914]
+    paths: [.github/workflows/openqa-stage-session.yml, .openqa-session-reviewed.patch]
+permissions:
+  contents: write
+jobs:
+  reviewed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Apply and verify exact reviewed target
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 399f5902c8640aa48aaae4c3ed3cb3f6172b14cc
+          echo 'd0988828aba2c861a028e53ad86fd85ea668db5930114ead8c2eb127fe94a4e0  .openqa-session-reviewed.patch' | sha256sum --check
+          git apply --index .openqa-session-reviewed.patch
+          git rm .openqa-session-reviewed.patch .github/workflows/openqa-stage-session.yml
+          test "$(git write-tree)" = 2cceb77f534e1854fa314729a0469edbecbd54ae
+      - name: Validate regressions
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check -r openqa/report/requirements.txt
+          {
+            python3 -m unittest discover -s data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/report -p 'test_*.py'
+            prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
+            python3 openqa/production/check-nonvisual.py
+            shellcheck -x openqa/production/*.sh data/*.sh
+            git diff --cached --check
+          } 2>&1 | tee "$RUNNER_TEMP/session-validation.log"
+      - name: Upload tested immutable blobs without moving refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, pathlib, subprocess, urllib.request
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          expected = '2cceb77f534e1854fa314729a0469edbecbd54ae'
+          assert git('write-tree').decode().strip() == expected
+          entries = []
+          for raw in git('diff', '--cached', '--name-only', '-z').split(b'\0'):
+              if not raw:
+                  continue
+              name = raw.decode()
+              index = git('ls-files', '--stage', '--', name).decode().strip()
+              if not index:
+                  entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': None})
+                  continue
+              mode, sha = index.split()[:2]
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/biglinux/iso-profiles/git/blobs',
+                  data=json.dumps({'content': base64.b64encode(git('show', ':' + name)).decode(), 'encoding': 'base64'}).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Content-Type': 'application/json'}, method='POST')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  actual = json.load(response)['sha']
+              assert actual == sha
+              entries.append({'path': name, 'mode': mode, 'type': 'blob', 'sha': sha})
+          result = {'base_tree': git('rev-parse', 'HEAD^{tree}').decode().strip(), 'parent': git('rev-parse', 'HEAD').decode().strip(), 'target_tree': expected, 'entries': entries}
+          (pathlib.Path(os.environ['RUNNER_TEMP']) / 'session-publication.json').write_text(json.dumps(result, indent=2))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() }}
+        with:
+          name: reviewed-session-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/session-publication.json
+            ${{ runner.temp }}/session-validation.log
+          retention-days: 3
+          if-no-files-found: error
