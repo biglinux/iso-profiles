@@ -1,7 +1,7 @@
 name: Verify the live prefix with the published ISO
 
 # Diagnose the first failing module once before spending six release runners.
-# Uses the 2026-09-09 publication and preserves its explicit accessibility bus.
+# Uses the 2026-09-09 publication; shared accessible panels are visited once.
 # This review-branch workflow never approves or publishes an ISO release.
 on:
   push:

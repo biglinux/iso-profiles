@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 import unicodedata
-from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -496,40 +495,52 @@ class WalkTruncated(Exception):
 
 
 def _walk(accessible: Any, limit: int = 600, deadline: float | None = None) -> Iterable[Any]:
-    """Traverse coherently with bounded work; a partial walk is never absence.
+    """Visit each accessible once; shared references are not ancestor cycles.
 
-    Check the budget before *each* child fetch, not just once per parent.
-    The bound includes queued objects, preventing a wide node from allocating
-    an arbitrarily large queue. A cyclic provider is an incomplete observation.
+    GTK page containers can expose the same current panel through several
+    children. A repeated object must not become an ambiguous selector or a
+    false cycle. Iterative depth-first traversal distinguishes an active
+    ancestor (cycle) from a fully visited shared subtree, with bounded storage.
     """
     _atspi, GLib = _atspi_import()
-    queue = deque([accessible] if accessible is not None else [])
+    stack = [(accessible, False)] if accessible is not None else []
     seen: set[int] = set()
+    active: set[int] = set()
     references = []  # Keep proxies alive so Python cannot reuse their identities.
+    pending = len(stack)
     visited = 0
-    while queue:
-        if visited >= limit or (deadline is not None and time.monotonic() > deadline):
-            raise WalkTruncated(f"incomplete tree after {visited} nodes")
-        current = queue.popleft()
-        if current is None:
-            continue
+    while stack:
+        current, leaving = stack.pop()
         identity = id(current)
-        if identity in seen:
+        if leaving:
+            active.remove(identity)
+            continue
+        pending -= 1
+        if deadline is not None and time.monotonic() > deadline:
+            raise WalkTruncated(f"incomplete tree after {visited} nodes")
+        if identity in active:
             raise WalkTruncated("cyclic accessibility tree")
+        if identity in seen:
+            continue
+        if visited >= limit:
+            raise WalkTruncated(f"incomplete tree after {visited} nodes")
         seen.add(identity)
+        active.add(identity)
         references.append(current)
         visited += 1
         yield current
         try:
             count = current.get_child_count()
-            if count < 0 or visited + len(queue) + count > limit:
+            if count < 0 or visited + pending + count > limit:
                 raise WalkTruncated("child list exceeds the remaining node budget")
-            for index in range(count):
+            stack.append((current, True))
+            for index in reversed(range(count)):
                 if deadline is not None and time.monotonic() > deadline:
                     raise WalkTruncated("child enumeration exceeded its deadline")
                 child = current.get_child_at_index(index)
                 if child is not None:
-                    queue.append(child)
+                    stack.append((child, False))
+                    pending += 1
         except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
             raise ProbeError(f"incomplete accessibility tree: {error}") from error
 

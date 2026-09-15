@@ -91,6 +91,38 @@ class SelectorTest(unittest.TestCase):
             with self.assertRaisesRegex(probe.WalkTruncated, "cyclic"):
                 list(probe._walk(root))
 
+    def test_shared_panel_is_not_a_cycle_or_duplicate_widget(self):
+        target = FakeAccessible("keyboard", 42, role="table")
+        panel = FakeAccessible("panel", 42, [target])
+        pages = [FakeAccessible("page", 42, [panel]) for _ in range(4)]
+        root = FakeAccessible("window", 42, pages)
+        with mock.patch.object(probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            observed = list(probe._walk(root))
+        self.assertEqual(observed.count(panel), 1)
+        self.assertEqual(observed.count(target), 1)
+        self.assertEqual(len(observed), 7)
+
+    def test_duplicate_child_reference_is_visited_once(self):
+        child = FakeAccessible("button", 42)
+        root = FakeAccessible("window", 42, [child, child])
+        with mock.patch.object(probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            self.assertEqual(list(probe._walk(root)), [root, child])
+
+    def test_cycle_below_shared_subtree_still_fails(self):
+        shared = FakeAccessible("shared", 42)
+        first = FakeAccessible("first", 42, [shared])
+        second = FakeAccessible("second", 42, [shared])
+        shared.children = [second]
+        root = FakeAccessible("window", 42, [first, second])
+        with mock.patch.object(probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            with self.assertRaisesRegex(probe.WalkTruncated, "cyclic"):
+                list(probe._walk(root))
+
+    def test_exact_node_budget_can_complete(self):
+        root = FakeAccessible("window", 42, [FakeAccessible("child", 42)])
+        with mock.patch.object(probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            self.assertEqual(len(list(probe._walk(root, limit=2))), 2)
+
 
 class OrcaEvidenceTest(unittest.TestCase):
     def test_reader_output_not_debug_or_key_text(self):
