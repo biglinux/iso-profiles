@@ -70,9 +70,9 @@ sub _desktop_id {
 
 sub _application_policy {
     my $policy = application_policy->load;
-    die 'application policy version must be 1'
-      unless $policy->{version} && $policy->{version} == 1;
-    for my $section (qw(exclude aliases critical)) {
+    die 'application policy version must be 2'
+      unless $policy->{version} && $policy->{version} == 2;
+    for my $section (qw(exclude aliases contracts critical)) {
         die "application policy section '$section' is invalid"
           if exists $policy->{$section} && ref $policy->{$section} ne 'ARRAY';
     }
@@ -101,6 +101,62 @@ sub _application_policy {
           if exists $aliases{$item->{desktop_id}};
         $aliases{$item->{desktop_id}} = $item->{canonical};
     }
+    my %contracts;
+    my %allowed_kind = map { $_ => 1 } qw(standard shared-window transient-dialog);
+    my %allowed_requirement = map { $_ => 1 }
+      qw(alsa-card native-x11 uefi-variables video-device);
+    for my $item (@{$policy->{contracts} // []}) {
+        die 'application policy contract is invalid'
+          unless ref $item eq 'HASH'
+          && defined $item->{desktop_id}
+          && defined $item->{kind}
+          && defined $item->{reason}
+          && $item->{desktop_id} =~ /\A[^\r\n]+\.desktop\z/
+          && $allowed_kind{$item->{kind}}
+          && $item->{reason} ne '';
+        die 'application policy contract is duplicated'
+          if exists $contracts{$item->{desktop_id}};
+        die 'application policy contract overlaps an exclusion or alias'
+          if exists $excluded{$item->{desktop_id}} || exists $aliases{$item->{desktop_id}};
+        die 'application policy contract close key is invalid'
+          if defined $item->{close_key} && $item->{close_key} !~ /\A(?:alt-f4|ctrl-q)\z/;
+        for my $field (qw(close_timeout content_timeout)) {
+            die "application policy contract $field is invalid"
+              if defined $item->{$field}
+              && ($item->{$field} !~ /\A[1-9][0-9]*\z/ || $item->{$field} > 120);
+        }
+        my $exit_codes = $item->{allowed_exit_codes};
+        $exit_codes = $item->{kind} eq 'transient-dialog' ? [0, 1] : [0]
+          unless defined $exit_codes;
+        die 'application policy contract exit codes are invalid'
+          unless ref $exit_codes eq 'ARRAY' && @$exit_codes;
+        my %seen_code;
+        for my $code (@$exit_codes) {
+            die 'application policy contract exit code is invalid'
+              unless defined $code && "$code" =~ /\A[0-9]+\z/ && $code <= 255;
+            die 'application policy contract exit code is duplicated'
+              if $seen_code{$code}++;
+        }
+        my $requirements = $item->{requires} // [];
+        die 'application policy contract requirements are invalid'
+          unless ref $requirements eq 'ARRAY';
+        my %seen_requirement;
+        for my $requirement (@$requirements) {
+            die 'application policy contract requirement is invalid'
+              unless defined $requirement && $allowed_requirement{$requirement};
+            die 'application policy contract requirement is duplicated'
+              if $seen_requirement{$requirement}++;
+        }
+        $contracts{$item->{desktop_id}} = {
+            kind => $item->{kind},
+            reason => $item->{reason},
+            close_key => $item->{close_key},
+            close_timeout => defined $item->{close_timeout} ? 0 + $item->{close_timeout} : undef,
+            content_timeout => defined $item->{content_timeout} ? 0 + $item->{content_timeout} : undef,
+            allowed_exit_codes => [map { 0 + $_ } @$exit_codes],
+            requirements => [@$requirements],
+        };
+    }
     my %critical;
     for my $item (@{$policy->{critical} // []}) {
         die 'application policy critical entry is invalid'
@@ -111,9 +167,16 @@ sub _application_policy {
           && $item->{functional_test} =~ /\A[A-Za-z0-9_.-]+\z/;
         die 'application policy critical entry is duplicated'
           if exists $critical{$item->{desktop_id}};
+        die 'application policy critical entry overlaps an exclusion or alias'
+          if exists $excluded{$item->{desktop_id}} || exists $aliases{$item->{desktop_id}};
         $critical{$item->{desktop_id}} = $item->{functional_test};
     }
-    return {excluded => \%excluded, aliases => \%aliases, critical => \%critical};
+    return {
+        excluded => \%excluded,
+        aliases => \%aliases,
+        contracts => \%contracts,
+        critical => \%critical,
+    };
 }
 
 sub _shard_for {
@@ -142,6 +205,15 @@ sub _build_application_context {
           && _entry_value($entry, 'skip_reason', '') ne ''
           ? 'invalid'
           : 'launchable';
+        my $contract = ($policy->{contracts} // {})->{$desktop_id} // {
+            kind => 'standard',
+            reason => 'Default strict graphical application contract',
+            close_key => undef,
+            close_timeout => undef,
+            content_timeout => undef,
+            allowed_exit_codes => [0],
+            requirements => [],
+        };
         push @inventory, {
             desktop_id => $desktop_id,
             path => _entry_value($entry, 'path', undef),
@@ -153,7 +225,15 @@ sub _build_application_context {
             canonical => $policy->{aliases}{$desktop_id},
             exclusion_reason => $not_applicable,
             critical_functional_test => $policy->{critical}{$desktop_id},
-            execution_contract => 'graphical',
+            execution_contract => $classification eq 'launchable' ? $contract->{kind} : undef,
+            contract_reason => $classification eq 'launchable' ? $contract->{reason} : undef,
+            contract_close_key => $classification eq 'launchable' ? $contract->{close_key} : undef,
+            contract_close_timeout => $classification eq 'launchable' ? $contract->{close_timeout} : undef,
+            contract_content_timeout => $classification eq 'launchable' ? $contract->{content_timeout} : undef,
+            contract_allowed_exit_codes => $classification eq 'launchable'
+              ? $contract->{allowed_exit_codes} : undef,
+            contract_requirements => $classification eq 'launchable'
+              ? $contract->{requirements} : undef,
             assigned_shard => _shard_for($desktop_id, $shard_count),
         };
     }
@@ -178,12 +258,12 @@ sub _build_application_context {
           unless ($classification_by_id{$entry->{canonical}} // '') eq 'launchable';
     }
     my $context = {
-        schema_version => 4,
+        schema_version => 5,
         iso_filename => get_var('BIGLINUX_ISO_FILENAME', ''),
         iso_sha256 => get_var('BIGLINUX_ISO_SHA256', ''),
         build_id => get_var('BIGLINUX_OPENQA_BUILD', ''),
         commit_sha => get_var('BIGLINUX_OPENQA_COMMIT', ''),
-        policy_version => 1,
+        policy_version => 2,
         shard_index => $shard_index + 0,
         shard_count => $shard_count + 0,
         inventory_hash => sha256_hex($inventory_json),
@@ -209,6 +289,7 @@ sub _test_entry {
     $metric->{desktop_entry} = $entry->{path};
     $metric->{category} = $id;
     $metric->{classification} = $entry->{_coverage}{classification};
+    $metric->{execution_contract} = $entry->{_coverage}{execution_contract};
     $metric->{assigned_shard} = $entry->{_coverage}{assigned_shard};
     push @application_metrics, $metric;
     _record_info "$id / $metric->{status}",
@@ -277,7 +358,7 @@ sub upload_application_metrics {
     my $tested = scalar grep { $_->{status} ne 'skipped' } @application_metrics;
     my $skipped = scalar grep { $_->{status} eq 'skipped' } @application_metrics;
     my $payload = encode_json({
-        schema_version => 2,
+        schema_version => 3,
         system => {
             kernel => $kernel_version,
             desktop => $desktop // 'unknown',

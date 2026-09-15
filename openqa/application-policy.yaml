@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 # Every installed Desktop Entry remains in the inventory. Entries below are
 # classified explicitly because they are services, helpers, protocol handlers,
@@ -124,8 +124,185 @@ exclude:
     reason: Geographic URI handler requires a geo URI argument
   - desktop_id: xdg-desktop-portal-gtk.desktop
     reason: GTK desktop portal is a D-Bus service without a standalone window
+  - desktop_id: com.biglinux.calamares-config.desktop
+    reason: Installer launcher is covered by the dedicated BIOS and UEFI installation plans
+  - desktop_id: jnlp-check.desktop
+    reason: Java Web Start helper requires a JNLP file or an external launch request
+  - desktop_id: org.kde.kdeconnect.handler.desktop
+    reason: KDE Connect URL handler requires a kdeconnect URI supplied by another application
+  - desktop_id: org.kde.vpnimport.desktop
+    reason: VPN importer requires a VPN configuration file supplied by the user
+  - desktop_id: rustdesk-link.desktop
+    reason: RustDesk link handler requires a rustdesk URI supplied by another application
+  - desktop_id: smplayer_enqueue.desktop
+    reason: SMPlayer enqueue handler requires one or more media files
+  - desktop_id: steam.desktop
+    reason: BigLinux ships a Steam bootstrap installer that immediately downloads and installs Steam; it is not the installed Steam client
 
-aliases: []
+aliases:
+  - desktop_id: bigcontrolcenter/big-driver-manager.desktop
+    canonical: big-driver-manager.desktop
+  - desktop_id: bigcontrolcenter/big-kernel-manager.desktop
+    canonical: big-kernel-manager.desktop
+  - desktop_id: org.kde.plasma.settings.open.desktop
+    canonical: bigcontrolcenter/systemsettings.desktop
+
+# Per-application lifecycle contracts. Unlisted entries use the strict
+# standard contract: accessible content, one close shortcut, process exit 0.
+contracts:
+  - desktop_id: Executar (Krunner).desktop
+    kind: shared-window
+    reason: KRunner is a resident Plasma service; the tested runner window must close without a crash
+  - desktop_id: bigcontrolcenter/bssh.desktop
+    kind: transient-dialog
+    allowed_exit_codes: [0, 1]
+    reason: Closing an Avahi service chooser without selecting a service returns the documented cancellation status
+  - desktop_id: bigcontrolcenter/bvnc.desktop
+    kind: transient-dialog
+    allowed_exit_codes: [0, 1]
+    reason: Closing an Avahi service chooser without selecting a service returns the documented cancellation status
+  - desktop_id: org.kde.ksshaskpass.desktop
+    kind: transient-dialog
+    allowed_exit_codes: [0, 1]
+    reason: Cancelling the credential prompt is a normal result for an isolated smoke test
+  - desktop_id: bigcontrolcenter/gnome-alsamixer.desktop
+    kind: standard
+    requires: [alsa-card]
+    reason: The mixer is applicable only when the guest exposes an ALSA hardware card
+  - desktop_id: guvcview.desktop
+    kind: standard
+    requires: [video-device]
+    reason: The webcam application is applicable only when a V4L2 capture device exists
+  - desktop_id: bigcontrolcenter/qefientrymanager.desktop
+    kind: standard
+    requires: [uefi-variables]
+    content_timeout: 15
+    reason: EFI entry management is applicable only when firmware variables are exposed in the guest
+  - desktop_id: yad-settings.desktop
+    kind: standard
+    requires: [native-x11]
+    reason: This YAD settings mode explicitly supports only a native X11 session
+  - desktop_id: bigcontrolcenter/hplip.desktop
+    kind: shared-window
+    reason: HP Device Manager may keep its notification-area service after the toolbox window closes
+  - desktop_id: bigcontrolcenter/me.timschneeberger.jdsp4linux.desktop
+    kind: shared-window
+    reason: JamesDSP is a resident audio service with a separately closable control window
+  - desktop_id: org.qbittorrent.qBittorrent.desktop
+    kind: shared-window
+    reason: qBittorrent may keep its configured notification-area service after the window closes
+  - desktop_id: kcm_cursortheme.desktop
+    kind: shared-window
+    reason: The KCM window is hosted by kcmshell6; the tested module window is the lifecycle boundary
+  - desktop_id: kcm_wallpaper.desktop
+    kind: shared-window
+    reason: The KCM window is hosted by kcmshell6; the tested module window is the lifecycle boundary
+  - desktop_id: libreoffice-base.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    content_timeout: 20
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: libreoffice-calc.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: libreoffice-draw.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: libreoffice-impress.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: libreoffice-math.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: libreoffice-startcenter.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: libreoffice-writer.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: libreoffice-xsltfilter.desktop
+    kind: shared-window
+    close_key: ctrl-q
+    reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
+  - desktop_id: gimp.desktop
+    kind: standard
+    close_key: ctrl-q
+    close_timeout: 30
+    reason: GIMP performs plug-in and session shutdown work after the documented Quit shortcut
+  - desktop_id: bigcontrolcenter/br.com.biglinux.networkinfo.desktop
+    kind: standard
+    close_timeout: 30
+    reason: Network discovery workers may require additional bounded shutdown time
+  - desktop_id: bigcontrolcenter/designer.desktop
+    kind: standard
+    close_timeout: 30
+    reason: Qt Designer may require additional bounded shutdown time during first start
+  - desktop_id: br.com.biglinux.audio.converter.desktop
+    kind: standard
+    close_timeout: 30
+    reason: The converter may finish worker initialization before its normal process exit
+  - desktop_id: br.com.biglinux.bigocrpdf-editor.desktop
+    kind: standard
+    close_timeout: 30
+    reason: The editor may finish worker initialization before its normal process exit
+  - desktop_id: br.com.biglinux.bigocrpdf.desktop
+    kind: standard
+    close_timeout: 30
+    reason: The OCR frontend may finish worker initialization before its normal process exit
+  - desktop_id: br.com.biglinux.converter.desktop
+    kind: standard
+    close_timeout: 30
+    reason: The converter may finish worker initialization before its normal process exit
+  - desktop_id: br.com.biglinux.webapps.desktop
+    kind: standard
+    close_timeout: 30
+    reason: The web application manager may finish worker initialization before its normal process exit
+  - desktop_id: big-driver-manager.desktop
+    kind: standard
+    content_timeout: 20
+    reason: The Qt Quick interface may publish its accessible content after the top-level window
+  - desktop_id: big-kernel-manager.desktop
+    kind: standard
+    content_timeout: 20
+    reason: The Qt Quick interface may publish its accessible content after the top-level window
+  - desktop_id: big-store.desktop
+    kind: standard
+    content_timeout: 20
+    reason: The store may publish its accessible web content after the top-level window
+  - desktop_id: bigcontrolcenter/biglinux-config.desktop
+    kind: standard
+    content_timeout: 20
+    reason: The web-based settings page may publish its accessible content after the top-level window
+  - desktop_id: bigcontrolcenter/hp-uiscan.desktop
+    kind: standard
+    content_timeout: 15
+    reason: The scanner UI may publish its controls after device discovery begins
+  - desktop_id: bigcontrolcenter/stoken-gui-small.desktop
+    kind: standard
+    content_timeout: 15
+    reason: The token dialog may publish its accessible controls after the top-level window
+  - desktop_id: bigcontrolcenter/stoken-gui.desktop
+    kind: standard
+    content_timeout: 15
+    reason: The token dialog may publish its accessible controls after the top-level window
+  - desktop_id: brave-browser.desktop
+    kind: standard
+    content_timeout: 20
+    reason: Chromium accessibility content is published after the browser window appears
+  - desktop_id: rustdesk.desktop
+    kind: standard
+    content_timeout: 20
+    reason: RustDesk may publish its accessible content after its renderer initializes
+  - desktop_id: smplayer.desktop
+    kind: standard
+    content_timeout: 15
+    reason: SMPlayer may publish its controls after the player window appears
 
 # Legacy section name: selected installed-app smoke checks, not mandatory packages.
 # Missing entries are not applicable; the live shards discover all installed applications.

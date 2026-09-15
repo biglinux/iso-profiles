@@ -3,9 +3,11 @@
 ## Contrato preservado
 
 O teste comum continua sendo abrir um aplicativo presente/aplicável, observar uma
-janela própria com conteúdo AT-SPI útil, enviar um atalho normal de fechamento e
-observar saída zero. Aplicativos opcionais ausentes são não aplicáveis. Não há
-comparação de aparência. Percursos aprofundados com Orca continuam opt-in.
+janela própria com conteúdo AT-SPI útil e enviar um atalho normal de fechamento.
+O contrato padrão exige saída zero; contratos locais podem delimitar a janela de
+um serviço residente ou o cancelamento de um diálogo, sem aceitar crash ou código
+não declarado. Aplicativos opcionais ausentes são não aplicáveis. Não há comparação
+de aparência. Percursos aprofundados com Orca continuam opt-in.
 
 Relatórios são emitidos também na falha. Publicar um relatório de falha não
 aprova a ISO; não se pode trocar uma falha funcional por sucesso do upload.
@@ -147,3 +149,31 @@ de comprimento), sem incluir valores dos campos. A nova mensagem permite disting
 composição de widget, duplicidade persistente e transição; nenhuma causa específica
 foi presumida sem essa evidência. São cinco regressões adicionais de estado e
 limite. A aprovação da instalação continua dependendo de execução real.
+
+
+## Triagem das falhas de aplicativos e política v2
+
+A matriz `34925637884` cobriu 225 entradas launchable: 173 passaram e 52 falharam.
+Os diagnósticos mostraram que as entradas não têm todas o mesmo ciclo de vida.
+A correção não remove falhas indiscriminadamente; ela registra a natureza de cada
+caso em `application-policy.yaml`:
+
+- `steam.desktop` deixa de ser executado porque é o bootstrap de instalação da
+  Steam, conforme requisito do projeto;
+- handlers de URI/arquivo e o launcher do instalador já coberto por BIOS/UEFI são
+  excluídos com motivo e permanecem visíveis no inventário;
+- aliases de menu são associados ao teste canônico, evitando contar duas vezes o
+  mesmo programa;
+- guvcview, GNOME ALSA Mixer, QEFIEntryManager e o modo X11 do YAD são executados
+  somente quando a capacidade correspondente existe;
+- serviços residentes e hosts compartilhados precisam fechar sua janela observada,
+  sem crash; o processo pode permanecer apenas nos contratos nomeados;
+- diálogos transitórios aceitam saída 1 somente quando ela representa cancelamento
+  explicitamente declarado;
+- interfaces pesadas recebem prazo de publicação/encerramento maior, ainda limitado.
+
+A agregação usa cobertura schema 5 e métricas schema 3, valida que o resultado
+corresponde exatamente ao contrato do inventário e separa não aplicável de aprovado.
+Um erro da sonda de capacidade é falha, não ausência. Saída 1 não é globalmente
+aceita. `mpv`, `lstopo`, `urxvt`, Timeshift e qualquer outro caso que continue
+abortando ou sem janela AT-SPI permanecem vermelhos até correção real.

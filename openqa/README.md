@@ -12,16 +12,21 @@ Não existem needles ativas. `production/check-nonvisual.py` impede a reintrodu�
 dessas APIs nos módulos de teste.
 
 O teste padrão é **simples e genérico**: executar o programa instalado, aguardar
-uma janela da aplicação, observar ao menos um conteúdo/controle útil no AT-SPI,
-enviar o atalho de fechar e confirmar encerramento com saída zero. Não percorre
-todas as funções ou todos os controles. O Orca não precisa estar rodando e sua
-API de gravação não é requisito do smoke.
+uma janela da aplicação, observar ao menos um conteúdo/controle útil no AT-SPI e
+enviar um único atalho normal de fechamento. O resultado final segue o contrato
+de ciclo de vida daquela entrada: normalmente a janela e o processo precisam
+encerrar com saída zero; processos residentes precisam fechar a janela observada
+sem crash; diálogos transitórios só aceitam os códigos de cancelamento declarados.
+Não percorre todas as funções ou todos os controles. O Orca não precisa estar
+rodando e sua API de gravação não é requisito do smoke.
 
 `lib/application_smoke.pm` é compartilhado pela varredura live e pela seleção de
 aplicativos instalados. Há uma breve estabilização (2 s), uma consulta limitada de
-conteúdo e um prazo de fechamento (15 s). O atalho padrão é `Alt+F4`; não há clique
+conteúdo e um prazo de fechamento (15 s). O atalho padrão é `Alt+F4`; contratos
+podem declarar `Ctrl+Q` quando esse é o comando documentado de sair. Não há clique
 nem ação interna de fechar. Uma janela inativa não recebe o atalho. Saída diferente
-de zero, falta de janela/conteúdo ou necessidade de matar o processo reprovam.
+da lista explícita, falta de janela/conteúdo, crash ou necessidade de matar o
+processo reprovam.
 
 A política é **adaptável à ISO**, não uma lista de pacotes obrigatórios. Entradas
 configuradas ausentes aparecem como `skipped` / não aplicável, nunca como aprovação.
@@ -29,6 +34,23 @@ configuradas ausentes aparecem como `skipped` / não aplicável, nunca como apro
 à sessão. Comandos `Terminal=true` e serviços sem janela ficam fora do smoke gráfico.
 Um lançador presente mas quebrado (sem `Exec` válido, ou comando que falha) continua
 sendo erro; não é convertido em ausência para esconder falhas de empacotamento.
+
+`application-policy.yaml` usa o schema 2 e mantém a decisão auditável:
+
+- `exclude`: serviços, handlers ou instaladores bootstrap que não representam um
+  aplicativo gráfico autônomo. `steam.desktop` está aqui porque a ISO entrega um
+  instalador que baixa a Steam, não o cliente já instalado;
+- `aliases`: duas entradas de menu para a mesma função são cobertas por um único
+  lançamento canônico, sem apagar a entrada do inventário;
+- `contracts`: `standard`, `shared-window` e `transient-dialog`, com atalhos,
+  prazos, códigos de saída e capacidades explícitas;
+- `requires`: câmera, placa ALSA, variáveis UEFI ou sessão X11 podem tornar uma
+  entrada **não aplicável naquele ambiente**, mas erro da própria checagem é falha.
+
+Não existe aceitação global de saída 1. Somente diálogos nomeados podem declarar
+cancelamento 1. Fechar a janela de um processo residente também não permite crash
+ou código de saída inesperado; a limpeza posterior continua fora do veredito.
+Aplicativos que realmente abortam ou não expõem AT-SPI permanecem reprovados.
 
 A seção histórica `critical` seleciona smokes depois da instalação. Ausência de
 qualquer item não reprova. As quatro shards live descobrem os aplicativos desta ISO
@@ -43,8 +65,10 @@ opt-in o adaptador de fala do Orca e as pós-condições específicas são exigi
 Não é necessário ampliar esses percursos para cada aplicativo da ISO.
 
 Parâmetros opcionais: `BIGLINUX_APPLICATION_SETTLE_SECONDS` (0–10),
+`BIGLINUX_APPLICATION_CONTENT_TIMEOUT` (1–120),
 `BIGLINUX_APPLICATION_CLOSE_TIMEOUT` (1–120) e `BIGLINUX_APPLICATION_CLOSE_KEY`
-(`alt-f4` ou `ctrl-q`). A varredura usa uma amostra de memória, sem amostragem
+(`alt-f4` ou `ctrl-q`). A política pode definir limites próprios e ainda limitados por aplicativo;
+a varredura usa uma amostra de memória, sem amostragem
 repetida por aplicativo. Uma mudança apenas estética não exige novo teste.
 
 ## Semântica e teclado

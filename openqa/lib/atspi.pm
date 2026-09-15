@@ -435,11 +435,14 @@ sub cleanup {
 # The generic smoke sends exactly one normal close shortcut. It never invokes
 # an AT action, native quit command or kill to make the close test pass.
 sub close_with_shortcut {
-    my ($class, $pid, $status_path, $launch_pid, $timeout, $key) = @_;
+    my ($class, $pid, $status_path, $launch_pid, $timeout, $key, $mode) = @_;
     $timeout //= 15;
     $key //= 'alt-f4';
+    $mode //= 'process-exit';
     die 'invalid close timeout' unless $timeout =~ /\A[1-9][0-9]*\z/;
     die 'invalid close shortcut' unless $key =~ /\A(?:alt-f4|ctrl-q)\z/;
+    die 'invalid close observation mode'
+      unless $mode =~ /\A(?:process-exit|window-close)\z/;
     die 'invalid application PID' unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     die 'invalid supervisor status file' unless defined $status_path
       && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};
@@ -448,12 +451,26 @@ sub close_with_shortcut {
       unless ($active->{status} // '') eq 'passed' && $active->{active} && $active->{pid} == $pid;
     select_console 'sut';
     send_key $key;
-    my $wait = $class->run_command(_wait_for_exit_command($pid, $timeout), $timeout + 5);
-    my $code = _read_exit_code($status_path, 3);
-    my $gone = defined $wait && $wait == 0;
+    my ($gone, $window_closed) = (0, 0);
+    if ($mode eq 'window-close') {
+        my $closed = $class->result('wait-close', $timeout, '--pid', $pid);
+        $window_closed = ($closed->{status} // '') eq 'passed'
+          && ($closed->{accessible_window} // 0) ? 1 : 0;
+        # A shared service may outlive its window. Observe whether it exited,
+        # but do not spend the whole close budget a second time.
+        my $wait = $class->run_command(_wait_for_exit_command($pid, 1), 6);
+        $gone = defined $wait && $wait == 0;
+    }
+    else {
+        my $wait = $class->run_command(_wait_for_exit_command($pid, $timeout), $timeout + 5);
+        $gone = defined $wait && $wait == 0;
+        $window_closed = $gone;
+    }
+    my $code = _read_exit_code($status_path, $gone ? 3 : 1);
     delete $session_launch_pids{$launch_pid} if defined $launch_pid && $gone;
     return {close_action => 'keyboard.' . $key, process_gone => $gone,
-        graceful_exit => $gone, raw_application_exit_code => $code,
+        window_closed => $window_closed, graceful_exit => $gone,
+        raw_application_exit_code => $code,
         application_exit_code => $code, application_crashed => is_crash_exit_code($code)};
 }
 

@@ -14,6 +14,54 @@ from pathlib import Path
 from typing import Any
 
 CLASSIFICATIONS = {"launchable", "excluded", "duplicate-alias", "invalid"}
+CONTRACT_KINDS = {"standard", "shared-window", "transient-dialog"}
+CONTRACT_REQUIREMENTS = {"alsa-card", "native-x11", "uefi-variables", "video-device"}
+CLOSE_ACTIONS = {"keyboard.alt-f4", "keyboard.ctrl-q"}
+
+
+def normalized_contract(item: dict[str, Any] | None = None) -> dict[str, Any]:
+    item = item or {}
+    kind = item.get("kind", "standard")
+    if kind not in CONTRACT_KINDS:
+        raise ValueError(f"invalid application contract kind: {kind!r}")
+    reason = item.get("reason", "Default strict graphical application contract")
+    if not isinstance(reason, str) or not reason:
+        raise ValueError("application contract reason is missing")
+    close_key = item.get("close_key")
+    if close_key is not None and close_key not in {"alt-f4", "ctrl-q"}:
+        raise ValueError("application contract close key is invalid")
+    values: dict[str, int | None] = {}
+    for field in ("close_timeout", "content_timeout"):
+        value = item.get(field)
+        if value is not None and (type(value) is not int or not 1 <= value <= 120):
+            raise ValueError(f"application contract {field} is invalid")
+        values[field] = value
+    exit_codes = item.get("allowed_exit_codes")
+    if exit_codes is None:
+        exit_codes = [0, 1] if kind == "transient-dialog" else [0]
+    if (
+        not isinstance(exit_codes, list)
+        or not exit_codes
+        or any(type(code) is not int or not 0 <= code <= 255 for code in exit_codes)
+        or len(exit_codes) != len(set(exit_codes))
+    ):
+        raise ValueError("application contract exit codes are invalid")
+    requirements = item.get("requires", item.get("requirements", []))
+    if (
+        not isinstance(requirements, list)
+        or any(requirement not in CONTRACT_REQUIREMENTS for requirement in requirements)
+        or len(requirements) != len(set(requirements))
+    ):
+        raise ValueError("application contract requirements are invalid")
+    return {
+        "kind": kind,
+        "reason": reason,
+        "close_key": close_key,
+        "close_timeout": values["close_timeout"],
+        "content_timeout": values["content_timeout"],
+        "allowed_exit_codes": exit_codes,
+        "requirements": requirements,
+    }
 
 
 def canonical_json(value: Any) -> str:
@@ -81,6 +129,30 @@ def validate_inventory(
             raise ValueError(f"duplicate alias has no canonical entry: {desktop_id}")
         if classification == "invalid" and not item.get("classification_reason"):
             raise ValueError(f"invalid entry has no reason: {desktop_id}")
+        if classification == "launchable":
+            contract = normalized_contract(
+                {
+                    "kind": item.get("execution_contract"),
+                    "reason": item.get("contract_reason"),
+                    "close_key": item.get("contract_close_key"),
+                    "close_timeout": item.get("contract_close_timeout"),
+                    "content_timeout": item.get("contract_content_timeout"),
+                    "allowed_exit_codes": item.get("contract_allowed_exit_codes"),
+                    "requirements": item.get("contract_requirements"),
+                }
+            )
+            expected_fields = {
+                "execution_contract": contract["kind"],
+                "contract_reason": contract["reason"],
+                "contract_close_key": contract["close_key"],
+                "contract_close_timeout": contract["close_timeout"],
+                "contract_content_timeout": contract["content_timeout"],
+                "contract_allowed_exit_codes": contract["allowed_exit_codes"],
+                "contract_requirements": contract["requirements"],
+            }
+            for key, expected in expected_fields.items():
+                if item.get(key) != expected:
+                    raise ValueError(f"application contract field {key} is inconsistent: {desktop_id}")
         desktop_ids[desktop_id] = item
 
     expected_hash = coverage.get("inventory_hash")
@@ -109,12 +181,15 @@ def validate_inventory(
 def validate_policy(
     policy: dict[str, Any], inventory: dict[str, dict[str, Any]]
 ) -> list[str]:
-    if policy.get("version") != 1:
-        raise ValueError("application policy version must be 1")
+    if policy.get("version") != 2:
+        raise ValueError("application policy version must be 2")
     excluded = policy.get("exclude", [])
     aliases = policy.get("aliases", [])
+    contracts = policy.get("contracts", [])
     critical = policy.get("critical", [])
-    if not all(isinstance(section, list) for section in (excluded, aliases, critical)):
+    if not all(
+        isinstance(section, list) for section in (excluded, aliases, contracts, critical)
+    ):
         raise ValueError("application policy sections must be lists")
 
     seen_excluded: set[str] = set()
@@ -122,6 +197,9 @@ def validate_policy(
         if (
             not isinstance(item, dict)
             or not isinstance(item.get("desktop_id"), str)
+            or not item["desktop_id"].endswith(".desktop")
+            or Path(item["desktop_id"]).is_absolute()
+            or ".." in Path(item["desktop_id"]).parts
             or not isinstance(item.get("reason"), str)
             or not item["reason"]
         ):
@@ -139,8 +217,13 @@ def validate_policy(
         if (
             not isinstance(item, dict)
             or not isinstance(item.get("desktop_id"), str)
+            or not item["desktop_id"].endswith(".desktop")
+            or Path(item["desktop_id"]).is_absolute()
+            or ".." in Path(item["desktop_id"]).parts
             or not isinstance(item.get("canonical"), str)
-            or not item["canonical"]
+            or not item["canonical"].endswith(".desktop")
+            or Path(item["canonical"]).is_absolute()
+            or ".." in Path(item["canonical"]).parts
         ):
             raise ValueError("application policy has an invalid alias entry")
         desktop_id = item["desktop_id"]
@@ -160,11 +243,48 @@ def validate_policy(
         ):
             raise ValueError(f"alias canonical target is invalid: {desktop_id}")
 
+    seen_contracts: set[str] = set()
+    for item in contracts:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("desktop_id"), str)
+            or not item["desktop_id"].endswith(".desktop")
+            or Path(item["desktop_id"]).is_absolute()
+            or ".." in Path(item["desktop_id"]).parts
+        ):
+            raise ValueError("application policy has an invalid contract entry")
+        desktop_id = item["desktop_id"]
+        if desktop_id in seen_contracts:
+            raise ValueError(f"application contract is duplicated: {desktop_id}")
+        if desktop_id in seen_excluded or desktop_id in seen_aliases:
+            raise ValueError(f"application contract overlaps another policy class: {desktop_id}")
+        seen_contracts.add(desktop_id)
+        contract = normalized_contract(item)
+        current = inventory.get(desktop_id)
+        if current is None:
+            continue
+        if current["classification"] != "launchable":
+            raise ValueError(f"installed application contract is not launchable: {desktop_id}")
+        expected = {
+            "execution_contract": contract["kind"],
+            "contract_reason": contract["reason"],
+            "contract_close_key": contract["close_key"],
+            "contract_close_timeout": contract["close_timeout"],
+            "contract_content_timeout": contract["content_timeout"],
+            "contract_allowed_exit_codes": contract["allowed_exit_codes"],
+            "contract_requirements": contract["requirements"],
+        }
+        if any(current.get(key) != value for key, value in expected.items()):
+            raise ValueError(f"installed application contract differs from policy: {desktop_id}")
+
     critical_ids: list[str] = []
     for item in critical:
         if (
             not isinstance(item, dict)
             or not isinstance(item.get("desktop_id"), str)
+            or not item["desktop_id"].endswith(".desktop")
+            or Path(item["desktop_id"]).is_absolute()
+            or ".." in Path(item["desktop_id"]).parts
             or not isinstance(item.get("functional_test"), str)
             or not item["functional_test"]
         ):
@@ -172,6 +292,8 @@ def validate_policy(
         desktop_id = item["desktop_id"]
         if desktop_id in critical_ids:
             raise ValueError(f"critical application is duplicated: {desktop_id}")
+        if desktop_id in seen_excluded or desktop_id in seen_aliases:
+            raise ValueError(f"critical application overlaps another policy class: {desktop_id}")
         critical_ids.append(desktop_id)
         current = inventory.get(desktop_id)
         if current is not None and current["classification"] == "invalid":
@@ -244,7 +366,7 @@ def validate_shards(
     shard_summaries: list[dict[str, Any]] = []
     for path, payload, coverage in zip(metrics_files, payloads, coverages, strict=True):
         assert isinstance(coverage, dict)
-        if payload.get("schema_version") != 2 or coverage.get("schema_version") != 4:
+        if payload.get("schema_version") != 3 or coverage.get("schema_version") != 5:
             raise ValueError(f"unsupported application metrics schema: {path}")
         shard_index = coverage.get("shard_index")
         if not isinstance(shard_index, int) or not 0 <= shard_index < expected_count:
@@ -256,8 +378,11 @@ def validate_shards(
         summary = payload.get("summary")
         if not isinstance(applications, list) or not isinstance(summary, dict):
             raise ValueError(f"shard payload is missing applications or summary: {path}")
-        if summary.get("tested") != len(applications):
-            raise ValueError(f"shard tested count is inconsistent: {path}")
+        skipped = sum(
+            item.get("status") == "skipped"
+            for item in applications
+            if isinstance(item, dict)
+        )
         passed = sum(
             item.get("status") == "passed"
             for item in applications
@@ -268,7 +393,13 @@ def validate_shards(
             for item in applications
             if isinstance(item, dict)
         )
-        if summary.get("passed") != passed or summary.get("failed") != failed:
+        if (
+            summary.get("total") != len(applications)
+            or summary.get("tested") != passed + failed
+            or summary.get("passed") != passed
+            or summary.get("failed") != failed
+            or summary.get("skipped") != skipped
+        ):
             raise ValueError(f"shard result counts are inconsistent: {path}")
         for item in applications:
             if not isinstance(item, dict):
@@ -283,18 +414,68 @@ def validate_shards(
                 raise ValueError(f"desktop ID assigned to the wrong shard: {desktop_id}")
             if item.get("classification") != "launchable":
                 raise ValueError(f"application result classification is invalid: {desktop_id}")
-            if item.get("status") not in {"passed", "failed"}:
+            if item.get("status") not in {"passed", "failed", "skipped"}:
                 raise ValueError(f"application result has invalid status: {desktop_id}")
+            contract_kind = inventory_item.get("execution_contract")
+            if item.get("execution_contract") != contract_kind:
+                raise ValueError(f"application result contract is inconsistent: {desktop_id}")
+            if item.get("contract_reason") != inventory_item.get("contract_reason"):
+                raise ValueError(f"application result contract reason is inconsistent: {desktop_id}")
+            if item.get("capability_requirements") != inventory_item.get("contract_requirements"):
+                raise ValueError(f"application result capabilities are inconsistent: {desktop_id}")
+            if item.get("allowed_exit_codes") != inventory_item.get("contract_allowed_exit_codes"):
+                raise ValueError(f"application result exit contract is inconsistent: {desktop_id}")
+            if item.get("status") == "skipped":
+                requirements = inventory_item.get("contract_requirements")
+                if (
+                    not requirements
+                    or item.get("validation_mode") != "capability-not-applicable"
+                    or item.get("functional_status") != "not-applicable"
+                    or item.get("accessibility_status") != "not-applicable"
+                    or item.get("cleanup_status") != "not-needed"
+                    or item.get("capability_requirements") != requirements
+                    or not isinstance(item.get("skip_reason"), str)
+                    or not item["skip_reason"]
+                ):
+                    raise ValueError(f"application was skipped without an unmet capability: {desktop_id}")
             if item.get("status") == "passed":
-                if (item.get("validation_mode") != "atspi-smoke"
-                        or item.get("accessible_window") is not True
-                        or item.get("accessibility_status") != "available"
-                        or item.get("functional_status") != "open-close"
-                        or item.get("graceful_exit") is not True
-                        or type(item.get("application_exit_code")) is not int
-                        or item["application_exit_code"] != 0
-                        or item.get("close_action") not in {"keyboard.alt-f4", "keyboard.ctrl-q"}
-                        or item.get("cleanup_status") != "passed"):
+                allowed_codes = inventory_item.get("contract_allowed_exit_codes", [0])
+                expected_close = "keyboard." + (
+                    inventory_item.get("contract_close_key") or "alt-f4"
+                )
+                common_ok = (
+                    item.get("validation_mode") == "atspi-smoke"
+                    and item.get("accessible_window") is True
+                    and item.get("accessibility_status") == "available"
+                    and item.get("close_action") == expected_close
+                    and item.get("cleanup_status") == "passed"
+                    and item.get("application_crashed") is not True
+                )
+                if contract_kind == "shared-window":
+                    contract_ok = (
+                        item.get("functional_status") == "window-closed"
+                        and item.get("window_closed") is True
+                        and (
+                            item.get("application_exit_code") is None
+                            or (
+                                type(item.get("application_exit_code")) is int
+                                and item["application_exit_code"] in allowed_codes
+                            )
+                        )
+                    )
+                else:
+                    expected_function = (
+                        "open-cancel" if contract_kind == "transient-dialog" else "open-close"
+                    )
+                    contract_ok = (
+                        item.get("functional_status") == expected_function
+                        and item.get("graceful_exit") is True
+                        and item.get("process_gone") is True
+                        and item.get("window_closed") is True
+                        and type(item.get("application_exit_code")) is int
+                        and item["application_exit_code"] in allowed_codes
+                    )
+                if not common_ok or not contract_ok:
                     raise ValueError(f"graphical approval lacks complete smoke evidence: {desktop_id}")
             if desktop_id in seen_launchables:
                 raise ValueError(
@@ -305,9 +486,11 @@ def validate_shards(
             {
                 "shard_index": shard_index,
                 "source": str(path),
-                "tested": len(applications),
+                "total": len(applications),
+                "tested": passed + failed,
                 "passed": passed,
                 "failed": failed,
+                "not_applicable": skipped,
             }
         )
 
@@ -328,14 +511,49 @@ def validate_shards(
         for desktop_id, item in seen_launchables.items()
         if item["status"] == "failed"
     )
-    passed_total = len(seen_launchables) - len(failed_ids)
-    critical_tested = sorted(set(critical_ids) & set(seen_launchables))
+    runtime_not_applicable = sorted(
+        desktop_id
+        for desktop_id, item in seen_launchables.items()
+        if item["status"] == "skipped"
+    )
+    passed_total = sum(item["status"] == "passed" for item in seen_launchables.values())
+    tested_total = sum(item["status"] != "skipped" for item in seen_launchables.values())
+    critical_tested = sorted(
+        set(critical_ids)
+        & {
+            desktop_id
+            for desktop_id, item in seen_launchables.items()
+            if item["status"] != "skipped"
+        }
+    )
     critical_failed = sorted(set(critical_ids) & set(failed_ids))
+    policy_exclusions = [
+        {
+            "desktop_id": desktop_id,
+            "reason": item.get("exclusion_reason", "excluded by policy"),
+        }
+        for desktop_id, item in sorted(inventory.items())
+        if item["classification"] == "excluded"
+    ]
+    duplicate_aliases = [
+        {"desktop_id": desktop_id, "canonical": item.get("canonical")}
+        for desktop_id, item in sorted(inventory.items())
+        if item["classification"] == "duplicate-alias"
+    ]
+    contract_counts = {
+        kind: sum(
+            item.get("execution_contract") == kind
+            for item in inventory.values()
+            if item["classification"] == "launchable"
+        )
+        for kind in sorted(CONTRACT_KINDS)
+    }
     summary: dict[str, Any] = {
         "status": "failed" if failed_ids else "passed",
-        "scope": "open, accessible content, close shortcut and exit 0; not full accessibility certification",
-        "application_result": "not-applicable" if not seen_launchables else ("failed" if failed_ids else "passed"),
+        "scope": "open, accessible content and one close shortcut under the configured lifecycle contract; not full accessibility certification",
+        "application_result": "not-applicable" if not tested_total else ("failed" if failed_ids else "passed"),
         "not_installed_desktop_ids": not_installed,
+        "runtime_not_applicable_desktop_ids": runtime_not_applicable,
         "metadata": {key: first.get(key) for key in metadata_keys},
         "coverage": {
             "inventory_total": len(inventory),
@@ -350,23 +568,37 @@ def validate_shards(
             "invalid_total": sum(
                 item["classification"] == "invalid" for item in inventory.values()
             ),
-            "tested_total": len(seen_launchables),
+            "tested_total": tested_total,
             "passed_total": passed_total,
             "failed_total": len(failed_ids),
+            "not_applicable_total": len(runtime_not_applicable),
+            "contract_counts": contract_counts,
         },
+        "policy_exclusions": policy_exclusions,
+        "duplicate_aliases": duplicate_aliases,
         "critical": {
             "configured": critical_ids,
-            "applicable": sorted(set(critical_ids) & launchable_ids),
+            "applicable": sorted(
+                set(critical_ids)
+                & {
+                    desktop_id
+                    for desktop_id, item in seen_launchables.items()
+                    if item["status"] != "skipped"
+                }
+            ),
             "not_installed": not_installed,
             "tested": critical_tested,
             "failed": critical_failed,
         },
         "failed_desktop_ids": failed_ids,
         "failed_applications": [seen_launchables[desktop_id] for desktop_id in failed_ids],
+        "runtime_not_applicable_applications": [
+            seen_launchables[desktop_id] for desktop_id in runtime_not_applicable
+        ],
         "shards": sorted(shard_summaries, key=lambda item: item["shard_index"]),
     }
     if failed_ids:
-        summary["error"] = f"mandatory applications failed: {', '.join(failed_ids)}"
+        summary["error"] = f"installed applicable applications failed: {', '.join(failed_ids)}"
     return summary
 
 
@@ -390,22 +622,47 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
         f"- Tested: {coverage.get('tested_total', 0)}",
         f"- Passed: {coverage.get('passed_total', 0)}",
         f"- Failed: {coverage.get('failed_total', 0)}",
+        f"- Runtime not applicable: {coverage.get('not_applicable_total', 0)}",
         f"- Not installed (not applicable): {len(summary.get('not_installed_desktop_ids', []))}",
+        f"- Contracts: standard={coverage.get('contract_counts', {}).get('standard', 0)}, "
+        f"shared-window={coverage.get('contract_counts', {}).get('shared-window', 0)}, "
+        f"transient-dialog={coverage.get('contract_counts', {}).get('transient-dialog', 0)}",
         "",
         "## Shards",
         "",
-        "| Shard | Tested | Passed | Failed |",
-        "| ---: | ---: | ---: | ---: |",
+        "| Shard | Total | Tested | Passed | Failed | Not applicable |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for shard in summary.get("shards", []):
         lines.append(
-            f"| {shard['shard_index']} | {shard['tested']} | "
-            f"{shard['passed']} | {shard['failed']} |"
+            f"| {shard['shard_index']} | {shard['total']} | {shard['tested']} | "
+            f"{shard['passed']} | {shard['failed']} | {shard['not_applicable']} |"
+        )
+    exclusions = summary.get("policy_exclusions", [])
+    if exclusions:
+        lines.extend(["", "## Policy exclusions (not executed)", ""])
+        lines.extend(
+            f"- `{item.get('desktop_id', 'unknown')}` — {item.get('reason', 'excluded by policy')}"
+            for item in exclusions
+        )
+    aliases = summary.get("duplicate_aliases", [])
+    if aliases:
+        lines.extend(["", "## Duplicate aliases covered by a canonical test", ""])
+        lines.extend(
+            f"- `{item.get('desktop_id', 'unknown')}` → `{item.get('canonical', 'unknown')}`"
+            for item in aliases
         )
     absent = summary.get("not_installed_desktop_ids", [])
     if absent:
         lines.extend(["", "## Not installed in this ISO (not applicable)", ""])
         lines.extend(f"- `{desktop_id}`" for desktop_id in absent)
+    runtime_not_applicable = summary.get("runtime_not_applicable_applications", [])
+    if runtime_not_applicable:
+        lines.extend(["", "## Runtime capabilities not available", ""])
+        lines.extend(
+            f"- `{item.get('desktop_id', 'unknown')}` — {item.get('skip_reason', 'not applicable')}"
+            for item in runtime_not_applicable
+        )
     failed_ids = summary.get("failed_desktop_ids", [])
     if failed_ids:
         lines.extend(["", "## Failed applications", ""])
@@ -417,17 +674,36 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
     )
 
     rows = "".join(
-        f"<tr><td>{shard['shard_index']}</td><td>{shard['tested']}</td>"
-        f"<td>{shard['passed']}</td><td>{shard['failed']}</td></tr>"
+        f"<tr><td>{shard['shard_index']}</td><td>{shard['total']}</td>"
+        f"<td>{shard['tested']}</td><td>{shard['passed']}</td>"
+        f"<td>{shard['failed']}</td><td>{shard['not_applicable']}</td></tr>"
         for shard in summary.get("shards", [])
     )
     failures = "".join(
         f"<li><code>{html.escape(desktop_id)}</code></li>" for desktop_id in failed_ids
     )
     failure_section = f"<h2>Failed applications</h2><ul>{failures}</ul>" if failures else ""
+    if exclusions:
+        failure_section += "<h2>Policy exclusions (not executed)</h2><ul>" + "".join(
+            f"<li><code>{html.escape(str(item.get('desktop_id', 'unknown')))}</code> — "
+            f"{html.escape(str(item.get('reason', 'excluded by policy')))}</li>"
+            for item in exclusions
+        ) + "</ul>"
+    if aliases:
+        failure_section += "<h2>Duplicate aliases</h2><ul>" + "".join(
+            f"<li><code>{html.escape(str(item.get('desktop_id', 'unknown')))}</code> → "
+            f"<code>{html.escape(str(item.get('canonical', 'unknown')))}</code></li>"
+            for item in aliases
+        ) + "</ul>"
     if absent:
         failure_section += "<h2>Not installed (not applicable)</h2><ul>" + "".join(
             f"<li>{html.escape(desktop_id)}</li>" for desktop_id in absent) + "</ul>"
+    if runtime_not_applicable:
+        failure_section += "<h2>Runtime capabilities not available</h2><ul>" + "".join(
+            f"<li><code>{html.escape(str(item.get('desktop_id', 'unknown')))}</code> — "
+            f"{html.escape(str(item.get('skip_reason', 'not applicable')))}</li>"
+            for item in runtime_not_applicable
+        ) + "</ul>"
     error = (
         f"<p><code>{html.escape(str(summary['error']))}</code></p>"
         if summary.get("error")
@@ -440,9 +716,14 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
         f"launchable: {coverage.get('launchable_total', 0)}; "
         f"tested: {coverage.get('tested_total', 0)}; "
         f"passed: {coverage.get('passed_total', 0)}; "
-        f"failed: {coverage.get('failed_total', 0)}</p>"
-        "<table><thead><tr><th>Shard</th><th>Tested</th><th>Passed</th>"
-        f"<th>Failed</th></tr></thead><tbody>{rows}</tbody></table>{failure_section}"
+        f"failed: {coverage.get('failed_total', 0)}; "
+        f"not applicable: {coverage.get('not_applicable_total', 0)}</p>"
+        f"<p>Contracts: standard={coverage.get('contract_counts', {}).get('standard', 0)}; "
+        f"shared-window={coverage.get('contract_counts', {}).get('shared-window', 0)}; "
+        f"transient-dialog={coverage.get('contract_counts', {}).get('transient-dialog', 0)}</p>"
+        "<table><thead><tr><th>Shard</th><th>Total</th><th>Tested</th>"
+        "<th>Passed</th><th>Failed</th><th>Not applicable</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table>{failure_section}"
     )
     (output_dir / "application-summary.html").write_text(document, encoding="utf-8")
 

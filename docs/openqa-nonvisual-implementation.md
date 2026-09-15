@@ -7,9 +7,12 @@ Destino de trabalho: `fix/openqa-nonvisual-accessibility-20260914`, PR #11.
 ## Revisão de escopo: smoke simples e programas opcionais
 
 O requisito atualizado prioriza abrir → observar janela/conteúdo AT-SPI → fechar
-pelo atalho → confirmar saída 0. A implementação compartilha esse caminho entre
-live e sistema instalado. Não exige todos os controles nomeados, tarefas específicas
-ou gravação do Orca. Os quatro percursos antigos ficam preservados, mas desativados
+pelo atalho → confirmar o ciclo de vida declarado. O padrão continua exigindo
+saída 0; processos residentes encerram a janela observada sem crash e diálogos
+transitórios só aceitam os códigos de cancelamento explicitamente configurados.
+A implementação compartilha esse caminho entre live e sistema instalado. Não exige
+todos os controles nomeados, tarefas específicas ou gravação do Orca. Os quatro
+percursos antigos ficam preservados, mas desativados
 por padrão (`BIGLINUX_DEEP_APPLICATION_TESTS=0`). As descrições históricas de
 obrigatoriedade abaixo aplicam-se agora apenas ao opt-in desses percursos.
 
@@ -17,14 +20,35 @@ A seleção `critical` não obriga instalar programas. Ausência comprovada no i
 é não aplicável. A agregação aceita ausências da política (inclusive exclusões e
 aliases não presentes), mas ainda exige todas as shards e resultados dos aplicativos
 realmente selecionados. Não permite usar `skipped` para esconder crash de programa
-instalado. Metadados de cobertura passam ao schema 4, para não aceitar como smoke
-completo uma execução antiga que comprovou apenas abertura.
+instalado. Metadados de cobertura passam ao schema 5 e métricas ao schema 3, para
+não aceitar como smoke completo uma execução antiga sem contratos de ciclo de vida.
 
 O inventário respeita `TryExec`, `Hidden` e as listas de ambientes do Desktop Entry;
 programas de terminal e serviços não são certificados por este teste gráfico. A
 sessão é lida de `XDG_CURRENT_DESKTOP`, sem nome KDE fixo no relatório. Os testes de
 aplicativos podem ser reutilizados em GNOME; a adaptação de login/instalador permanece
 responsabilidade do perfil de ISO. Ver README para parâmetros e limites.
+
+### Política por natureza da entrada
+
+A versão 2 de `application-policy.yaml` classifica as exceções em vez de reduzir
+o requisito global:
+
+- Steam é uma exclusão explícita porque `steam.desktop` inicia o bootstrap que
+  instala o cliente; executá-lo durante o smoke iniciaria uma instalação;
+- handlers que exigem URI/arquivo e o launcher do instalador já coberto pelos
+  planos BIOS/UEFI são exclusões auditáveis;
+- aliases de Driver Manager, Kernel Manager e Configurações do Sistema apontam
+  para uma entrada canônica e não duplicam o mesmo lançamento;
+- câmera, ALSA, UEFI e X11 são requisitos observados em runtime. Ausência
+  confirmada gera não aplicável; falha da sonda não;
+- KRunner, HPLIP, JamesDSP, qBittorrent, KCMs e componentes compartilhados do
+  LibreOffice usam limite de janela, mas continuam reprovando crash e saída
+  observada fora da lista;
+- seletores Avahi e `ksshaskpass` aceitam cancelamento 1 somente em seus contratos.
+
+Aplicações com abort real (como o mpv observado), erro interno ou janela sem AT-SPI
+não foram excluídas. A política não é uma lista para deixar a matriz verde.
 
 Fontes adicionais conferidas: https://specifications.freedesktop.org/desktop-entry/latest/recognized-keys.html
 (semântica de TryExec/Hidden/OnlyShowIn/NotShowIn),
@@ -42,9 +66,9 @@ https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/enum.StateType.html
 | Travessia | Limites de tempo, nós e fila; falha explícita em truncamento | Árvore parcial não confirma ausência |
 | Teclado | Tab/setas com foco observado; ação e pós-condição distintas | Foco preso não é resgatado por `grab_focus` |
 | Sessão | Sem reparo silencioso de AT-SPI e sem X11/toolkit forçado | Exercitar ambiente entregue ao usuário |
-| Aplicativos | Removidas aprovações GUI por processo/X11/delegação ampla | Falta de observabilidade não vira sucesso |
+| Aplicativos | Contratos standard/residente/diálogo e capacidades explícitas | Exceção local não enfraquece o padrão global |
 | Instalação | Seleção conferida; espera de páginas obrigatória; sem reset forçado | Reinício natural continua sendo exigido pelo fluxo |
-| Encerramento | Registrar saída graciosa separadamente da limpeza | SIGTERM/SIGKILL não corrigem resultado funcional |
+| Encerramento | Processo, janela, código de saída e limpeza em campos distintos | SIGTERM/SIGKILL não corrigem resultado funcional |
 | Orca | Introspecção e captura da saída real de seu apresentador | Falta da API ou da informação esperada bloqueia |
 | Proveniência | Commit/ISO não vazios e shards completos | Resultados incompatíveis ou fracos não agregam como aprovação |
 | Relatório | Função, teclado e Orca em campos separados | Ausência/incompletude não é certificação |
