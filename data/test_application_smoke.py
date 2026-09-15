@@ -119,6 +119,25 @@ class SmokeContentTest(unittest.TestCase):
             self.content(root, limit=4)
         self.assertLessEqual(root.get_child_at_index.call_count, 16)
 
+    def test_hidden_menu_does_not_consume_visible_content_budget(self):
+        hidden = Node(states=())
+        hidden.get_child_count = mock.Mock(return_value=1000000)
+        root = Node(children=[hidden, Node(role="terminal", text=True)])
+        evidence = self.content(root, limit=3)
+        self.assertTrue(evidence["text_interface"])
+        hidden.get_child_count.assert_not_called()
+
+    def test_defunct_container_children_are_never_queried(self):
+        defunct = Node(states=("SHOWING", "DEFUNCT"))
+        defunct.get_child_count = mock.Mock(side_effect=RuntimeError("destroyed peer"))
+        root = Node(children=[defunct, Node("Close", "button", action=True)])
+        self.assertTrue(self.content(root)["action_interface"])
+        defunct.get_child_count.assert_not_called()
+
+    def test_child_of_hidden_ancestor_is_not_an_accessible_witness(self):
+        hidden = Node(states=(), children=[Node(role="text", text=True)])
+        self.assertIsNone(self.content(Node(children=[hidden])))
+
     def window_result(self, pid=42, active=False, expected=42, active_only=False):
         root = Node("Editor", "frame", [Node(role="text", text=True)],
                     states=("SHOWING", "ACTIVE") if active else ("SHOWING",))

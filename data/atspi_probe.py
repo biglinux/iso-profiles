@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,24 @@ INVENTORY_CHUNK_SIZE = 600
 
 class ProbeError(RuntimeError):
     """AT-SPI could not provide a coherent result."""
+
+
+def _read_until_ready(read: Callable[[], Any], deadline: float) -> Any:
+    """Retry a read-only observation, never an action, within the caller's budget.
+
+    A newly published application can briefly refuse a method while building
+    its widgets. Discard that partial read and retry the whole scoped query.
+    A persistent provider error still raises ProbeError; structural truncation
+    is not retried, and no incomplete read can establish absence or success.
+    """
+    while True:
+        try:
+            return read()
+        except ProbeError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.1, remaining))
 
 
 def mem_available_mib(meminfo: Path = Path("/proc/meminfo")) -> float | None:
@@ -135,8 +153,8 @@ def sample_process_memory(root_pid: int, duration: float = 2.0) -> dict[str, Any
     return peak
 
 
-_ATSPI_CALL_TIMEOUT_MS = 250
-_ATSPI_APP_TIMEOUT_MS = 15000
+_ATSPI_CALL_TIMEOUT_MS = 800
+_ATSPI_APP_TIMEOUT_MS = -1
 _atspi_timeout_set = False
 
 
@@ -150,10 +168,10 @@ def _atspi_import() -> tuple[Any, Any]:
     except (ImportError, ValueError) as error:
         raise ProbeError(f"AT-SPI Python bindings are unavailable: {error}") from error
     if not _atspi_timeout_set:
-        # libatspi waits 800 ms per method call by default. Every node of a
-        # walk costs several calls, so one application that is on the bus but
-        # not answering turns a tree walk into minutes. A quarter second is
-        # still far above a healthy round trip on a loaded guest.
+        # Readiness is polled by our bounded waits. A new probe process must
+        # not give every already-running application a fresh 15-second grace
+        # period: that can consume an entire eight-second smoke in one call.
+        # Keep the normal upstream call timeout, with no separate startup grace.
         try:
             Atspi.set_timeout(_ATSPI_CALL_TIMEOUT_MS, _ATSPI_APP_TIMEOUT_MS)
         except (AttributeError, TypeError):
@@ -190,8 +208,10 @@ def _window_records(
                 continue
             app_name = app.get_name() or ""
             window_count = app.get_child_count()
-        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-            raise ProbeError("application enumeration was incomplete")
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            raise ProbeError(
+                f"application enumeration was incomplete (index {app_index}, {type(error).__name__})"
+            ) from error
         for window_index in range(window_count):
             if deadline is not None and time.monotonic() > deadline:
                 raise WalkTruncated("window enumeration exceeded its deadline")
@@ -202,8 +222,11 @@ def _window_records(
                 name = window.get_name() or ""
                 role = window.get_role_name() or ""
                 children = window.get_child_count()
-            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
-                raise ProbeError("window enumeration was incomplete")
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                raise ProbeError(
+                    f"window enumeration was incomplete (PID {app_pid}, index {window_index}, "
+                    f"{type(error).__name__})"
+                ) from error
             yield (
                 window,
                 {
@@ -430,7 +453,9 @@ def wait_for_window_change(
         # forked helper, so identity is the launched process tree rather than a
         # single PID. Recompute it every poll: children appear over time.
         allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
-        last_snapshot = accessible_snapshot(deadline, allowed_pids)
+        last_snapshot = _read_until_ready(
+            lambda: accessible_snapshot(deadline, allowed_pids), deadline
+        )
         extra = [
             window
             for window in last_snapshot["windows"]
@@ -740,9 +765,9 @@ def _normalize_label(value: str) -> str:
     and spacing also means an accelerator marker or a translator's padding
     cannot decide the match.
 
-    Diacritics are folded away as well. A test that asks for "Concluir" should
-    not miss a button named "Concluído", and a caller that types the label
-    without its accent should not silently match nothing.
+    Diacritics are folded away as well. A caller that types "Concluido" should
+    not miss a button named "Concluído". Different words such as "Concluir"
+    still require their own explicit label.
     """
     decomposed = unicodedata.normalize("NFKD", _MARKUP_TAG.sub(" ", value))
     return "".join(
@@ -831,9 +856,11 @@ def wait_for_widget(
     """A unique match, or confirmed absence; errors are never disappearance."""
     deadline = time.monotonic() + timeout
     while True:
-        matches, observed = _widget_matches(
-            role, labels, expected_pid, max(0.01, deadline - time.monotonic()),
-            accessible_id, window_name, require_sensitive=not absent,
+        matches, observed = _read_until_ready(
+            lambda: _widget_matches(
+                role, labels, expected_pid, max(0.01, deadline - time.monotonic()),
+                accessible_id, window_name, require_sensitive=not absent,
+            ), deadline,
         )
         if len(matches) > 1:
             return {"status": "failed", "reason": "ambiguous", "complete": True,
@@ -885,7 +912,7 @@ def activate_widget(
 def focused_widget(timeout: float, expected_pid: int | None = None) -> dict[str, Any]:
     """Observe focus without moving it; never return password contents."""
     deadline = time.monotonic() + timeout
-    pairs = _visible_widgets(expected_pid, deadline)
+    pairs = _read_until_ready(lambda: _visible_widgets(expected_pid, deadline), deadline)
     focused = [record for _, record in pairs if record.get("focused") and record["showing"]]
     if len(focused) != 1:
         return {"status": "failed", "reason": "ambiguous" if focused else "not-found",
@@ -939,21 +966,27 @@ def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, 
         visited += 1
         if node is not window:
             record = _widget_record(node)
-            if record["showing"] and not record["defunct"]:
-                text = node.get_text_iface()
-                action = node.get_action_iface()
-                value = node.get_value_iface()
-                text_available = text is not None and text.get_character_count() >= 0
-                action_available = action is not None and action.get_n_actions() > 0
-                named = bool(record["name"].strip())
-                informational = record["role"] in {
-                    "label", "static", "heading", "list item", "tree item", "table cell", "link"
-                }
-                if text_available or (named and (action_available or value is not None
-                                                or record.get("focusable") or informational)):
-                    return {"role": record["role"], "has_name": named,
-                            "text_interface": text_available, "action_interface": action_available,
-                            "value_interface": value is not None, "nodes_visited": visited}
+            # SHOWING includes the ancestor chain in the AT-SPI contract.
+            # Hidden menu trees cannot contain a showing witness. Prune them
+            # before fetching children so a terminal is not hidden behind
+            # hundreds of unopened menu items in our bounded smoke search.
+            if not record["showing"] or record["defunct"]:
+                active.remove(identity)
+                continue
+            text = node.get_text_iface()
+            action = node.get_action_iface()
+            value = node.get_value_iface()
+            text_available = text is not None and text.get_character_count() >= 0
+            action_available = action is not None and action.get_n_actions() > 0
+            named = bool(record["name"].strip())
+            informational = record["role"] in {
+                "label", "static", "heading", "list item", "tree item", "table cell", "link"
+            }
+            if text_available or (named and (action_available or value is not None
+                                            or record.get("focusable") or informational)):
+                return {"role": record["role"], "has_name": named,
+                        "text_interface": text_available, "action_interface": action_available,
+                        "value_interface": value is not None, "nodes_visited": visited}
         count = node.get_child_count()
         if count < 0:
             raise ProbeError("invalid child count in smoke query")
@@ -969,7 +1002,8 @@ def smoke_window(timeout: float, expected_pid: int, active_only: bool = False) -
     Atspi, GLib = _atspi_import()
     deadline = time.monotonic() + timeout
     reason = "no accessible window/content for the launched application"
-    while True:
+    def observe() -> dict[str, Any] | None:
+        nonlocal reason
         try:
             for window, record in _window_records(deadline, {expected_pid}):
                 if record["pid"] != expected_pid:
@@ -992,6 +1026,12 @@ def smoke_window(timeout: float, expected_pid: int, active_only: bool = False) -
                             "coverage": "accessible-content-present", "evidence": evidence}
         except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
             raise ProbeError(f"smoke query could not read the application: {error}") from error
+        return None
+
+    while True:
+        result = _read_until_ready(observe, deadline)
+        if result is not None:
+            return result
         if launch_process_exited(expected_pid):
             return {"status": "failed", "error": "application exited before the smoke check"}
         if time.monotonic() >= deadline:

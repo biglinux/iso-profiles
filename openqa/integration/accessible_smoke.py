@@ -16,16 +16,29 @@ PROBE = ROOT / "data/atspi_probe.py"
 MARKER = "__OPENQA_ATSPI__"
 
 
-def application(mode: str) -> None:
+def application(mode: str, trigger: str = "") -> None:
     import gi
     gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk, GLib
     window = Gtk.Window(title="Synthetic accessible smoke " + mode)
     window.set_default_size(360, 180)
-    if mode != "empty":
+    if mode not in {"empty", "delayed"}:
         window.add(Gtk.Entry(text="Accessible content for smoke integration"))
     window.connect("destroy", Gtk.main_quit)
     window.show_all()
+    if mode == "delayed":
+        def publish_content():
+            window.add(Gtk.Entry(text="Content published after the probe started waiting"))
+            window.show_all()
+            return False
+
+        def await_request():
+            if not Path(trigger).exists():
+                return True
+            GLib.timeout_add(2000, publish_content)
+            return False
+
+        GLib.timeout_add(50, await_request)
     if mode == "crash":
         import signal
         GLib.timeout_add(3000, lambda: os.kill(os.getpid(), signal.SIGSEGV))
@@ -56,11 +69,12 @@ def run() -> None:
     try:
         time.sleep(0.5)
         with tempfile.TemporaryDirectory() as temporary:
-            for mode in ("normal", "empty", "crash"):
+            for mode in ("normal", "empty", "delayed", "crash"):
                 state = Path(temporary) / (mode + ".json")
                 probe("baseline", state)
                 with (Path(temporary) / (mode + ".log")).open("w") as log:
-                    process = subprocess.Popen([sys.executable, __file__, "app", mode], stdout=log, stderr=log)
+                    trigger = Path(temporary) / (mode + "-publish")
+                    process = subprocess.Popen([sys.executable, __file__, "app", mode, str(trigger)], stdout=log, stderr=log)
                     try:
                         opened = probe("wait-open", state, process.pid)
                         check(opened.get("status") == "passed", f"{mode}: own accessible window missing: {opened}")
@@ -71,8 +85,12 @@ def run() -> None:
                             check(content.get("status") != "passed", "crashed app passed accessibility smoke")
                             results.append({"case": mode, "status": "passed", "application_exit": 139})
                             continue
-                        content = probe("smoke-window", state, process.pid, 2)
-                        check((content.get("status") == "passed") == (mode == "normal"),
+                        if mode == "delayed":
+                            before = probe("smoke-window", state, process.pid, 1)
+                            check(before.get("status") != "passed", "empty initial window passed")
+                            trigger.touch()
+                        content = probe("smoke-window", state, process.pid, 8 if mode == "delayed" else 2)
+                        check((content.get("status") == "passed") == (mode in {"normal", "delayed"}),
                               f"{mode}: unexpected content result: {content}")
                         active = probe("active-window", state, process.pid)
                         check(active.get("active") is True, f"{mode}: window did not naturally gain focus: {active}")
@@ -92,7 +110,7 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "app":
-        application(sys.argv[2])
+    if len(sys.argv) in {3, 4} and sys.argv[1] == "app":
+        application(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else "")
     else:
         run()

@@ -91,3 +91,42 @@ certificação de fala, braille ou usabilidade integral para pessoas cegas.
   `biglinux/biglinux-livecd`, `biglinux-livecd/usr/bin/calamares-biglinux_polkit`
   e `biglinux-livecd/usr/bin/calamares-biglinux` (upstream consultado, não prova
   de identidade byte a byte com o pacote da ISO).
+
+## Esperas de leitura e publicação inicial da janela
+
+Na execução UEFI `34923508645`, o escopo corrigido encontrou a janela do filho
+`4478` da árvore `4451`, em vez da janela do Plasma. A consulta seguinte de
+controle terminou com leitura incompleta em cerca de 7,4 segundos, embora o
+prazo do chamador fosse 60 segundos. Isso confirma uma falha da espera; não
+comprova que o aplicativo responderia ao repetir a leitura.
+
+A espera agora repete somente a observação de leitura dentro do prazo original.
+Cada tentativa descarta os dados incompletos e precisa obter uma consulta
+completa do mesmo escopo. Não repete ações, não move foco, não reinicia o
+barramento e não aumenta prazos. Erro persistente continua inconclusivo
+bloqueante. Limite estrutural de árvore não é repetido. Exceções de enumeração
+passam a identificar PID/índice/tipo, sem publicar o texto arbitrário da exceção.
+
+A documentação AT-SPI distingue o tempo de chamada do período de inicialização
+da aplicação, durante o qual ela pode bloquear temporariamente:
+<https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/func.set_timeout.html>.
+A inspeção do fonte upstream mostrou que o período de inicialização era
+aplicado a cada aplicação recém-descoberta pela *sonda*, mesmo que o aplicativo
+já estivesse rodando. Isso podia dar a uma chamada até 15 segundos dentro de
+um smoke cujo prazo era 8 segundos. Agora o limite de chamada é 800 ms (o
+padrão normal upstream), sem uma segunda carência por aplicação; as esperas
+externas continuam permitindo a inicialização. As leituras transitórias de
+janela, conteúdo, foco e controles são repetidas até o mesmo prazo, sem
+repetir ações nem converter um erro persistente em aprovação.
+Fonte: `GNOME/at-spi2-core`, `atspi/atspi-misc.c`, função `set_timeout`,
+blob `f3124965f07ddf2db5f67bacffbc228cb977eeb1` consultado no upstream.
+
+No mesmo run, o shard 0 concluiu 55 smokes: 43 passaram e 12 falharam. Konsole e
+SMPlayer esgotaram o orçamento de nós. A busca percorria descendentes de menus
+ocultos antes do conteúdo visível. Agora poda ramos não `SHOWING` ou `DEFUNCT`
+antes de ler seus filhos, sem aumentar o limite ou aceitar conteúdo oculto.
+Isso segue a definição de `SHOWING`, que inclui os ancestrais do controle:
+<https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/enum.StateType.html>.
+Essa correção ainda precisa de confirmação na ISO; não converte as falhas do
+run anterior em aprovações. No BIOS do mesmo run, 5 de 11 smokes passaram e 6
+falharam; a troca para Ctrl+Q não resolveu todos os encerramentos observados.

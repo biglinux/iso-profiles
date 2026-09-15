@@ -1,7 +1,7 @@
 name: Verify openQA with the published ISO
 
-# Validate scoped installer discovery and the bounded application smoke
-# after run 34922055602. Keep the complete production matrix unchanged.
+# Validate bounded retries of transient AT-SPI reads after run 34923508645.
+# Keep the complete production matrix and application contracts unchanged.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
