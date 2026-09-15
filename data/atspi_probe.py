@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+from collections import deque
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -194,7 +195,15 @@ def _window_records(
     except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
         raise ProbeError(f"AT-SPI desktop is unavailable: {error}") from error
 
-    for app_index in range(application_count):
+    # Newly launched applications are normally appended to the registry.
+    # PID-scoped probes need no semantic data from unrelated applications, so
+    # inspect recent entries first. Unscoped baselines retain registry order.
+    application_indexes = (
+        range(application_count - 1, -1, -1)
+        if allowed_pids is not None
+        else range(application_count)
+    )
+    for app_index in application_indexes:
         if deadline is not None and time.monotonic() > deadline:
             raise WalkTruncated("application enumeration exceeded its deadline")
         try:
@@ -202,7 +211,7 @@ def _window_records(
             if app is None:
                 continue
             # PID is resolved by the bus. Skip unrelated applications before
-            # any widget calls: a slow shell must not consume a browser's budget.
+            # any widget calls: a slow shell must not consume the target budget.
             app_pid = app.get_process_id()
             if allowed_pids is not None and app_pid not in allowed_pids:
                 continue
@@ -227,10 +236,12 @@ def _window_records(
                     f"window enumeration was incomplete (PID {app_pid}, index {window_index}, "
                     f"{type(error).__name__})"
                 ) from error
+            identity = getattr(window, "path", "") or str(window_index)
             yield (
                 window,
                 {
-                    "key": f"{app_pid}\0{getattr(window, 'path', '') or str(window_index)}",
+                    "key": f"{app_pid}\0{identity}",
+                    "identity": identity,
                     "application": app_name,
                     "name": name,
                     "role": role,
@@ -444,18 +455,39 @@ def wait_for_window_change(
     expected_pid: int | None = None,
     expected_name: str | None = None,
     sample_memory: bool = True,
+    expected_window_identity: str | None = None,
 ) -> dict[str, Any]:
     baseline = baseline_keys(state_path)
     deadline = time.monotonic() + timeout
     last_snapshot: dict[str, Any] = {}
+
+    def window_identity(window: dict[str, Any]) -> str:
+        identity = window.get("identity")
+        if identity:
+            return str(identity)
+        key = str(window.get("key", ""))
+        return key.split("\0", 1)[1] if "\0" in key else key
+
     while time.monotonic() <= deadline:
-        # An application legitimately reaches its window through a wrapper or a
-        # forked helper, so identity is the launched process tree rather than a
-        # single PID. Recompute it every poll: children appear over time.
+        # An application can reach its window through a wrapper or forked
+        # helper, so identity is the launched process tree, recomputed per poll.
         allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
         last_snapshot = _read_until_ready(
             lambda: accessible_snapshot(deadline, allowed_pids), deadline
         )
+        if not opening and expected_window_identity is not None:
+            target_present = any(
+                window_identity(window) == expected_window_identity
+                for window in last_snapshot["windows"]
+                if allowed_pids is None or window["pid"] in allowed_pids
+            )
+            if not target_present:
+                return {
+                    "status": "passed",
+                    "accessible_window": True,
+                    "process_gone": launch_process_exited(expected_pid),
+                    "mem_available_mib": last_snapshot.get("mem_available_mib"),
+                }
         extra = [
             window
             for window in last_snapshot["windows"]
@@ -476,10 +508,6 @@ def wait_for_window_change(
                 "error": "launch process exited before exposing an accessible window; "
                 f"observed={_describe_windows(last_snapshot['windows'])}",
             }
-        # A window that belongs to the launched process is enough evidence that
-        # the application started. Requiring a title or a populated
-        # accessibility subtree only fails applications whose next release
-        # renames a window or changes toolkit, which is not a defect.
         usable = [window for window in extra if not _is_transient_window(window)]
         if (
             not opening
@@ -507,11 +535,17 @@ def wait_for_window_change(
                         "role": window["role"],
                         "accessible_children": window["children"],
                         "pid": window["pid"],
-                        "memory": sample_process_memory(window["pid"]) if sample_memory else process_memory(window["pid"]),
+                        "window_identity": window_identity(window),
+                        "memory": sample_process_memory(window["pid"])
+                        if sample_memory
+                        else process_memory(window["pid"]),
                     }
                 )
             return result
-        time.sleep(0.25)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.1, remaining))
     return {
         "status": "failed",
         "accessible_window": False if opening else None,
@@ -735,21 +769,75 @@ def _widget_record(accessible: Any) -> dict[str, Any]:
         raise ProbeError(f"could not read control semantics: {error}") from error
 
 
+def _showing_widgets_in_window(
+    window: Any,
+    pid: int,
+    window_name: str,
+    deadline: float | None,
+    limit: int = _WIDGET_TREE_LIMIT,
+) -> Iterable[tuple[Any, dict[str, Any]]]:
+    """Yield SHOWING controls fairly while retaining strict finite bounds."""
+    _atspi, GLib = _atspi_import()
+    exhausted = object()
+    work = deque([(iter([window]), frozenset())])
+    seen: set[int] = set()
+    references: list[Any] = []
+    visited = examined = 0
+    while work:
+        if deadline is not None and time.monotonic() > deadline:
+            raise WalkTruncated(f"incomplete tree after {visited} nodes")
+        iterator, ancestors = work.popleft()
+        node = next(iterator, exhausted)
+        if node is exhausted:
+            continue
+        # Visit remaining siblings before descending into this node. This keeps
+        # a giant first menu or web subtree from hiding a shallow control.
+        work.append((iterator, ancestors))
+        if examined >= limit * 4:
+            raise WalkTruncated("widget reference budget exhausted")
+        examined += 1
+        if node is None:
+            raise ProbeError("widget query encountered a missing child")
+        identity = id(node)
+        if identity in ancestors:
+            raise WalkTruncated("cyclic accessibility tree")
+        if identity in seen:
+            continue
+        if visited >= limit:
+            raise WalkTruncated(f"incomplete tree after {visited} nodes")
+        seen.add(identity)
+        references.append(node)
+        visited += 1
+        record = _widget_record(node)
+        record["pid"] = pid
+        record["window"] = window_name
+        if record["defunct"] or not record["showing"]:
+            continue
+        yield node, record
+        try:
+            count = node.get_child_count()
+            if count < 0:
+                raise ProbeError("invalid child count in widget query")
+            work.append(
+                (map(node.get_child_at_index, range(count)), ancestors | {identity})
+            )
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            raise ProbeError(f"incomplete accessibility tree: {error}") from error
+
+
 def _visible_widgets(
     expected_pid: int | None, deadline: float | None = None
 ) -> list[tuple[Any, dict[str, Any]]]:
-    """Read a complete bounded scope. Propagate failure, including truncation."""
     allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
-    widgets = []
+    widgets: list[tuple[Any, dict[str, Any]]] = []
     for window, record in _window_records(deadline, allowed_pids):
         if allowed_pids is not None and record["pid"] not in allowed_pids:
             continue
-        for accessible in _walk(window, limit=_WIDGET_TREE_LIMIT, deadline=deadline):
-            widget = _widget_record(accessible)
-            widget["pid"] = record["pid"]
-            widget["window"] = record["name"]
-            if not widget["defunct"]:
-                widgets.append((accessible, widget))
+        widgets.extend(
+            _showing_widgets_in_window(
+                window, record["pid"], record["name"], deadline
+            )
+        )
     return widgets
 
 
@@ -909,59 +997,124 @@ def activate_widget(
     return {"status": "failed", "error": "control has no usable accessibility action"}
 
 
-def focused_widget(timeout: float, expected_pid: int | None = None) -> dict[str, Any]:
-    """Wait for one observed focus; do not choose among ambiguous controls."""
+def focused_widget(
+    timeout: float,
+    expected_pid: int | None = None,
+    target_identity: str | None = None,
+) -> dict[str, Any]:
+    """Observe keyboard focus without moving it or reading field values.
+
+    Generic diagnostics preserve the strict exactly-one contract. When the
+    caller already knows the target identity, scan the SHOWING tree lazily and
+    return that target as soon as it is focused; otherwise return one observed
+    fallback after a bounded look-ahead so keyboard traversal can continue.
+    """
     deadline = time.monotonic() + timeout
-    while True:
-        pairs = _read_until_ready(lambda: _visible_widgets(expected_pid, deadline), deadline)
-        focused = [record for _, record in pairs
-                   if record.get("focused") and record["showing"] and not record.get("defunct")]
-        if len(focused) == 1:
-            return {"status": "passed", "widget": focused[0], "complete": True}
-        if time.monotonic() >= deadline:
-            # Include identities/roles, not field values or arbitrary text.
-            # This distinguishes persistent composite/window focus from a
-            # transition without silently selecting one candidate as correct.
-            candidates = [{"pid": record.get("pid"),
-                           "role": str(record.get("role", ""))[:64],
-                           "identity": str(record.get("identity", ""))[:256]}
-                          for record in focused[:8]]
-            roles = ", ".join(candidate["role"] for candidate in candidates) or "none"
-            return {"status": "failed", "reason": "ambiguous" if focused else "not-found",
-                    "complete": True, "matches": len(focused), "candidates": candidates,
+
+    if target_identity is None:
+        last_focused: list[dict[str, Any]] = []
+        while True:
+            pairs = _read_until_ready(
+                lambda: _visible_widgets(expected_pid, deadline), deadline
+            )
+            focused = [
+                record
+                for _node, record in pairs
+                if record.get("focused")
+                and record.get("showing")
+                and not record.get("defunct")
+            ]
+            last_focused = focused
+            if len(focused) == 1:
+                return {"status": "passed", "widget": focused[0], "complete": True}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                candidates = [
+                    {
+                        "pid": record.get("pid"),
+                        "role": str(record.get("role", ""))[:64],
+                        "identity": str(record.get("identity", ""))[:256],
+                    }
+                    for record in last_focused[:8]
+                ]
+                roles = ", ".join(item["role"] for item in candidates) or "none"
+                return {
+                    "status": "failed",
+                    "reason": "ambiguous" if last_focused else "not-found",
+                    "complete": True,
+                    "matches": len(last_focused),
+                    "candidates": candidates,
                     "error": "expected exactly one focused control in the requested scope; "
-                             f"observed roles: {roles}"}
-        # Waiting for publication of focus is a read-only operation. A state
-        # transition must settle within the caller's existing time budget.
-        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+                    f"observed roles: {roles}",
+                }
+            time.sleep(min(0.1, remaining))
+
+    last_error: ProbeError | None = None
+    while True:
+        fallback: dict[str, Any] | None = None
+        lookahead = 0
+        try:
+            allowed_pids = (
+                _process_tree(expected_pid) if expected_pid is not None else None
+            )
+            for window, window_record in _window_records(deadline, allowed_pids):
+                for _node, record in _showing_widgets_in_window(
+                    window,
+                    window_record["pid"],
+                    window_record["name"],
+                    deadline,
+                ):
+                    if not record.get("focused") or record.get("defunct"):
+                        continue
+                    if record.get("identity") == target_identity:
+                        return {"status": "passed", "widget": record, "complete": True}
+                    if fallback is None:
+                        fallback = record
+                        lookahead = 24
+                    else:
+                        lookahead -= 1
+                        if lookahead <= 0:
+                            return {
+                                "status": "passed",
+                                "widget": fallback,
+                                "complete": True,
+                            }
+            if fallback is not None:
+                return {"status": "passed", "widget": fallback, "complete": True}
+        except ProbeError as error:
+            last_error = error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if last_error is not None:
+                raise last_error
+            return {
+                "status": "failed",
+                "reason": "not-found",
+                "complete": True,
+                "matches": 0,
+                "candidates": [],
+                "error": "focus was not published before the deadline",
+            }
+        time.sleep(min(0.1, remaining))
 
 
 def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, Any] | None:
-    """Find one usable descendant, not audit or snapshot the entire tree.
-
-    Iterators fetch children lazily, so a wide view does not require allocating
-    thousands of proxies. Success proves existence only, never completeness.
-    No text values (potentially sensitive) are included in the evidence.
-    """
-    # An iterator owns one active ancestor. A shared, already exhausted panel
-    # is not a cycle; keep references alive so proxy IDs cannot be recycled.
+    """Return the first useful visible semantic witness, without full audit."""
+    Atspi, GLib = _atspi_import()
     exhausted = object()
-    stack = [(iter([window]), None)]
-    seen = set()
-    active = set()
-    references = []
+    work = deque([(iter([window]), frozenset())])
+    seen: set[int] = set()
+    references: list[Any] = []
     visited = examined = 0
     missing_child = False
-    while stack:
+    while work:
         if time.monotonic() > deadline:
             raise WalkTruncated("no accessible content found within the smoke deadline")
-        iterator, parent = stack[-1]
+        iterator, ancestors = work.popleft()
         node = next(iterator, exhausted)
         if node is exhausted:
-            stack.pop()
-            if parent is not None:
-                active.remove(parent)
             continue
+        work.append((iterator, ancestors))
         if examined >= limit * 4:
             raise WalkTruncated("smoke reference budget exhausted")
         examined += 1
@@ -969,44 +1122,50 @@ def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, 
             missing_child = True
             continue
         identity = id(node)
-        if identity in active:
+        if identity in ancestors:
             raise WalkTruncated("cyclic accessibility tree")
         if identity in seen:
             continue
         if visited >= limit:
             raise WalkTruncated("no accessible content found within the smoke node budget")
         seen.add(identity)
-        active.add(identity)
         references.append(node)
         visited += 1
         if node is not window:
-            record = _widget_record(node)
-            # SHOWING includes the ancestor chain in the AT-SPI contract.
-            # Hidden menu trees cannot contain a showing witness. Prune them
-            # before fetching children so a terminal is not hidden behind
-            # hundreds of unopened menu items in our bounded smoke search.
-            if not record["showing"] or record["defunct"]:
-                active.remove(identity)
+            try:
+                state = node.get_state_set()
+                showing = state.contains(Atspi.StateType.SHOWING)
+                defunct = state.contains(Atspi.StateType.DEFUNCT)
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                raise ProbeError(f"could not read accessible content state: {error}") from error
+            if not showing or defunct:
                 continue
-            text = node.get_text_iface()
-            action = node.get_action_iface()
-            value = node.get_value_iface()
-            text_available = text is not None and text.get_character_count() >= 0
-            action_available = action is not None and action.get_n_actions() > 0
-            named = bool(record["name"].strip())
-            informational = record["role"] in {
-                "label", "static", "heading", "list item", "tree item", "table cell", "link"
-            }
-            if text_available or (named and (action_available or value is not None
-                                            or record.get("focusable") or informational)):
-                return {"role": record["role"], "has_name": named,
-                        "text_interface": text_available, "action_interface": action_available,
-                        "value_interface": value is not None, "nodes_visited": visited}
-        count = node.get_child_count()
+            try:
+                role = node.get_role_name() or ""
+                name = node.get_name() or ""
+                text = node.get_text_iface()
+                action = node.get_action_iface()
+                value = node.get_value_iface()
+                action_count = action.get_n_actions() if action is not None else 0
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                raise ProbeError(f"could not read accessible content semantics: {error}") from error
+            useful = bool(text is not None or value is not None or action_count > 0 or name.strip())
+            if useful and role.casefold() not in {"application", "frame", "window", "dialog", "panel", "filler"}:
+                return {
+                    "role": role,
+                    "has_name": bool(name.strip()),
+                    "text_interface": text is not None,
+                    "action_interface": action_count > 0,
+                    "value_interface": value is not None,
+                    "nodes_visited": visited,
+                }
+        try:
+            count = node.get_child_count()
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            raise ProbeError(f"could not enumerate accessible content: {error}") from error
         if count < 0:
             raise ProbeError("invalid child count in smoke query")
-        # Bind node now: a generator expression otherwise follows the next node.
-        stack.append((map(node.get_child_at_index, range(count)), identity))
+        work.append((map(node.get_child_at_index, range(count)), ancestors | {identity}))
     if missing_child:
         raise ProbeError("no content witness in an incomplete smoke tree")
     return None
@@ -1291,6 +1450,8 @@ def main() -> int:
     parser.add_argument("--labels", default="")
     parser.add_argument("--accessible-id")
     parser.add_argument("--window")
+    parser.add_argument("--window-identity")
+    parser.add_argument("--target-identity")
     parser.add_argument("--checked", choices=("true", "false"))
     parser.add_argument("--no-memory-sample", action="store_true")
     args = parser.parse_args()
@@ -1341,9 +1502,10 @@ def main() -> int:
                 args.pid,
                 args.name,
                 sample_memory=not args.no_memory_sample,
+                expected_window_identity=args.window_identity,
             )
         elif args.operation == "focused-widget":
-            result = focused_widget(args.timeout, args.pid)
+            result = focused_widget(args.timeout, args.pid, args.target_identity)
         elif args.operation in {"smoke-window", "active-window"}:
             if args.pid is None:
                 raise ProbeError("--pid is required for window smoke checks")

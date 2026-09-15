@@ -37,13 +37,17 @@ ok(!atspi->close_with_shortcut(42, $path, 42, 15)->{graceful_exit}, 'running pro
 
 ($wait, $code, $wait_close) = (1, undef, 1);
 @keys = (); @operations = ();
-my $resident = atspi->close_with_shortcut(42, $path, 42, 17, 'ctrl-q', 'window-close');
+my $resident = atspi->close_with_shortcut(
+    42, $path, 42, 17, 'ctrl-q', 'window-close', '/org/a11y/window/42');
 is_deeply(\@keys, ['ctrl-q'], 'resident window receives exactly one configured shortcut');
 ok($resident->{window_closed}, 'resident window disappearance is observed');
 ok(!$resident->{process_gone}, 'resident process may remain');
 ok(!$resident->{graceful_exit}, 'process liveness is not mislabeled as exit');
 is($operations[1][0], 'wait-close', 'window-close mode observes disappearance through AT-SPI');
 is($operations[1][1], 17, 'window-close uses the configured bound');
+is_deeply([@{$operations[1]}[2 .. 5]],
+    ['--pid', 42, '--window-identity', '/org/a11y/window/42'],
+    'window-close scopes disappearance to the opened accessible object');
 
 $wait_close = 0;
 ok(!atspi->close_with_shortcut(42, $path, 42, 15, 'alt-f4', 'window-close')->{window_closed},
@@ -51,6 +55,12 @@ ok(!atspi->close_with_shortcut(42, $path, 42, 15, 'alt-f4', 'window-close')->{wi
 ($wait, $code, $wait_close) = (0, 139, 1);
 ok(atspi->close_with_shortcut(42, $path, 42, 15, 'alt-f4', 'window-close')->{application_crashed},
     'resident process crash remains visible');
+
+($wait, $code, $wait_close) = (0, 0, 0);
+my $exited = atspi->close_with_shortcut(
+    42, $path, 42, 15, 'alt-f4', 'window-close', '/org/a11y/window/42');
+ok($exited->{process_gone}, 'shared process exit is observed');
+ok($exited->{window_closed}, 'process exit proves that its tested window is gone');
 
 $active = 0; @keys = ();
 eval { atspi->close_with_shortcut(42, $path, 42, 15) };

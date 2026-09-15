@@ -177,3 +177,10 @@ corresponde exatamente ao contrato do inventário e separa não aplicável de ap
 Um erro da sonda de capacidade é falha, não ausência. Saída 1 não é globalmente
 aceita. `mpv`, `lstopo`, `urxvt`, Timeshift e qualquer outro caso que continue
 abortando ou sem janela AT-SPI permanecem vermelhos até correção real.
+
+
+## Matriz de contratos de aplicações e bloqueios seguintes
+
+A matriz real `34938679011`, fonte `9129cdc`, confirmou que `steam.desktop` foi excluído como bootstrap e não executado. O inventário classificou 215 entradas lançáveis: 175 passaram, 37 falharam e 3 ficaram não aplicáveis por capacidade ausente. O agregador recusou corretamente uma aprovação cuja saída `0` havia sido serializada como texto, revelando um defeito no produtor.
+
+A correção converte o valor do supervisor para número antes do JSON, mantém o agregador estrito, prioriza aplicações recentes em consultas PID-scoped, percorre irmãos de modo justo e observa a janela exata de processos compartilhados. Aplicativos com ação `app.quit` documentada usam um único Ctrl+Q. Crashes e janelas sem AT-SPI permanecem falhas.

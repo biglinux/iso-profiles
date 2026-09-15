@@ -199,6 +199,7 @@ sub check {
         $metric->{accessible_window} = JSON::PP::true;
         $metric->{accessible_application} = $opened->{application};
         $metric->{accessible_window_name} = $opened->{window};
+        $metric->{window_identity} = $opened->{window_identity};
         $metric->{accessible_children} = $opened->{accessible_children};
         $metric->{mem_available_after_open_mib} = $opened->{mem_available_mib};
         $metric->{memory_snapshot} = $opened->{memory};
@@ -213,10 +214,11 @@ sub check {
         $metric->{accessible_content} = $content->{evidence};
         my $close_mode = $contract->{kind} eq 'shared-window' ? 'window-close' : 'process-exit';
         my $closed = atspi->close_with_shortcut(
-            $pid, $path, $launch_pid, $close_timeout, $close_key, $close_mode
+            $pid, $path, $launch_pid, $close_timeout, $close_key, $close_mode,
+            $opened->{window_identity}
         );
         $metric->{close_action} = $closed->{close_action};
-        $metric->{application_exit_code} = $closed->{raw_application_exit_code};
+        $metric->{application_exit_code} = $closed->{application_exit_code};
         $metric->{application_crashed} = $closed->{application_crashed} ? JSON::PP::true : JSON::PP::false;
         $metric->{graceful_exit} = $closed->{graceful_exit} ? JSON::PP::true : JSON::PP::false;
         $metric->{window_closed} = $closed->{window_closed} ? JSON::PP::true : JSON::PP::false;

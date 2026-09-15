@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 use Test::More;
+use JSON::PP ();
 use atspi;
 no warnings 'redefine';
 
@@ -56,6 +57,20 @@ no warnings 'redefine';
     local *atspi::send_key = sub {};
     eval { atspi->focus_widget('button',['Next'],5) };
     like($@, qr/cycled/, 'same object path in another application cannot satisfy focus');
+}
+{
+    local *atspi::select_console = sub {};
+    local *atspi::type_string = sub {};
+    local *atspi::send_key = sub {};
+    local *atspi::wait_serial = sub {
+        my ($pattern) = @_;
+        my ($marker) = "$pattern" =~ /(__OA_APP_EXIT_DONE_[0-9]+_[0-9]+__)/;
+        die 'status marker unavailable' unless defined $marker;
+        return "0\n$marker\n";
+    };
+    my $code = atspi::_read_status_value('/tmp/openqa-gui-status-1-2', 'exit_code', 1);
+    is(JSON::PP->new->canonical->encode({code => $code}), '{"code":0}',
+        'supervisor exit status is serialized as a JSON number');
 }
 ok(atspi::is_crash_exit_code(133), 'SIGTRAP is not globally ignored');
 ok(!atspi::is_crash_exit_code(0), 'normal exit is not a crash');

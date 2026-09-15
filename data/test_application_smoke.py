@@ -71,6 +71,15 @@ class SmokeContentTest(unittest.TestCase):
         self.assertIsNotNone(self.content(root))
         unreadable.get_state_set.assert_not_called()
 
+    def test_shallow_sibling_is_not_hidden_by_a_deep_first_branch(self):
+        deep = Node()
+        for _ in range(30):
+            deep = Node(children=[deep])
+        root = Node(children=[deep, Node("Menu", "button", action=True)])
+        evidence = self.content(root, limit=8)
+        self.assertTrue(evidence["action_interface"])
+        self.assertLessEqual(evidence["nodes_visited"], 4)
+
     def test_wide_views_fetch_children_lazily(self):
         root = Node()
         root.get_child_count = lambda: 1000000

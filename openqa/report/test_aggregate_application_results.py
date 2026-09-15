@@ -336,6 +336,18 @@ class AggregateApplicationResultsTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
 
+    def test_string_exit_status_is_rejected_before_it_can_break_a_real_aggregate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_metrics(root)
+            self._rewrite_payloads(
+                root,
+                lambda payload: [item.update(application_exit_code="0")
+                                 for item in payload["applications"]],
+            )
+            with self.assertRaisesRegex(ValueError, "complete smoke evidence"):
+                AGGREGATOR.validate_shards(sorted(root.rglob("*.json.gz")), 4, self.policy)
+
     def test_installed_app_cannot_be_silently_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -115,6 +115,34 @@ class ReadinessWaitsTest(unittest.TestCase):
             probe.wait_for_window_change(Path("unused"), 0.25, False, 42)
         self.assertAlmostEqual(self.clock, 0.25)
 
+    def test_shared_process_closes_the_exact_opened_window(self):
+        replacement = {"key": "42\\0/replacement", "identity": "/replacement",
+                       "pid": 42, "application": "App", "name": "Tray",
+                       "role": "frame", "children": 1}
+        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
+             mock.patch.object(probe, "_process_tree", return_value={42}), \
+             mock.patch.object(probe, "accessible_snapshot", return_value={"windows": [replacement]}), \
+             mock.patch.object(probe, "launch_process_exited", return_value=False):
+            result = probe.wait_for_window_change(
+                Path("unused"), 0, False, 42,
+                expected_window_identity="/tested-window")
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["accessible_window"])
+        self.assertFalse(result["process_gone"])
+
+    def test_shared_process_does_not_invent_exact_window_disappearance(self):
+        target = {"key": "42\\0/tested", "identity": "/tested-window",
+                  "pid": 42, "application": "App", "name": "Window",
+                  "role": "frame", "children": 1}
+        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
+             mock.patch.object(probe, "_process_tree", return_value={42}), \
+             mock.patch.object(probe, "accessible_snapshot", return_value={"windows": [target]}), \
+             mock.patch.object(probe, "launch_process_exited", return_value=False):
+            result = probe.wait_for_window_change(
+                Path("unused"), 0, False, 42,
+                expected_window_identity="/tested-window")
+        self.assertEqual(result["status"], "failed")
+
     def test_smoke_retries_observation_but_never_an_action(self):
         root = smoke_fixtures.Node("Editor", "frame", [smoke_fixtures.Node(role="text", text=True)])
         with mock.patch.object(probe, "_atspi_import", return_value=(smoke_fixtures.API, smoke_fixtures.GLIB)), \

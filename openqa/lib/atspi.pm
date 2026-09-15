@@ -302,9 +302,11 @@ sub wait_widget_until {
 }
 
 sub focused_widget {
-    my ($class, $pid) = @_;
+    my ($class, $pid, $target_identity) = @_;
     $pid //= $widget_pid;
     my @args = defined $pid ? ('--pid', $pid) : ();
+    push @args, ('--target-identity', $target_identity)
+      if defined $target_identity;
     return $class->result('focused-widget', 5, @args);
 }
 
@@ -322,7 +324,7 @@ sub focus_widget {
     my $deadline = time + $timeout;
     for (1 .. 80) {
         die 'keyboard traversal timed out' if time >= $deadline;
-        my $focus = $class->focused_widget($pid);
+        my $focus = $class->focused_widget($pid, $identity);
         if (($focus->{status} // '') eq 'passed') {
             my $current = $focus->{widget};
             if (($current->{identity} // '') eq $identity && $current->{pid} == $pid) {
@@ -435,7 +437,7 @@ sub cleanup {
 # The generic smoke sends exactly one normal close shortcut. It never invokes
 # an AT action, native quit command or kill to make the close test pass.
 sub close_with_shortcut {
-    my ($class, $pid, $status_path, $launch_pid, $timeout, $key, $mode) = @_;
+    my ($class, $pid, $status_path, $launch_pid, $timeout, $key, $mode, $window_identity) = @_;
     $timeout //= 15;
     $key //= 'alt-f4';
     $mode //= 'process-exit';
@@ -446,6 +448,10 @@ sub close_with_shortcut {
     die 'invalid application PID' unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     die 'invalid supervisor status file' unless defined $status_path
       && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};
+    die 'invalid accessible window identity'
+      if defined $window_identity
+      && ($window_identity !~ m{\A[A-Za-z0-9_./:-]+\z}
+      || length($window_identity) > 4096);
     my $active = $class->result('active-window', 5, '--pid', $pid);
     die 'cannot close an unobserved or inactive application: ' . ($active->{error} // '')
       unless ($active->{status} // '') eq 'passed' && $active->{active} && $active->{pid} == $pid;
@@ -453,13 +459,17 @@ sub close_with_shortcut {
     send_key $key;
     my ($gone, $window_closed) = (0, 0);
     if ($mode eq 'window-close') {
-        my $closed = $class->result('wait-close', $timeout, '--pid', $pid);
+        my @close_scope = ('--pid', $pid);
+        push @close_scope, ('--window-identity', $window_identity)
+          if defined $window_identity;
+        my $closed = $class->result('wait-close', $timeout, @close_scope);
         $window_closed = ($closed->{status} // '') eq 'passed'
           && ($closed->{accessible_window} // 0) ? 1 : 0;
         # A shared service may outlive its window. Observe whether it exited,
         # but do not spend the whole close budget a second time.
         my $wait = $class->run_command(_wait_for_exit_command($pid, 1), 6);
         $gone = defined $wait && $wait == 0;
+        $window_closed = 1 if $gone;
     }
     else {
         my $wait = $class->run_command(_wait_for_exit_command($pid, $timeout), $timeout + 5);
@@ -925,7 +935,7 @@ sub _read_status_value {
     select_console 'sut';
     return undef unless defined $serial && $serial !~ /(?:^|\r?\n)MISSING\r?\n\Q$marker\E/;
     my ($exit_code) = $serial =~ /(?:^|\r?\n)([0-9]+)\r?\n\Q$marker\E/;
-    return $exit_code;
+    return defined $exit_code ? 0 + $exit_code : undef;
 }
 
 

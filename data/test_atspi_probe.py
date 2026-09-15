@@ -180,6 +180,7 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0][1]["name"], "Settings")
         self.assertEqual(records[0][1]["pid"], 42)
+        self.assertEqual(records[0][1]["identity"], "1")
 
     def test_scoped_enumeration_does_not_query_unrelated_windows(self):
         unrelated = FakeAccessible("shell", 99)
@@ -192,6 +193,19 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual([record["pid"] for _, record in records], [42])
         unrelated.get_name.assert_not_called()
         unrelated.get_child_count.assert_not_called()
+
+    def test_scoped_enumeration_starts_with_the_recent_target(self):
+        order = []
+        old = FakeAccessible("old", 99)
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        old_get_pid, target_get_pid = old.get_process_id, target.get_process_id
+        old.get_process_id = lambda: (order.append("old"), old_get_pid())[1]
+        target.get_process_id = lambda: (order.append("target"), target_get_pid())[1]
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [old, target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            records = list(atspi_probe._window_records(allowed_pids={42}))
+        self.assertEqual(records[0][1]["pid"], 42)
+        self.assertEqual(order[0], "target")
 
     def test_scoped_enumeration_does_not_hide_target_failure(self):
         target = FakeAccessible("app", 42)

@@ -20,7 +20,8 @@ local *atspi::run_command = sub {
 };
 local *atspi::launch_desktop_entry = sub {
     push @calls, ['launch', @_];
-    return ({}, {status => $window, accessible_window => 1, pid => 42}, 'test', 0.1,
+    return ({}, {status => $window, accessible_window => 1, pid => 42,
+            window_identity => '/org/a11y/window/42'}, 'test', 0.1,
             '/tmp/openqa-gui-status-1-2', 42);
 };
 local *atspi::result = sub {
@@ -35,6 +36,7 @@ local *atspi::close_with_shortcut = sub {
         window_closed => $window_closed,
         application_crashed => $crashed,
         raw_application_exit_code => $exit,
+        application_exit_code => $exit,
         close_action => 'keyboard.' . ($_[5] // 'alt-f4'),
     };
 };
@@ -53,6 +55,7 @@ is($ok->{status}, 'passed', 'simple window/content/shortcut/exit contract passes
 is($ok->{functional_status}, 'open-close', 'reports the actual smoke scope');
 is($ok->{execution_contract}, 'standard', 'unconfigured application uses standard contract');
 is($ok->{screen_reader_status}, 'not-tested', 'does not claim Orca speech testing');
+is($ok->{window_identity}, '/org/a11y/window/42', 'records the exact opened accessible window');
 is($calls[0][-1], 0, 'repeated memory sampling is disabled');
 is(scalar grep($_->[0] eq 'close', @calls), 1, 'sends one close operation');
 ok(!grep(($_->[1] // '') eq 'audit-window', @calls), 'does not request full semantics audit');
@@ -113,6 +116,7 @@ is($resident->{status}, 'passed', 'resident contract passes when the tested wind
 is($resident->{functional_status}, 'window-closed', 'resident scope reports the window boundary');
 my ($shared_close) = grep { $_->[0] eq 'close' } @calls;
 is($shared_close->[7], 'window-close', 'resident contract observes the window rather than forcing process exit');
+is($shared_close->[8], '/org/a11y/window/42', 'resident close tracks the exact opened window');
 
 for my $changes (
     {window_closed => 0},
@@ -173,6 +177,7 @@ is($content_call->[2], 22, 'content timeout is forwarded');
 is($custom_close->[5], 31, 'close timeout is forwarded');
 is($custom_close->[6], 'ctrl-q', 'close shortcut is forwarded');
 is($custom_close->[7], 'process-exit', 'standard custom contract keeps process-exit mode');
+is($custom_close->[8], '/org/a11y/window/42', 'opened window identity is forwarded');
 
 reset_state();
 is(application_smoke->check(undef, 30)->{status}, 'skipped', 'absent optional application is not applicable');
