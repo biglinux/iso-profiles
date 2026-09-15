@@ -1,6 +1,7 @@
 name: Verify openQA with the published ISO
 
-# One-time validation on the review branch; this never publishes an ISO release.
+# Review-branch validation, including the corrected Skopeo digest reference.
+# This never publishes an ISO release.
 on:
   push:
     branches: [fix/openqa-nonvisual-accessibility-20260914]

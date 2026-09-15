@@ -55,6 +55,9 @@ jobs:
             exit 1
           }
           digest=${source_image##*@}
+          # containers/image (used by Skopeo) rejects name:tag@digest.
+          # The digest is the identity; the version tag is provenance only.
+          source_image="registry.opensuse.org/devel/openqa/containers/opensuse/openqa-single-instance@$digest"
           target="ghcr.io/${GITHUB_REPOSITORY,,}/openqa-single-instance@$digest"
           destination="ghcr.io/${GITHUB_REPOSITORY,,}/openqa-single-instance:${digest#sha256:}"
           if [[ -z "$REQUESTED_SOURCE" ]]; then
