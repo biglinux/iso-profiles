@@ -312,3 +312,57 @@ payload proporcional ao número de janelas sem relaxar a prova: erro de provedor
 vivo ou não identificado continua invalidando a leitura; somente um PID já
 encerrado pode desaparecer durante a enumeração. O prazo de três segundos da
 baseline por lançamento não foi ampliado.
+
+## Matriz compacta v7 e correções de atribuição v8
+
+A matriz real `34985013609`, fonte `1d185a6f`, confirmou que a baseline
+compacta eliminou o colapso total do primeiro shard: os quatro shards voltaram
+a executar sua partição do inventário. O inventário registrou 288 entradas,
+215 lançáveis, 70 exclusões justificadas e três aliases. Foram testadas 212
+entradas: 160 passaram e 52 falharam. Os relatórios de todos os planos e o
+consolidado foram publicados, enquanto o gate permaneceu reprovado.
+
+A triagem mostrou que 25 dessas falhas ocorreram **depois** de a aplicação já
+ter comprovado janela própria, conteúdo acessível e fechamento normal. Uma
+varredura global de limpeza encontrava um provedor AT-SPI alheio e já encerrado
+e convertia retroativamente a aplicação em falha. A limpeza agora separa duas
+provas: primeiro encerra e verifica somente os grupos de processos pertencentes
+ao lançamento; depois tenta a limpeza global. Uma leitura global inconclusiva
+pode ser registrada como `cleanup_degraded` apenas quando todos os processos
+do teste já estão comprovadamente ausentes. Janela remanescente, PID próprio
+vivo ou falha real da limpeza continuam bloqueantes.
+
+Quatro contratos de processos residentes também mantinham no registro o objeto
+de uma janela já ocultada. `wait-close` agora lê os estados de nível superior e
+considera a identidade exata encerrada quando deixa de estar `SHOWING` ou fica
+`DEFUNCT`. A abertura exige o inverso: a janela deve estar `SHOWING` e não pode
+estar `DEFUNCT`. A existência de um proxy ou de um processo residente não é
+suficiente para aprovar.
+
+As verificações de conteúdo, foco e fechamento carregam a identidade exata da
+janela, a árvore do processo lançado e a dica revalidada do aplicativo AT-SPI.
+Isso evita que provedores antigos consumam o prazo antes de Brave, RustDesk,
+gerenciadores BigLinux e outros aplicativos já identificados, sem aumentar
+globalmente os timeouts. Uma dica obsoleta sempre cai na busca normal e nunca
+substitui PID, identidade ou estado.
+
+Superfícies iniciais embutidas em uma única janela, como `Adw.Dialog`, não são
+visíveis como um segundo top-level. Nos contratos explicitamente revisados,
+uma única tecla `Escape` devolve o controle à aplicação antes do `Ctrl+Q` já
+documentado. Diálogos top-level continuam usando um único `Alt+F4` e precisam
+comprovar a transição para a janela principal. Audio Converter e Big Network
+Info foram incluídos nesse grupo porque seus próprios códigos exibem a tela de
+boas-vindas na primeira ativação e registram `Ctrl+Q` para a ação de sair.
+Outros aplicativos não recebem essa sequência.
+
+No instalador, a identidade do controle-alvo conhecido passa a ser localizada
+pela hierarquia estrutural antes de ler a semântica de todos os irmãos. Se o
+controle existe, mas ainda não tem foco, a resposta é `target-not-focused` e a
+navegação envia apenas `Tab`; o teste não força foco nem aciona o controle por
+AT-SPI. Incompletude sem o alvo continua bloqueante.
+
+Antes da publicação desta revisão, passaram 283 testes Python e 168 asserções
+Perl, além da política não visual, compilação Python, sintaxe Bash e
+`git diff --check`. A integração GTK/AT-SPI e a matriz da ISO continuam sendo
+provas separadas obrigatórias; esses testes locais não aprovam a instalação nem
+as aplicações reais.

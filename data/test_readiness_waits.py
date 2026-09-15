@@ -107,16 +107,42 @@ class ReadinessWaitsTest(unittest.TestCase):
 
         with mock.patch.object(probe, "_process_tree", return_value={42}), \
              mock.patch.object(probe, "_window_records", side_effect=windows) as read, \
-             mock.patch.object(
-                 probe, "_showing_widgets_in_window", return_value=[(object(), target)]
-             ) as walk:
+             mock.patch.object(probe, "_widget_by_identity", return_value=target) as locate, \
+             mock.patch.object(probe, "_showing_widgets_in_window") as walk:
             result = probe.focused_widget(1, 42, "/target", 7)
         self.assertEqual(result["status"], "passed")
         self.assertEqual(
             read.call_args.kwargs["preferred_application_index"], 7
         )
         self.assertTrue(read.call_args.kwargs["stop_after_preferred_match"])
-        self.assertEqual(walk.call_args.kwargs["application_index"], 7)
+        self.assertEqual(locate.call_args.kwargs["application_index"], 7)
+        walk.assert_not_called()
+
+    def test_known_target_not_focused_is_a_complete_keyboard_observation(self):
+        window = object()
+        target = {
+            "pid": 42,
+            "identity": "/target",
+            "role": "button",
+            "showing": True,
+            "focused": False,
+            "defunct": False,
+            "application_index": 7,
+        }
+        with mock.patch.object(probe, "_process_tree", return_value={42}), \
+             mock.patch.object(
+                 probe, "_window_records",
+                 return_value=[(window, {"pid": 42, "name": "Installer", "application_index": 7})],
+             ), \
+             mock.patch.object(probe, "_widget_by_identity", return_value=target), \
+             mock.patch.object(
+                 probe, "_showing_widgets_in_window",
+                 side_effect=probe.WalkTruncated("slow unrelated subtree"),
+             ):
+            result = probe.focused_widget(1, 42, "/target", 7)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "target-not-focused")
+        self.assertTrue(result["complete"])
 
     def test_read_attempts_receive_decreasing_budget(self):
         target = fixtures.SelectorTest().pair()
@@ -208,6 +234,50 @@ class ReadinessWaitsTest(unittest.TestCase):
                 expected_window_identity="/tested-window")
         self.assertEqual(result["status"], "failed")
 
+    def test_hidden_exact_window_counts_as_closed_for_resident_service(self):
+        target = {"key": "42\\0/tested", "identity": "/tested-window",
+                  "pid": 42, "application": "App", "name": "Window",
+                  "role": "frame", "children": 1, "showing": False,
+                  "defunct": False}
+        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
+             mock.patch.object(probe, "_process_tree", return_value={42}), \
+             mock.patch.object(probe, "accessible_snapshot", return_value={"windows": [target]}), \
+             mock.patch.object(probe, "launch_process_exited", return_value=False):
+            result = probe.wait_for_window_change(
+                Path("unused"), 0, False, 42,
+                expected_window_identity="/tested-window")
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["accessible_window"])
+        self.assertFalse(result["process_gone"])
+
+    def test_defunct_exact_window_counts_as_closed(self):
+        target = {"key": "42\\0/tested", "identity": "/tested-window",
+                  "pid": 42, "application": "App", "name": "Window",
+                  "role": "frame", "children": 1, "showing": True,
+                  "defunct": True}
+        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
+             mock.patch.object(probe, "_process_tree", return_value={42}), \
+             mock.patch.object(probe, "accessible_snapshot", return_value={"windows": [target]}), \
+             mock.patch.object(probe, "launch_process_exited", return_value=False):
+            result = probe.wait_for_window_change(
+                Path("unused"), 0, False, 42,
+                expected_window_identity="/tested-window")
+        self.assertEqual(result["status"], "passed")
+
+    def test_hidden_window_is_not_accepted_as_open(self):
+        target = {"key": "42\\0/tested", "identity": "/tested-window",
+                  "pid": 42, "application": "App", "name": "Window",
+                  "role": "frame", "children": 1, "showing": False,
+                  "defunct": False}
+        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
+             mock.patch.object(probe, "_process_tree", return_value={42}), \
+             mock.patch.object(probe, "accessible_snapshot", return_value={"windows": [target]}), \
+             mock.patch.object(probe, "launch_process_exited", return_value=False):
+            result = probe.wait_for_window_change(
+                Path("unused"), 0, True, 42, sample_memory=False)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["accessible_window"])
+
     def test_smoke_retries_observation_but_never_an_action(self):
         root = smoke_fixtures.Node("Editor", "frame", [smoke_fixtures.Node(role="text", text=True)])
         with mock.patch.object(probe, "_atspi_import", return_value=(smoke_fixtures.API, smoke_fixtures.GLIB)), \
@@ -235,6 +305,33 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertEqual(result["application_index"], 7)
         self.assertEqual(read.call_args.kwargs["preferred_application_index"], 7)
         self.assertTrue(read.call_args.kwargs["stop_after_preferred_match"])
+
+    def test_smoke_uses_launch_tree_and_prefers_the_opened_window(self):
+        root = smoke_fixtures.Node(
+            "Editor", "frame", [smoke_fixtures.Node(role="text", text=True)]
+        )
+        record = {
+            "pid": 43,
+            "role": "frame",
+            "identity": "/opened",
+            "application_index": 6,
+        }
+        with mock.patch.object(
+            probe, "_atspi_import",
+            return_value=(smoke_fixtures.API, smoke_fixtures.GLIB),
+        ), mock.patch.object(probe, "_process_tree", return_value={42, 43}) as tree, \
+             mock.patch.object(probe, "_window_records", return_value=[(root, record)]) as read:
+            result = probe.smoke_window(
+                1, 42, application_index=7,
+                window_identity="/opened", root_pid=41,
+            )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["pid"], 43)
+        self.assertEqual(result["window_identity"], "/opened")
+        tree.assert_called_once_with(41)
+        self.assertEqual(read.call_args.args[1], {42, 43})
+        self.assertEqual(read.call_args.kwargs["preferred_application_index"], 7)
+        self.assertEqual(read.call_args.kwargs["preferred_window_identity"], "/opened")
 
     def test_smoke_permanent_failure_uses_one_shared_deadline(self):
         with mock.patch.object(probe, "_atspi_import", return_value=(smoke_fixtures.API, smoke_fixtures.GLIB)), \

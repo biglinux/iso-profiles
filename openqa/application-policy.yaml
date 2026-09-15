@@ -250,8 +250,9 @@ contracts:
   - desktop_id: bigcontrolcenter/br.com.biglinux.networkinfo.desktop
     kind: standard
     close_key: ctrl-q
+    dismiss_auxiliary: true
     close_timeout: 30
-    reason: Network discovery workers may require additional bounded shutdown time
+    reason: Big Network Info can present its first-run welcome surface before the application Quit action
   - desktop_id: bigcontrolcenter/designer.desktop
     kind: standard
     close_key: ctrl-q
@@ -261,8 +262,9 @@ contracts:
   - desktop_id: br.com.biglinux.audio.converter.desktop
     kind: standard
     close_key: ctrl-q
+    dismiss_auxiliary: true
     close_timeout: 30
-    reason: The converter may finish worker initialization before its normal process exit
+    reason: Audio Converter presents its first-run welcome surface before the application Quit action
   - desktop_id: br.com.biglinux.bigocrpdf-editor.desktop
     kind: standard
     close_key: ctrl-q

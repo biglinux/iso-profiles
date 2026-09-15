@@ -125,12 +125,21 @@ class FakeGLib:
     Error = FakeError
 
 
+class FakeStateSet:
+    def __init__(self, states=()) -> None:
+        self.states = set(states)
+
+    def contains(self, state):
+        return state in self.states
+
+
 class FakeAccessible:
     def __init__(self, name: str, pid: int, children=None, role: str = "frame") -> None:
         self.name = name
         self.pid = pid
         self.children = list(children or [])
         self.role = role
+        self.states = {"showing"}
 
     def get_name(self):
         return self.name
@@ -147,8 +156,15 @@ class FakeAccessible:
     def get_role_name(self):
         return self.role
 
+    def get_state_set(self):
+        return FakeStateSet(self.states)
+
 
 class FakeAtspi:
+    class StateType:
+        SHOWING = "showing"
+        DEFUNCT = "defunct"
+
     desktop = None
 
     @classmethod
@@ -182,6 +198,22 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(records[0][1]["pid"], 42)
         self.assertEqual(records[0][1]["identity"], "1")
         self.assertEqual(records[0][1]["application_index"], 1)
+
+    def test_window_state_is_read_only_when_requested(self):
+        window = FakeAccessible("Settings", 42)
+        window.states = {"defunct"}
+        application = FakeAccessible("systemsettings", 42, [window], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            record = list(
+                atspi_probe._window_records(
+                    allowed_pids={42}, include_window_state=True
+                )
+            )[0][1]
+        self.assertFalse(record["showing"])
+        self.assertTrue(record["defunct"])
 
     def test_scoped_enumeration_does_not_query_unrelated_windows(self):
         unrelated = FakeAccessible("shell", 99)
@@ -226,6 +258,30 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(first[1]["pid"], 42)
         self.assertEqual(first[1]["application_index"], 0)
         unrelated.get_process_id.assert_not_called()
+
+    def test_exact_window_identity_is_read_before_other_target_windows(self):
+        slow = FakeAccessible("Slow", 42)
+        slow.path = "/slow"
+        slow.get_name = mock.Mock(
+            side_effect=AssertionError("non-target window semantics must not be read first")
+        )
+        target_window = FakeAccessible("Target", 42)
+        target_window.path = "/target"
+        target = FakeAccessible("target", 42, [slow, target_window], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42},
+                preferred_application_index=0,
+                stop_after_preferred_match=True,
+                preferred_window_identity="/target",
+            )
+            first = next(records)
+            records.close()
+        self.assertEqual(first[1]["identity"], "/target")
+        slow.get_name.assert_not_called()
 
     def test_pid_verified_hint_can_stop_before_unrelated_registry_providers(self):
         target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])

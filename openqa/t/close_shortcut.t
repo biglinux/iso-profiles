@@ -91,6 +91,21 @@ is_deeply([@{$scoped_wait}[2 .. 5]],
 
 ($wait, $code, $wait_close) = (0, 0, 1);
 @keys = (); @operations = (); @active_responses = (
+    {status => 'passed', active => 1, pid => 42, window_role => 'frame',
+        window_identity => '/org/a11y/main', application_window_count => 1},
+    {status => 'passed', active => 1, pid => 42, window_role => 'frame',
+        window_identity => '/org/a11y/main', application_window_count => 1},
+);
+my $overlay = atspi->close_with_shortcut(
+    42, $path, 42, 17, 'ctrl-q', 'process-exit', '/org/a11y/main', 1, 7);
+is_deeply(\@keys, ['esc', 'ctrl-q'],
+    'one embedded first-run overlay dismissal precedes application Quit');
+is($overlay->{pre_close_action}, 'keyboard.esc',
+    'embedded auxiliary dismissal is reported separately');
+ok($overlay->{graceful_exit}, 'embedded overlay path still requires normal process exit');
+
+($wait, $code, $wait_close) = (0, 0, 1);
+@keys = (); @operations = (); @active_responses = (
     {status => 'passed', active => 1, pid => 42, window_role => 'dialog',
         window_identity => '/org/a11y/unconfigured', application_window_count => 2},
 );

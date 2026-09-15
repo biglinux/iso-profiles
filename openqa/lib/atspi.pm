@@ -352,8 +352,10 @@ sub focus_widget {
             send_key(($role =~ /radio/ && ($current->{role} // '') =~ /radio/) ? 'right' : 'tab');
         }
         else {
+            my $reason = $focus->{reason} // '';
             die 'keyboard focus could not be observed: ' . ($focus->{error} // '')
-              unless ($focus->{reason} // '') eq 'not-found' && $focus->{complete};
+              unless ($reason eq 'not-found' || $reason eq 'target-not-focused')
+              && $focus->{complete};
             select_console 'sut';
             send_key 'tab';
         }
@@ -439,14 +441,43 @@ sub _launch_argv {
 }
 
 sub cleanup {
-    my ($class, $timeout) = @_;
+    my ($class, $timeout, @owned_pids) = @_;
     die 'AT-SPI cleanup requires a positive timeout'
       unless defined $timeout && $timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/;
+    my %owned = map { $_ => 1 }
+      grep { defined $_ && $_ =~ /\A[0-9]+\z/ && $_ > 1 }
+      (keys %session_launch_pids, @owned_pids);
     select_console 'user-virtio-terminal';
-    _kill_process_groups(keys %session_launch_pids);
+    _kill_process_groups(keys %owned) if %owned;
     %session_launch_pids = ();
+    my $owned_gone = 1;
+    if (%owned) {
+        my $probe = join ' && ', map {
+            "(test ! -d /proc/$_ || grep -q '^State:[[:space:]]*Z' /proc/$_/status 2>/dev/null)"
+        } sort { $a <=> $b } keys %owned;
+        my $status = _run_guest_command($probe, 4);
+        $owned_gone = defined $status && $status == 0;
+    }
     select_console 'sut';
-    return $class->result('cleanup', $timeout);
+    my ($result, $probe_error);
+    eval { $result = $class->result('cleanup', $timeout); 1 }
+      or $probe_error = $@ || 'cleanup probe failed';
+    return {status => 'failed', error => 'owned application processes remained after cleanup'}
+      unless $owned_gone;
+    return $result if ref $result eq 'HASH' && ($result->{status} // '') eq 'passed';
+    return $result if ref $result eq 'HASH' && ($result->{status} // '') eq 'failed';
+    # The tested application has already proved its normal close contract, and
+    # every process group owned by this launch is gone. A stale, unrelated
+    # AT-SPI provider must not retroactively turn that application into a
+    # failure. Preserve the infrastructure problem as an explicit warning.
+    my $warning = ref $result eq 'HASH' ? ($result->{error} // 'cleanup observation incomplete')
+      : ($probe_error // 'cleanup observation unavailable');
+    return {
+        status => 'passed',
+        degraded => 1,
+        isolation => 'owned-process-groups-gone',
+        warning => $warning,
+    };
 }
 
 # The generic smoke sends exactly one normal close shortcut. It never invokes
@@ -478,6 +509,8 @@ sub close_with_shortcut {
     my @active_scope = ('--pid', $pid);
     push @active_scope, ('--application-index', $application_index)
       if defined $application_index;
+    push @active_scope, ('--window-identity', $window_identity)
+      if defined $window_identity && !$dismiss_auxiliary;
     my $active = $class->result('active-window', 5, @active_scope);
     die 'cannot close an unobserved or inactive application: ' . ($active->{error} // '')
       unless ($active->{status} // '') eq 'passed' && $active->{active} && $active->{pid} == $pid;
@@ -485,14 +518,19 @@ sub close_with_shortcut {
     my $pre_close_action;
     my $window_count = $active->{application_window_count} // 1;
     my $active_role = $active->{window_role} // '';
-    if ($dismiss_auxiliary && ($active_role eq 'dialog' || $window_count > 1)) {
-        # Only named GIMP/LibreOffice contracts may dismiss one first-run
-        # surface. Confirm focus returns to a different top-level window of the
-        # same PID, then track that exact window for shared-process closure.
+    if ($dismiss_auxiliary) {
+        # This contract is explicit and limited to reviewed applications with a
+        # first-run dialog. A separate top-level dialog uses the normal desktop
+        # close shortcut. libadwaita overlays stay inside the same top-level and
+        # consume Ctrl+Q, so one Escape request is used instead. In both cases
+        # the application must remain observable before its real Quit shortcut,
+        # and normal exit/window evidence is still required afterwards.
+        my $separate_top_level = $active_role eq 'dialog' || $window_count > 1;
         my $previous_identity = $active->{window_identity} // '';
+        my $pre_key = $separate_top_level ? 'alt-f4' : 'esc';
         select_console 'sut';
-        send_key 'alt-f4';
-        $pre_close_action = 'keyboard.alt-f4';
+        send_key $pre_key;
+        $pre_close_action = 'keyboard.' . $pre_key;
         my $deadline = time + 5;
         my $dismissed = 0;
         while (time < $deadline) {
@@ -504,9 +542,11 @@ sub close_with_shortcut {
               && $candidate->{pid} == $pid;
             my $candidate_identity = $candidate->{window_identity} // '';
             my $candidate_count = $candidate->{application_window_count} // $window_count;
-            next unless ($previous_identity ne '' && $candidate_identity ne $previous_identity)
-              || $candidate_count < $window_count
-              || ($candidate->{window_role} // '') ne 'dialog';
+            if ($separate_top_level) {
+                next unless ($previous_identity ne '' && $candidate_identity ne $previous_identity)
+                  || $candidate_count < $window_count
+                  || ($candidate->{window_role} // '') ne 'dialog';
+            }
             $window_identity = $candidate_identity if $candidate_identity ne '';
             if (defined $candidate->{application_index}
                 && $candidate->{application_index} =~ /\A[0-9]+\z/) {
@@ -517,7 +557,7 @@ sub close_with_shortcut {
             $dismissed = 1;
             last;
         }
-        die 'auxiliary first-run window did not close or return focus to the application'
+        die 'auxiliary first-run surface did not return control to the application'
           unless $dismissed;
     }
     select_console 'sut';

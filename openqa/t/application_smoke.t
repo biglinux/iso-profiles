@@ -41,7 +41,7 @@ local *atspi::close_with_shortcut = sub {
         close_action => 'keyboard.' . ($_[5] // 'alt-f4'),
     };
 };
-local *atspi::cleanup = sub { push @calls, ['cleanup']; return {status => $cleanup}; };
+local *atspi::cleanup = sub { push @calls, ['cleanup', @_]; return {status => $cleanup}; };
 
 sub reset_state {
     @calls = ();
@@ -60,6 +60,9 @@ is($ok->{window_identity}, '/org/a11y/window/42', 'records the exact opened acce
 is($ok->{application_index}, 7, 'records the PID-verified AT-SPI application hint');
 is($calls[0][-1], 0, 'repeated memory sampling is disabled');
 is(scalar grep($_->[0] eq 'close', @calls), 1, 'sends one close operation');
+my ($cleanup_call) = grep { $_->[0] eq 'cleanup' } @calls;
+is_deeply([@{$cleanup_call}[3 .. 4]], [42, 42],
+    'cleanup receives the launch and observed window processes');
 ok(!grep(($_->[1] // '') eq 'audit-window', @calls), 'does not request full semantics audit');
 
 for my $code (1, 127, 133, 139) {
@@ -177,9 +180,10 @@ is(application_smoke->check($custom, 30)->{status}, 'passed', 'valid per-applica
 my ($content_call) = grep { ($_->[1] // '') eq 'smoke-window' } @calls;
 my ($custom_close) = grep { $_->[0] eq 'close' } @calls;
 is($content_call->[2], 22, 'content timeout is forwarded');
-is_deeply([@{$content_call}[3 .. 6]],
-    ['--pid', 42, '--application-index', 7],
-    'content observation reuses the PID-verified application hint');
+is_deeply([@{$content_call}[3 .. 10]],
+    ['--pid', 42, '--root-pid', 42, '--application-index', 7,
+        '--window-identity', '/org/a11y/window/42'],
+    'content observation reuses the launch tree, application hint, and exact window');
 is($custom_close->[5], 31, 'close timeout is forwarded');
 is($custom_close->[6], 'ctrl-q', 'close shortcut is forwarded');
 is($custom_close->[7], 'process-exit', 'standard custom contract keeps process-exit mode');

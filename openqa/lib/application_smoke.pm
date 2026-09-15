@@ -222,15 +222,30 @@ sub check {
         # A short settle catches applications which create a window then crash.
         # The next probe must still read content from that application.
         sleep $settle if $settle;
-        my @content_scope = ('--pid', $pid);
+        my @content_scope = ('--pid', $pid, '--root-pid', $launch_pid);
         push @content_scope, ('--application-index', $application_index)
           if defined $application_index;
+        push @content_scope, ('--window-identity', $opened->{window_identity})
+          if defined $opened->{window_identity};
         my $content = atspi->result('smoke-window', $content_timeout, @content_scope);
         die 'window did not expose accessible content: ' . ($content->{error} // '')
           unless ($content->{status} // '') eq 'passed'
           && ($content->{coverage} // '') eq 'accessible-content-present';
         $metric->{accessibility_status} = 'available';
         $metric->{accessible_content} = $content->{evidence};
+        if (defined $content->{pid} && $content->{pid} =~ /\A[0-9]+\z/ && $content->{pid} > 1) {
+            $pid = 0 + $content->{pid};
+            $metric->{window_pid} = $pid;
+        }
+        if (defined $content->{application_index}
+            && $content->{application_index} =~ /\A[0-9]+\z/) {
+            $application_index = 0 + $content->{application_index};
+            $metric->{application_index} = $application_index;
+        }
+        if (defined $content->{window_identity} && $content->{window_identity} ne '') {
+            $opened->{window_identity} = $content->{window_identity};
+            $metric->{window_identity} = $content->{window_identity};
+        }
         my $close_mode = $contract->{kind} eq 'shared-window' ? 'window-close' : 'process-exit';
         my $closed = atspi->close_with_shortcut(
             $pid, $path, $launch_pid, $close_timeout, $close_key, $close_mode,
@@ -272,10 +287,16 @@ sub check {
     # Diagnostic pixels are never used as the test's oracle.
     eval { select_console 'sut'; save_screenshot; } if $failure;
     # Cleanup is isolation, never a replacement for the tested close operation.
-    my $cleanup = eval { atspi->cleanup(5) };
+    my @cleanup_pids = grep { defined $_ } ($metric->{launch_pid}, $metric->{window_pid});
+    my $cleanup = eval { atspi->cleanup(5, @cleanup_pids) };
     $metric->{cleanup_status} = ref $cleanup eq 'HASH' ? $cleanup->{status} : 'failed';
+    if (ref $cleanup eq 'HASH' && $cleanup->{degraded}) {
+        $metric->{cleanup_degraded} = JSON::PP::true;
+        $metric->{cleanup_warning} = $cleanup->{warning} if defined $cleanup->{warning};
+    }
     if (($metric->{cleanup_status} // '') ne 'passed') {
-        $failure ||= $@ || 'application cleanup failed';
+        $failure ||= $@ || (ref $cleanup eq 'HASH' ? $cleanup->{error} : undef)
+          || 'application cleanup failed';
     }
     if ($failure) {
         $metric->{status} = 'failed';
