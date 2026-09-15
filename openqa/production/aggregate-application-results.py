@@ -16,7 +16,7 @@ from typing import Any
 CLASSIFICATIONS = {"launchable", "excluded", "duplicate-alias", "invalid"}
 CONTRACT_KINDS = {"standard", "shared-window", "transient-dialog"}
 CONTRACT_REQUIREMENTS = {"alsa-card", "native-x11", "uefi-variables", "video-device"}
-CLOSE_ACTIONS = {"keyboard.alt-f4", "keyboard.ctrl-q"}
+CLOSE_ACTIONS = {"keyboard.alt-f4", "keyboard.ctrl-q", "keyboard.esc"}
 
 
 def normalized_contract(item: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -28,8 +28,13 @@ def normalized_contract(item: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(reason, str) or not reason:
         raise ValueError("application contract reason is missing")
     close_key = item.get("close_key")
-    if close_key is not None and close_key not in {"alt-f4", "ctrl-q"}:
+    if close_key is not None and close_key not in {"alt-f4", "ctrl-q", "esc"}:
         raise ValueError("application contract close key is invalid")
+    dismiss_auxiliary = item.get("dismiss_auxiliary", False)
+    if type(dismiss_auxiliary) is not bool:
+        raise ValueError("application contract dismiss_auxiliary is invalid")
+    if dismiss_auxiliary and close_key != "ctrl-q":
+        raise ValueError("auxiliary dismissal requires the Ctrl+Q application contract")
     values: dict[str, int | None] = {}
     for field in ("close_timeout", "content_timeout"):
         value = item.get(field)
@@ -57,6 +62,7 @@ def normalized_contract(item: dict[str, Any] | None = None) -> dict[str, Any]:
         "kind": kind,
         "reason": reason,
         "close_key": close_key,
+        "dismiss_auxiliary": dismiss_auxiliary,
         "close_timeout": values["close_timeout"],
         "content_timeout": values["content_timeout"],
         "allowed_exit_codes": exit_codes,
@@ -135,6 +141,7 @@ def validate_inventory(
                     "kind": item.get("execution_contract"),
                     "reason": item.get("contract_reason"),
                     "close_key": item.get("contract_close_key"),
+                    "dismiss_auxiliary": item.get("contract_dismiss_auxiliary"),
                     "close_timeout": item.get("contract_close_timeout"),
                     "content_timeout": item.get("contract_content_timeout"),
                     "allowed_exit_codes": item.get("contract_allowed_exit_codes"),
@@ -145,6 +152,7 @@ def validate_inventory(
                 "execution_contract": contract["kind"],
                 "contract_reason": contract["reason"],
                 "contract_close_key": contract["close_key"],
+                "contract_dismiss_auxiliary": contract["dismiss_auxiliary"],
                 "contract_close_timeout": contract["close_timeout"],
                 "contract_content_timeout": contract["content_timeout"],
                 "contract_allowed_exit_codes": contract["allowed_exit_codes"],
@@ -269,6 +277,7 @@ def validate_policy(
             "execution_contract": contract["kind"],
             "contract_reason": contract["reason"],
             "contract_close_key": contract["close_key"],
+            "contract_dismiss_auxiliary": contract["dismiss_auxiliary"],
             "contract_close_timeout": contract["close_timeout"],
             "contract_content_timeout": contract["content_timeout"],
             "contract_allowed_exit_codes": contract["allowed_exit_codes"],
@@ -425,6 +434,8 @@ def validate_shards(
                 raise ValueError(f"application result capabilities are inconsistent: {desktop_id}")
             if item.get("allowed_exit_codes") != inventory_item.get("contract_allowed_exit_codes"):
                 raise ValueError(f"application result exit contract is inconsistent: {desktop_id}")
+            if item.get("dismiss_auxiliary") is not inventory_item.get("contract_dismiss_auxiliary"):
+                raise ValueError(f"application result auxiliary-window contract is inconsistent: {desktop_id}")
             if item.get("status") == "skipped":
                 requirements = inventory_item.get("contract_requirements")
                 if (

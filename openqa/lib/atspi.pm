@@ -302,11 +302,16 @@ sub wait_widget_until {
 }
 
 sub focused_widget {
-    my ($class, $pid, $target_identity) = @_;
+    my ($class, $pid, $target_identity, $application_index) = @_;
     $pid //= $widget_pid;
     my @args = defined $pid ? ('--pid', $pid) : ();
     push @args, ('--target-identity', $target_identity)
       if defined $target_identity;
+    if (defined $application_index) {
+        die 'invalid AT-SPI application index'
+          unless $application_index =~ /\A[0-9]+\z/;
+        push @args, ('--application-index', $application_index);
+    }
     return $class->result('focused-widget', 5, @args);
 }
 
@@ -319,12 +324,15 @@ sub focus_widget {
     die 'target has no human-readable accessible name' unless $target->{name} =~ /\S/;
     my $pid = $target->{pid};
     my $identity = $target->{identity};
+    my $application_index = $target->{application_index};
     die 'target has no runtime accessibility identity' unless defined $identity && $identity ne '';
+    die 'target has an invalid AT-SPI application index'
+      if defined $application_index && $application_index !~ /\A[0-9]+\z/;
     my %visits;
     my $deadline = time + $timeout;
     for (1 .. 80) {
         die 'keyboard traversal timed out' if time >= $deadline;
-        my $focus = $class->focused_widget($pid, $identity);
+        my $focus = $class->focused_widget($pid, $identity, $application_index);
         if (($focus->{status} // '') eq 'passed') {
             my $current = $focus->{widget};
             if (($current->{identity} // '') eq $identity && $current->{pid} == $pid) {
@@ -437,14 +445,20 @@ sub cleanup {
 # The generic smoke sends exactly one normal close shortcut. It never invokes
 # an AT action, native quit command or kill to make the close test pass.
 sub close_with_shortcut {
-    my ($class, $pid, $status_path, $launch_pid, $timeout, $key, $mode, $window_identity) = @_;
+    my ($class, $pid, $status_path, $launch_pid, $timeout, $key, $mode,
+        $window_identity, $dismiss_auxiliary, $application_index) = @_;
     $timeout //= 15;
     $key //= 'alt-f4';
     $mode //= 'process-exit';
+    $dismiss_auxiliary //= 0;
     die 'invalid close timeout' unless $timeout =~ /\A[1-9][0-9]*\z/;
-    die 'invalid close shortcut' unless $key =~ /\A(?:alt-f4|ctrl-q)\z/;
+    die 'invalid close shortcut' unless $key =~ /\A(?:alt-f4|ctrl-q|esc)\z/;
     die 'invalid close observation mode'
       unless $mode =~ /\A(?:process-exit|window-close)\z/;
+    die 'invalid auxiliary-window dismissal contract'
+      unless $dismiss_auxiliary == 0 || $dismiss_auxiliary == 1;
+    die 'auxiliary-window dismissal requires Ctrl+Q'
+      if $dismiss_auxiliary && $key ne 'ctrl-q';
     die 'invalid application PID' unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     die 'invalid supervisor status file' unless defined $status_path
       && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};
@@ -452,9 +466,53 @@ sub close_with_shortcut {
       if defined $window_identity
       && ($window_identity !~ m{\A[A-Za-z0-9_./:-]+\z}
       || length($window_identity) > 4096);
-    my $active = $class->result('active-window', 5, '--pid', $pid);
+    die 'invalid AT-SPI application index'
+      if defined $application_index && $application_index !~ /\A[0-9]+\z/;
+    my @active_scope = ('--pid', $pid);
+    push @active_scope, ('--application-index', $application_index)
+      if defined $application_index;
+    my $active = $class->result('active-window', 5, @active_scope);
     die 'cannot close an unobserved or inactive application: ' . ($active->{error} // '')
       unless ($active->{status} // '') eq 'passed' && $active->{active} && $active->{pid} == $pid;
+
+    my $pre_close_action;
+    my $window_count = $active->{application_window_count} // 1;
+    my $active_role = $active->{window_role} // '';
+    if ($dismiss_auxiliary && ($active_role eq 'dialog' || $window_count > 1)) {
+        # Only named GIMP/LibreOffice contracts may dismiss one first-run
+        # surface. Confirm focus returns to a different top-level window of the
+        # same PID, then track that exact window for shared-process closure.
+        my $previous_identity = $active->{window_identity} // '';
+        select_console 'sut';
+        send_key 'alt-f4';
+        $pre_close_action = 'keyboard.alt-f4';
+        my $deadline = time + 5;
+        my $dismissed = 0;
+        while (time < $deadline) {
+            sleep 0.25;
+            my $candidate = eval { $class->result('active-window', 1, @active_scope) };
+            next unless ref $candidate eq 'HASH'
+              && ($candidate->{status} // '') eq 'passed'
+              && $candidate->{active}
+              && $candidate->{pid} == $pid;
+            my $candidate_identity = $candidate->{window_identity} // '';
+            my $candidate_count = $candidate->{application_window_count} // $window_count;
+            next unless ($previous_identity ne '' && $candidate_identity ne $previous_identity)
+              || $candidate_count < $window_count
+              || ($candidate->{window_role} // '') ne 'dialog';
+            $window_identity = $candidate_identity if $candidate_identity ne '';
+            if (defined $candidate->{application_index}
+                && $candidate->{application_index} =~ /\A[0-9]+\z/) {
+                $application_index = $candidate->{application_index};
+                @active_scope = ('--pid', $pid, '--application-index', $application_index);
+            }
+            $active = $candidate;
+            $dismissed = 1;
+            last;
+        }
+        die 'auxiliary first-run window did not close or return focus to the application'
+          unless $dismissed;
+    }
     select_console 'sut';
     send_key $key;
     my ($gone, $window_closed) = (0, 0);
@@ -478,7 +536,8 @@ sub close_with_shortcut {
     }
     my $code = _read_exit_code($status_path, $gone ? 3 : 1);
     delete $session_launch_pids{$launch_pid} if defined $launch_pid && $gone;
-    return {close_action => 'keyboard.' . $key, process_gone => $gone,
+    return {close_action => 'keyboard.' . $key, pre_close_action => $pre_close_action,
+        process_gone => $gone,
         window_closed => $window_closed, graceful_exit => $gone,
         raw_application_exit_code => $code,
         application_exit_code => $code, application_crashed => is_crash_exit_code($code)};

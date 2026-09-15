@@ -23,6 +23,8 @@ my $coverage = InventoryUnderTest::_build_application_context([$entry], $policy,
 is_deeply($coverage->{not_installed_desktop_ids}, ['optional.desktop'], 'missing optional app is reported, not required');
 is($coverage->{schema_version}, 5, 'contract schema distinguishes lifecycle-aware smoke from historical results');
 is($coverage->{inventory}[0]{execution_contract}, 'standard', 'unconfigured entries use the strict standard contract');
+ok(!$coverage->{inventory}[0]{contract_dismiss_auxiliary},
+    'unconfigured entries never dismiss auxiliary windows');
 is($coverage->{inventory_hash}, sha256_hex(JSON::PP->new->canonical->utf8->encode($coverage->{inventory})), 'inventory uses UTF-8 canonical bytes');
 is(InventoryUnderTest::_shard_for('Aplicação/日本語.desktop', 4), 0, 'Unicode assignment agrees with Python SHA-256');
 my %other = (%$entry, not_applicable_reason => 'OnlyShowIn=KDE on GNOME');
@@ -37,7 +39,7 @@ my $classified_policy = {
     contracts => {
         'camera.desktop' => {
             kind => 'standard', reason => 'camera required', close_key => undef,
-            close_timeout => 20, content_timeout => 15,
+            dismiss_auxiliary => 0, close_timeout => 20, content_timeout => 15,
             allowed_exit_codes => [0], requirements => ['video-device'],
         },
     },
@@ -58,6 +60,8 @@ is($by_id{'editor-alias.desktop'}{canonical}, 'editor.desktop', 'alias records t
 is($by_id{'camera.desktop'}{execution_contract}, 'standard', 'capability-gated app keeps strict graphical contract');
 is_deeply($by_id{'camera.desktop'}{contract_requirements}, ['video-device'], 'capability requirements are in coverage evidence');
 is($by_id{'camera.desktop'}{contract_content_timeout}, 15, 'per-app content bound is persisted');
+ok(!$by_id{'camera.desktop'}{contract_dismiss_auxiliary},
+    'auxiliary dismissal remains an explicit contract');
 
 my $bad_alias_policy = {%$classified_policy, aliases => {'orphan.desktop' => 'missing.desktop'}};
 my $alias_error = eval {

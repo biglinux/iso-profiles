@@ -91,6 +91,7 @@ class ApplicationPolicyTest(unittest.TestCase):
                     "execution_contract": contract["kind"],
                     "contract_reason": contract["reason"],
                     "contract_close_key": contract["close_key"],
+                    "contract_dismiss_auxiliary": contract["dismiss_auxiliary"],
                     "contract_close_timeout": contract["close_timeout"],
                     "contract_content_timeout": contract["content_timeout"],
                     "contract_allowed_exit_codes": contract["allowed_exit_codes"],
@@ -107,6 +108,19 @@ class ApplicationPolicyTest(unittest.TestCase):
         for desktop_id, canonical in aliases.items():
             self.assertNotEqual(desktop_id, canonical)
             self.assertNotIn(canonical, aliases, "alias chains are intentionally unsupported")
+
+    def test_explicit_lifecycle_shortcuts_match_primary_sources(self):
+        contracts = {
+            item["desktop_id"]: AGGREGATOR.normalized_contract(item)
+            for item in self.policy.get("contracts", [])
+        }
+        krunner = contracts["Executar (Krunner).desktop"]
+        self.assertEqual(krunner["kind"], "shared-window")
+        self.assertEqual(krunner["close_key"], "esc")
+        qbittorrent = contracts["org.qbittorrent.qBittorrent.desktop"]
+        self.assertEqual(qbittorrent["kind"], "standard")
+        self.assertEqual(qbittorrent["close_key"], "ctrl-q")
+        self.assertEqual(qbittorrent["allowed_exit_codes"], [0])
 
     def test_nonzero_exit_codes_are_never_globally_accepted(self):
         for item in self.policy.get("contracts", []):

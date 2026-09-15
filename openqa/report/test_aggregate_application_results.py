@@ -52,6 +52,7 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             "execution_contract": contract["kind"],
             "contract_reason": contract["reason"],
             "contract_close_key": contract["close_key"],
+            "contract_dismiss_auxiliary": contract["dismiss_auxiliary"],
             "contract_close_timeout": contract["close_timeout"],
             "contract_content_timeout": contract["content_timeout"],
             "contract_allowed_exit_codes": contract["allowed_exit_codes"],
@@ -105,6 +106,7 @@ class AggregateApplicationResultsTest(unittest.TestCase):
                             "contract_reason": item["contract_reason"],
                             "capability_requirements": item["contract_requirements"],
                             "allowed_exit_codes": item["contract_allowed_exit_codes"],
+                            "dismiss_auxiliary": item["contract_dismiss_auxiliary"],
                             "validation_mode": "atspi-smoke",
                             "accessible_window": True,
                             "accessibility_status": "available",
@@ -328,7 +330,7 @@ class AggregateApplicationResultsTest(unittest.TestCase):
                         {"window_closed": False}, {"close_action": "process-group.sigterm"},
                         {"functional_status": "launch-only"}, {"cleanup_status": "failed"},
                         {"allowed_exit_codes": [0, 1]}, {"capability_requirements": ["video-device"]},
-                        {"contract_reason": "tampered"}):
+                        {"contract_reason": "tampered"}, {"dismiss_auxiliary": True}):
             with self.subTest(changes=changes), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 self._write_metrics(root)
@@ -416,6 +418,30 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             )
         self.assertEqual(summary["status"], "passed")
 
+
+    def test_auxiliary_dismissal_is_boolean_and_requires_ctrl_q(self):
+        with self.assertRaisesRegex(ValueError, "dismiss_auxiliary"):
+            AGGREGATOR.normalized_contract({"dismiss_auxiliary": 1})
+        with self.assertRaisesRegex(ValueError, r"requires.*Ctrl\+Q"):
+            AGGREGATOR.normalized_contract(
+                {"dismiss_auxiliary": True, "close_key": "alt-f4"}
+            )
+        contract = AGGREGATOR.normalized_contract(
+            {
+                "kind": "standard",
+                "close_key": "ctrl-q",
+                "dismiss_auxiliary": True,
+                "reason": "first-run dialog",
+            }
+        )
+        self.assertTrue(contract["dismiss_auxiliary"])
+
+    def test_escape_is_a_valid_explicit_window_close_shortcut(self):
+        contract = AGGREGATOR.normalized_contract(
+            {"kind": "shared-window", "close_key": "esc", "reason": "runner hide"}
+        )
+        self.assertEqual(contract["close_key"], "esc")
+        self.assertIn("keyboard.esc", AGGREGATOR.CLOSE_ACTIONS)
 
     def test_configured_close_shortcut_must_match_evidence(self):
         contract = AGGREGATOR.normalized_contract(

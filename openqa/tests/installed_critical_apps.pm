@@ -24,6 +24,9 @@ sub run {
           && $contract->{desktop_id} =~ /\A[^\r\n]+\.desktop\z/;
         die 'duplicate selected application contract'
           if exists $contracts{$contract->{desktop_id}};
+        die 'invalid selected application auxiliary-window contract'
+          if exists $contract->{dismiss_auxiliary}
+          && !JSON::PP::is_bool($contract->{dismiss_auxiliary});
         $contracts{$contract->{desktop_id}} = $contract;
     }
     my @results;
@@ -37,6 +40,8 @@ sub run {
                 execution_contract => $contract->{kind} // 'standard',
                 contract_reason => $contract->{reason} // 'Default strict graphical application contract',
                 contract_close_key => $contract->{close_key},
+                contract_dismiss_auxiliary => $contract->{dismiss_auxiliary}
+                  ? JSON::PP::true : JSON::PP::false,
                 contract_close_timeout => $contract->{close_timeout},
                 contract_content_timeout => $contract->{content_timeout},
                 contract_allowed_exit_codes => $contract->{allowed_exit_codes}

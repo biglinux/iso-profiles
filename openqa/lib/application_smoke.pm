@@ -47,6 +47,10 @@ sub _contract {
           unless defined $code && "$code" =~ /\A[0-9]+\z/ && $code <= 255;
         die 'duplicate application contract exit code' if $seen_code{$code}++;
     }
+    my $dismiss_auxiliary = $coverage->{contract_dismiss_auxiliary};
+    die 'invalid application auxiliary-window contract'
+      if defined $dismiss_auxiliary && !JSON::PP::is_bool($dismiss_auxiliary)
+      && "$dismiss_auxiliary" !~ /\A[01]\z/;
     my $requirements = ref $coverage->{contract_requirements} eq 'ARRAY'
       ? [@{$coverage->{contract_requirements}}] : [];
     my %allowed_requirement = map { $_ => 1 }
@@ -63,6 +67,7 @@ sub _contract {
         reason => $coverage->{contract_reason}
           // 'Default strict graphical application contract',
         close_key => $coverage->{contract_close_key},
+        dismiss_auxiliary => $dismiss_auxiliary ? 1 : 0,
         close_timeout => $coverage->{contract_close_timeout},
         content_timeout => $coverage->{contract_content_timeout},
         allowed_exit_codes => [map { 0 + $_ } @$codes],
@@ -139,6 +144,8 @@ sub check {
             contract_reason => $contract->{reason},
             capability_requirements => $contract->{requirements},
             allowed_exit_codes => $contract->{allowed_exit_codes},
+            dismiss_auxiliary => $contract->{dismiss_auxiliary}
+              ? JSON::PP::true : JSON::PP::false,
             functional_status => 'not-applicable',
             accessibility_status => 'not-applicable',
             screen_reader_status => 'not-tested',
@@ -154,6 +161,8 @@ sub check {
             contract_reason => $contract->{reason},
             capability_requirements => $contract->{requirements},
             allowed_exit_codes => $contract->{allowed_exit_codes},
+            dismiss_auxiliary => $contract->{dismiss_auxiliary}
+              ? JSON::PP::true : JSON::PP::false,
             functional_status => 'not-confirmed',
             accessibility_status => 'not-confirmed',
             screen_reader_status => 'not-tested',
@@ -171,13 +180,15 @@ sub check {
     die 'invalid application content timeout'
       unless $content_timeout =~ /\A[1-9][0-9]*\z/ && $content_timeout <= 120;
     die 'invalid application close timeout' unless $close_timeout =~ /\A[1-9][0-9]*\z/ && $close_timeout <= 120;
-    die 'invalid application close shortcut' unless $close_key =~ /\A(?:alt-f4|ctrl-q)\z/;
+    die 'invalid application close shortcut' unless $close_key =~ /\A(?:alt-f4|ctrl-q|esc)\z/;
     my $metric = {status => 'failed', validation_mode => 'atspi-smoke',
         functional_status => 'not-confirmed', accessibility_status => 'not-confirmed',
         screen_reader_status => 'not-tested', execution_contract => $contract->{kind},
         contract_reason => $contract->{reason},
         capability_requirements => $contract->{requirements},
         allowed_exit_codes => $contract->{allowed_exit_codes},
+        dismiss_auxiliary => $contract->{dismiss_auxiliary}
+          ? JSON::PP::true : JSON::PP::false,
         action => $contract->{kind} eq 'shared-window'
           ? 'Open, accessible content, close shortcut, window disappears without crash'
           : 'Open, accessible content, close shortcut, allowed process exit'};
@@ -200,13 +211,21 @@ sub check {
         $metric->{accessible_application} = $opened->{application};
         $metric->{accessible_window_name} = $opened->{window};
         $metric->{window_identity} = $opened->{window_identity};
+        my $application_index = $opened->{application_index};
+        die 'opened window has an invalid AT-SPI application index'
+          if defined $application_index && $application_index !~ /\A[0-9]+\z/;
+        $metric->{application_index} = 0 + $application_index
+          if defined $application_index;
         $metric->{accessible_children} = $opened->{accessible_children};
         $metric->{mem_available_after_open_mib} = $opened->{mem_available_mib};
         $metric->{memory_snapshot} = $opened->{memory};
         # A short settle catches applications which create a window then crash.
         # The next probe must still read content from that application.
         sleep $settle if $settle;
-        my $content = atspi->result('smoke-window', $content_timeout, '--pid', $pid);
+        my @content_scope = ('--pid', $pid);
+        push @content_scope, ('--application-index', $application_index)
+          if defined $application_index;
+        my $content = atspi->result('smoke-window', $content_timeout, @content_scope);
         die 'window did not expose accessible content: ' . ($content->{error} // '')
           unless ($content->{status} // '') eq 'passed'
           && ($content->{coverage} // '') eq 'accessible-content-present';
@@ -215,9 +234,12 @@ sub check {
         my $close_mode = $contract->{kind} eq 'shared-window' ? 'window-close' : 'process-exit';
         my $closed = atspi->close_with_shortcut(
             $pid, $path, $launch_pid, $close_timeout, $close_key, $close_mode,
-            $opened->{window_identity}
+            $opened->{window_identity}, $contract->{dismiss_auxiliary},
+            $application_index
         );
         $metric->{close_action} = $closed->{close_action};
+        $metric->{pre_close_action} = $closed->{pre_close_action}
+          if defined $closed->{pre_close_action};
         $metric->{application_exit_code} = $closed->{application_exit_code};
         $metric->{application_crashed} = $closed->{application_crashed} ? JSON::PP::true : JSON::PP::false;
         $metric->{graceful_exit} = $closed->{graceful_exit} ? JSON::PP::true : JSON::PP::false;

@@ -21,6 +21,7 @@ local *atspi::run_command = sub {
 local *atspi::launch_desktop_entry = sub {
     push @calls, ['launch', @_];
     return ({}, {status => $window, accessible_window => 1, pid => 42,
+            application_index => 7,
             window_identity => '/org/a11y/window/42'}, 'test', 0.1,
             '/tmp/openqa-gui-status-1-2', 42);
 };
@@ -56,6 +57,7 @@ is($ok->{functional_status}, 'open-close', 'reports the actual smoke scope');
 is($ok->{execution_contract}, 'standard', 'unconfigured application uses standard contract');
 is($ok->{screen_reader_status}, 'not-tested', 'does not claim Orca speech testing');
 is($ok->{window_identity}, '/org/a11y/window/42', 'records the exact opened accessible window');
+is($ok->{application_index}, 7, 'records the PID-verified AT-SPI application hint');
 is($calls[0][-1], 0, 'repeated memory sampling is disabled');
 is(scalar grep($_->[0] eq 'close', @calls), 1, 'sends one close operation');
 ok(!grep(($_->[1] // '') eq 'audit-window', @calls), 'does not request full semantics audit');
@@ -164,6 +166,7 @@ my $custom = {
         execution_contract => 'standard',
         contract_reason => 'custom bounded timings',
         contract_close_key => 'ctrl-q',
+        contract_dismiss_auxiliary => JSON::PP::true,
         contract_close_timeout => 31,
         contract_content_timeout => 22,
         contract_allowed_exit_codes => [0],
@@ -174,10 +177,29 @@ is(application_smoke->check($custom, 30)->{status}, 'passed', 'valid per-applica
 my ($content_call) = grep { ($_->[1] // '') eq 'smoke-window' } @calls;
 my ($custom_close) = grep { $_->[0] eq 'close' } @calls;
 is($content_call->[2], 22, 'content timeout is forwarded');
+is_deeply([@{$content_call}[3 .. 6]],
+    ['--pid', 42, '--application-index', 7],
+    'content observation reuses the PID-verified application hint');
 is($custom_close->[5], 31, 'close timeout is forwarded');
 is($custom_close->[6], 'ctrl-q', 'close shortcut is forwarded');
 is($custom_close->[7], 'process-exit', 'standard custom contract keeps process-exit mode');
 is($custom_close->[8], '/org/a11y/window/42', 'opened window identity is forwarded');
+is($custom_close->[10], 7, 'close observation reuses the application hint');
+
+reset_state();
+my $bad_auxiliary = {
+    %$entry,
+    _coverage => {
+        execution_contract => 'standard',
+        contract_reason => 'invalid auxiliary flag',
+        contract_dismiss_auxiliary => 'yes',
+        contract_allowed_exit_codes => [0],
+        contract_requirements => [],
+    },
+};
+eval { application_smoke->check($bad_auxiliary, 30) };
+like($@, qr/invalid application auxiliary-window contract/,
+    'auxiliary dismissal is a typed lifecycle contract');
 
 reset_state();
 is(application_smoke->check(undef, 30)->{status}, 'skipped', 'absent optional application is not applicable');

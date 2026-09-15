@@ -67,7 +67,7 @@ Não é necessário ampliar esses percursos para cada aplicativo da ISO.
 Parâmetros opcionais: `BIGLINUX_APPLICATION_SETTLE_SECONDS` (0–10),
 `BIGLINUX_APPLICATION_CONTENT_TIMEOUT` (1–120),
 `BIGLINUX_APPLICATION_CLOSE_TIMEOUT` (1–120) e `BIGLINUX_APPLICATION_CLOSE_KEY`
-(`alt-f4` ou `ctrl-q`). A política pode definir limites próprios e ainda limitados por aplicativo;
+(`alt-f4`, `ctrl-q` ou `esc`). A política pode definir limites próprios e ainda limitados por aplicativo;
 a varredura usa uma amostra de memória, sem amostragem
 repetida por aplicativo. Uma mudança apenas estética não exige novo teste.
 

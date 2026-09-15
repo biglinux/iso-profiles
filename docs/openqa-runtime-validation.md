@@ -184,3 +184,106 @@ abortando ou sem janela AT-SPI permanecem vermelhos até correção real.
 A matriz real `34938679011`, fonte `9129cdc`, confirmou que `steam.desktop` foi excluído como bootstrap e não executado. O inventário classificou 215 entradas lançáveis: 175 passaram, 37 falharam e 3 ficaram não aplicáveis por capacidade ausente. O agregador recusou corretamente uma aprovação cuja saída `0` havia sido serializada como texto, revelando um defeito no produtor.
 
 A correção converte o valor do supervisor para número antes do JSON, mantém o agregador estrito, prioriza aplicações recentes em consultas PID-scoped, percorre irmãos de modo justo e observa a janela exata de processos compartilhados. Aplicativos com ação `app.quit` documentada usam um único Ctrl+Q. Crashes e janelas sem AT-SPI permanecem falhas.
+
+
+## Superfícies auxiliares de primeira execução
+
+A matriz `34938679011` mostrou GIMP e LibreOffice com uma janela inicial ativa
+sobre a janela principal. Enviar apenas `Ctrl+Q` nessa superfície não comprovou
+o encerramento da aplicação. A correção não cria uma heurística global: somente
+contratos explicitamente marcados com `dismiss_auxiliary: true` podem enviar um
+único `Alt+F4` à superfície ativa e, depois, o `Ctrl+Q` documentado.
+
+A sonda exige que o foco retorne a outra janela de nível superior do mesmo PID.
+Em contratos de processo compartilhado, a identidade exata dessa nova janela
+substitui a identidade da superfície inicial antes de observar o fechamento.
+Outros aplicativos que usam `Ctrl+Q` não recebem uma ação preliminar inferida.
+O relatório registra `pre_close_action` separadamente, e qualquer falha ao
+confirmar a transição permanece vermelha.
+
+## Baseline durante transições do registro AT-SPI
+
+Na matriz `34944015215`, fonte `c5f5578`, o primeiro shard de aplicações
+encerrou antes de testar qualquer entrada: um provedor saiu entre a leitura da
+quantidade de janelas e a consulta da primeira janela. A sonda tratou essa
+corrida transitória como uma baseline estruturalmente inválida.
+
+A baseline agora repete **a leitura completa** sob um único prazo e só grava o
+arquivo depois de obter um retrato coerente. Uma entrada residual é ignorada
+apenas quando o PID publicado já não existe e a consulta é global de baseline;
+consultas restritas ao aplicativo testado continuam retornando falha. Erros de
+provedores vivos, limites de árvore e leituras parciais continuam bloqueantes.
+Assim, a limpeza não recebe uma baseline incompleta e um processo vivo não é
+silenciosamente dispensado.
+
+## Foco direcionado sem varrer aplicações alheias
+
+Na execução UEFI `34944015215`, fonte `c5f5578`, o instalador já havia exposto
+os controles esperados e o teste conhecia a identidade do botão-alvo e seu PID.
+Mesmo assim, a consulta seguinte de foco reiniciava a enumeração do registro
+AT-SPI inteiro e consumiu o prazo antes de retornar ao aplicativo conhecido.
+
+Cada janela e controle agora carrega também o índice do aplicativo no registro
+AT-SPI. Esse índice é apenas uma dica efêmera: a consulta o visita primeiro e
+confirma que o PID ainda pertence à árvore do lançamento. Se o índice mudou ou
+aponta para outro PID, a busca volta à ordem limitada normal. Quando a dica é
+válida, a observação de foco termina dentro daquele aplicativo e não percorre
+provedores sem relação com o instalador.
+
+A mudança não escolhe foco, não aciona controles e não transforma ausência em
+sucesso. A identidade, o PID e o estado `FOCUSED` continuam obrigatórios; erros
+do provedor-alvo permanecem bloqueantes. Regressões cobrem prioridade da dica,
+índice obsoleto, propagação do índice nos controles e encaminhamento Perl →
+sonda convidada. A instalação ainda depende de nova execução real.
+
+## Conteúdo e fechamento no aplicativo já identificado
+
+A mesma matriz `34944015215` mostrou cinco aplicações em que a janela havia sido
+aberta e associada ao PID correto, mas a verificação simples de conteúdo voltou
+a percorrer todo o registro AT-SPI e expirou antes de retornar ao provedor-alvo.
+Isso afetou, entre outros, Brave, RustDesk, Big Kernel Manager, BigLinux Config
+e Stoken. Aumentar o prazo global apenas tornaria a suíte mais lenta e ainda
+permitiria que um provedor alheio consumisse o orçamento.
+
+O resultado de abertura agora conserva o índice do aplicativo que produziu a
+janela. As verificações subsequentes de conteúdo e de janela ativa encaminham
+essa dica e revalidam o PID antes de usá-la. Quando a dica é válida, a sonda
+inspeciona integralmente aquele aplicativo e encerra a enumeração antes de tocar
+em provedores sem relação com o teste. Quando a dica está fora do intervalo ou
+aponta para outro PID, a busca limitada normal continua; portanto, a otimização
+não transforma um índice reutilizado em identidade.
+
+A identidade exata da janela continua sendo usada para confirmar o fechamento
+de processos compartilhados. A dica não substitui PID, identidade, estado
+`SHOWING`/`ACTIVE`, conteúdo útil ou código de saída. Falha do provedor-alvo,
+árvore incompleta, janela vazia e encerramento não observado continuam
+bloqueantes. Os testes cobrem propagação abertura → conteúdo → fechamento,
+parada antes de provedores alheios e fallback de índice obsoleto.
+
+## Diálogos iniciais confirmados no código-fonte
+
+A ampliação do contrato auxiliar permanece explícita e restrita. Além de GIMP
+e LibreOffice, o código-fonte dos próprios projetos confirma superfícies de
+primeira execução em Qt Designer (New Form), BigOCR PDF (boas-vindas ou
+dependências), Editor PDF do BigOCR (ajuda inicial), Big Video Converter
+(boas-vindas) e WebApps Manager (boas-vindas).
+
+Essas entradas recebem `dismiss_auxiliary: true`: somente quando a janela ativa
+é um diálogo ou existem várias janelas de nível superior, o teste envia um único
+`Alt+F4`, comprova o retorno a outra janela do mesmo PID e então envia o
+`Ctrl+Q` já documentado pelo aplicativo. A regra não é inferida por nome, toolkit
+ou presença de um botão; qualquer outro programa continua recebendo apenas seu
+atalho configurado. Falha ao fechar o diálogo, reencontrar a janela principal ou
+encerrar normalmente permanece vermelha.
+
+
+## Contratos explícitos para KRunner e qBittorrent
+
+A política não usa mais `Alt+F4` nesses dois casos. O QML oficial do KRunner
+trata `Escape` ocultando a janela do runner, enquanto preserva o serviço
+residente. Por isso o smoke exige o desaparecimento daquela janela exata, sem
+exigir que o processo da sessão termine. O qBittorrent registra `Ctrl+Q` como
+a ação **Exit** e conecta essa ação a `QApplication::exit()`. Seu contrato é
+portanto estrito: a janela deve ser acessível e o processo testado deve terminar
+normalmente com código zero. Esses contratos são individuais; `Escape` e
+`Ctrl+Q` não são inferidos para outros aplicativos.

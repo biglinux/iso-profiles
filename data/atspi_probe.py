@@ -182,7 +182,10 @@ def _atspi_import() -> tuple[Any, Any]:
 
 
 def _window_records(
-    deadline: float | None = None, allowed_pids: set[int] | None = None
+    deadline: float | None = None,
+    allowed_pids: set[int] | None = None,
+    preferred_application_index: int | None = None,
+    stop_after_preferred_match: bool = False,
 ) -> Iterable[tuple[Any, dict[str, Any]]]:
     Atspi, GLib = _atspi_import()
     try:
@@ -198,14 +201,25 @@ def _window_records(
     # Newly launched applications are normally appended to the registry.
     # PID-scoped probes need no semantic data from unrelated applications, so
     # inspect recent entries first. Unscoped baselines retain registry order.
-    application_indexes = (
+    application_indexes = list(
         range(application_count - 1, -1, -1)
         if allowed_pids is not None
         else range(application_count)
     )
+    # A widget record carries the registry slot that produced it. Revisit that
+    # slot first on the next focus observation, but always verify its PID: AT-SPI
+    # application indexes are hints and can shift as providers come and go.
+    if (
+        preferred_application_index is not None
+        and 0 <= preferred_application_index < application_count
+    ):
+        application_indexes = [preferred_application_index] + [
+            index for index in application_indexes if index != preferred_application_index
+        ]
     for app_index in application_indexes:
         if deadline is not None and time.monotonic() > deadline:
             raise WalkTruncated("application enumeration exceeded its deadline")
+        app_pid: int | None = None
         try:
             app = desktop.get_child_at_index(app_index)
             if app is None:
@@ -217,7 +231,18 @@ def _window_records(
                 continue
             app_name = app.get_name() or ""
             window_count = app.get_child_count()
+            preferred_match = (
+                preferred_application_index is not None
+                and app_index == preferred_application_index
+                and allowed_pids is not None
+                and app_pid in allowed_pids
+            )
         except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            # The registry can retain an application proxy for a process that
+            # exited between reading the desktop child and its metadata. Such a
+            # process cannot own a live window that the baseline must protect.
+            if allowed_pids is None and app_pid is not None and launch_process_exited(app_pid):
+                continue
             raise ProbeError(
                 f"application enumeration was incomplete (index {app_index}, {type(error).__name__})"
             ) from error
@@ -232,6 +257,11 @@ def _window_records(
                 role = window.get_role_name() or ""
                 children = window.get_child_count()
             except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                # A dead provider may disappear after publishing its child
+                # count. Ignore only that proven-stale application; a live
+                # provider error still makes the observation incomplete.
+                if allowed_pids is None and launch_process_exited(app_pid):
+                    break
                 raise ProbeError(
                     f"window enumeration was incomplete (PID {app_pid}, index {window_index}, "
                     f"{type(error).__name__})"
@@ -243,12 +273,20 @@ def _window_records(
                     "key": f"{app_pid}\0{identity}",
                     "identity": identity,
                     "application": app_name,
+                    "application_index": app_index,
                     "name": name,
                     "role": role,
                     "children": children,
+                    "application_window_count": window_count,
                     "pid": app_pid,
                 },
             )
+        # A PID-verified registry hint identifies the application object that
+        # produced the prior window/widget. Once fully inspected, unrelated
+        # providers cannot improve the same observation. A stale PID mismatch
+        # never reaches this branch and therefore still falls back safely.
+        if stop_after_preferred_match and preferred_match:
+            return
 
 
 def accessible_snapshot(
@@ -259,8 +297,12 @@ def accessible_snapshot(
             "desktop": os.environ.get("XDG_CURRENT_DESKTOP", "unknown")}
 
 
-def save_baseline(state_path: Path) -> dict[str, Any]:
-    snapshot = accessible_snapshot()
+def save_baseline(state_path: Path, timeout: float = 10) -> dict[str, Any]:
+    # Session applications may be registering or disappearing while one test
+    # hands the desktop to the next. Retry a complete read within one shared
+    # deadline; never persist a partial baseline.
+    deadline = time.monotonic() + timeout
+    snapshot = _read_until_ready(lambda: accessible_snapshot(deadline), deadline)
     x11_windows = _x11_window_records()
     state_path.write_text(
         json.dumps(
@@ -535,6 +577,7 @@ def wait_for_window_change(
                         "role": window["role"],
                         "accessible_children": window["children"],
                         "pid": window["pid"],
+                        "application_index": window.get("application_index"),
                         "window_identity": window_identity(window),
                         "memory": sample_process_memory(window["pid"])
                         if sample_memory
@@ -775,6 +818,7 @@ def _showing_widgets_in_window(
     window_name: str,
     deadline: float | None,
     limit: int = _WIDGET_TREE_LIMIT,
+    application_index: int | None = None,
 ) -> Iterable[tuple[Any, dict[str, Any]]]:
     """Yield SHOWING controls fairly while retaining strict finite bounds."""
     _atspi, GLib = _atspi_import()
@@ -811,6 +855,8 @@ def _showing_widgets_in_window(
         record = _widget_record(node)
         record["pid"] = pid
         record["window"] = window_name
+        if application_index is not None:
+            record["application_index"] = application_index
         if record["defunct"] or not record["showing"]:
             continue
         yield node, record
@@ -835,7 +881,11 @@ def _visible_widgets(
             continue
         widgets.extend(
             _showing_widgets_in_window(
-                window, record["pid"], record["name"], deadline
+                window,
+                record["pid"],
+                record["name"],
+                deadline,
+                application_index=record.get("application_index"),
             )
         )
     return widgets
@@ -1001,6 +1051,7 @@ def focused_widget(
     timeout: float,
     expected_pid: int | None = None,
     target_identity: str | None = None,
+    application_index: int | None = None,
 ) -> dict[str, Any]:
     """Observe keyboard focus without moving it or reading field values.
 
@@ -1057,12 +1108,31 @@ def focused_widget(
             allowed_pids = (
                 _process_tree(expected_pid) if expected_pid is not None else None
             )
-            for window, window_record in _window_records(deadline, allowed_pids):
+            preferred_observed = False
+            for window, window_record in _window_records(
+                deadline,
+                allowed_pids,
+                preferred_application_index=application_index,
+                stop_after_preferred_match=application_index is not None,
+            ):
+                is_preferred = (
+                    application_index is not None
+                    and window_record.get("application_index") == application_index
+                )
+                # Once a PID-verified hinted application has been inspected,
+                # unrelated providers cannot improve this focus observation.
+                # Return its fallback (or retry until the shared deadline)
+                # without walking the rest of the desktop registry.
+                if preferred_observed and not is_preferred:
+                    break
+                if is_preferred:
+                    preferred_observed = True
                 for _node, record in _showing_widgets_in_window(
                     window,
                     window_record["pid"],
                     window_record["name"],
                     deadline,
+                    application_index=window_record.get("application_index"),
                 ):
                     if not record.get("focused") or record.get("defunct"):
                         continue
@@ -1171,7 +1241,12 @@ def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, 
     return None
 
 
-def smoke_window(timeout: float, expected_pid: int, active_only: bool = False) -> dict[str, Any]:
+def smoke_window(
+    timeout: float,
+    expected_pid: int,
+    active_only: bool = False,
+    application_index: int | None = None,
+) -> dict[str, Any]:
     """Observe the launched application's window/content without moving focus."""
     Atspi, GLib = _atspi_import()
     deadline = time.monotonic() + timeout
@@ -1179,7 +1254,12 @@ def smoke_window(timeout: float, expected_pid: int, active_only: bool = False) -
     def observe() -> dict[str, Any] | None:
         nonlocal reason
         try:
-            for window, record in _window_records(deadline, {expected_pid}):
+            for window, record in _window_records(
+                deadline,
+                {expected_pid},
+                preferred_application_index=application_index,
+                stop_after_preferred_match=application_index is not None,
+            ):
                 if record["pid"] != expected_pid:
                     continue
                 states = window.get_state_set()
@@ -1191,13 +1271,29 @@ def smoke_window(timeout: float, expected_pid: int, active_only: bool = False) -
                     continue
                 if active_only:
                     if states.contains(Atspi.StateType.ACTIVE):
-                        return {"status": "passed", "pid": expected_pid, "active": True}
+                        return {
+                            "status": "passed",
+                            "pid": expected_pid,
+                            "active": True,
+                            "window_identity": record.get("identity", ""),
+                            "window_role": record.get("role", ""),
+                            "window_name": record.get("name", ""),
+                            "application_window_count": record.get(
+                                "application_window_count", 1
+                            ),
+                            "application_index": record.get("application_index"),
+                        }
                     reason = "target window is not active; close shortcut was not sent"
                     continue
                 evidence = _smoke_content(window, deadline)
                 if evidence is not None:
-                    return {"status": "passed", "pid": expected_pid,
-                            "coverage": "accessible-content-present", "evidence": evidence}
+                    return {
+                        "status": "passed",
+                        "pid": expected_pid,
+                        "application_index": record.get("application_index"),
+                        "coverage": "accessible-content-present",
+                        "evidence": evidence,
+                    }
         except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
             raise ProbeError(f"smoke query could not read the application: {error}") from error
         return None
@@ -1452,6 +1548,7 @@ def main() -> int:
     parser.add_argument("--window")
     parser.add_argument("--window-identity")
     parser.add_argument("--target-identity")
+    parser.add_argument("--application-index", type=int)
     parser.add_argument("--checked", choices=("true", "false"))
     parser.add_argument("--no-memory-sample", action="store_true")
     args = parser.parse_args()
@@ -1464,8 +1561,10 @@ def main() -> int:
             raise ProbeError("timeout must be finite and nonnegative")
         if args.pid is not None and args.pid <= 1:
             raise ProbeError("pid must be greater than one")
+        if args.application_index is not None and args.application_index < 0:
+            raise ProbeError("application index must be nonnegative")
         if args.operation == "baseline":
-            result = save_baseline(args.state)
+            result = save_baseline(args.state, args.timeout)
         elif args.operation == "inventory":
             sys.path.insert(0, str(Path(__file__).parent))
             from desktop_entry_launcher import discover_desktop_entries
@@ -1505,11 +1604,21 @@ def main() -> int:
                 expected_window_identity=args.window_identity,
             )
         elif args.operation == "focused-widget":
-            result = focused_widget(args.timeout, args.pid, args.target_identity)
+            result = focused_widget(
+                args.timeout,
+                args.pid,
+                args.target_identity,
+                args.application_index,
+            )
         elif args.operation in {"smoke-window", "active-window"}:
             if args.pid is None:
                 raise ProbeError("--pid is required for window smoke checks")
-            result = smoke_window(args.timeout, args.pid, args.operation == "active-window")
+            result = smoke_window(
+                args.timeout,
+                args.pid,
+                args.operation == "active-window",
+                args.application_index,
+            )
         elif args.operation == "audit-window":
             if args.pid is None:
                 raise ProbeError("--pid is required for audit-window")

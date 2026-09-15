@@ -119,7 +119,12 @@ sub _application_policy {
         die 'application policy contract overlaps an exclusion or alias'
           if exists $excluded{$item->{desktop_id}} || exists $aliases{$item->{desktop_id}};
         die 'application policy contract close key is invalid'
-          if defined $item->{close_key} && $item->{close_key} !~ /\A(?:alt-f4|ctrl-q)\z/;
+          if defined $item->{close_key} && $item->{close_key} !~ /\A(?:alt-f4|ctrl-q|esc)\z/;
+        die 'application policy contract dismiss_auxiliary is invalid'
+          if exists $item->{dismiss_auxiliary}
+          && !JSON::PP::is_bool($item->{dismiss_auxiliary});
+        die 'auxiliary dismissal requires the Ctrl+Q application contract'
+          if ($item->{dismiss_auxiliary} // 0) && ($item->{close_key} // '') ne 'ctrl-q';
         for my $field (qw(close_timeout content_timeout)) {
             die "application policy contract $field is invalid"
               if defined $item->{$field}
@@ -151,6 +156,7 @@ sub _application_policy {
             kind => $item->{kind},
             reason => $item->{reason},
             close_key => $item->{close_key},
+            dismiss_auxiliary => ($item->{dismiss_auxiliary} // 0) ? 1 : 0,
             close_timeout => defined $item->{close_timeout} ? 0 + $item->{close_timeout} : undef,
             content_timeout => defined $item->{content_timeout} ? 0 + $item->{content_timeout} : undef,
             allowed_exit_codes => [map { 0 + $_ } @$exit_codes],
@@ -209,6 +215,7 @@ sub _build_application_context {
             kind => 'standard',
             reason => 'Default strict graphical application contract',
             close_key => undef,
+            dismiss_auxiliary => 0,
             close_timeout => undef,
             content_timeout => undef,
             allowed_exit_codes => [0],
@@ -228,6 +235,8 @@ sub _build_application_context {
             execution_contract => $classification eq 'launchable' ? $contract->{kind} : undef,
             contract_reason => $classification eq 'launchable' ? $contract->{reason} : undef,
             contract_close_key => $classification eq 'launchable' ? $contract->{close_key} : undef,
+            contract_dismiss_auxiliary => $classification eq 'launchable'
+              ? ($contract->{dismiss_auxiliary} ? JSON::PP::true : JSON::PP::false) : undef,
             contract_close_timeout => $classification eq 'launchable' ? $contract->{close_timeout} : undef,
             contract_content_timeout => $classification eq 'launchable' ? $contract->{content_timeout} : undef,
             contract_allowed_exit_codes => $classification eq 'launchable'

@@ -35,12 +35,29 @@ no warnings 'redefine';
     my @keys;
     my @focus = ({pid=>42, identity=>'/first', role=>'text'},
                  {pid=>42, identity=>'/target', role=>'button'});
-    local *atspi::assert_widget = sub { return {widget=>{pid=>42,identity=>'/target',name=>'Next'}}; };
-    local *atspi::focused_widget = sub { return {status=>'passed',complete=>1,widget=>shift @focus}; };
+    my @focus_args;
+    local *atspi::assert_widget = sub {
+        return {widget=>{pid=>42,identity=>'/target',name=>'Next',application_index=>7}};
+    };
+    local *atspi::focused_widget = sub {
+        @focus_args = @_;
+        return {status=>'passed',complete=>1,widget=>shift @focus};
+    };
     local *atspi::select_console = sub {};
     local *atspi::send_key = sub { push @keys, $_[0]; };
     atspi->activate_widget('button', ['Next'], 5);
     is_deeply(\@keys, ['tab','ret'], 'activation follows observed keyboard focus, not direct action');
+    is_deeply([@focus_args[1..3]], [42, '/target', 7],
+        'focus traversal forwards the PID-verified AT-SPI application hint');
+}
+{
+    my @args;
+    local *atspi::result = sub { @args = @_; return {status=>'passed',complete=>1}; };
+    atspi->focused_widget(42, '/target', 7);
+    is_deeply(\@args,
+        ['atspi','focused-widget',5,'--pid',42,'--target-identity','/target',
+         '--application-index',7],
+        'focused-widget sends the application hint to the guest probe');
 }
 {
     local *atspi::assert_widget = sub { return {widget=>{pid=>42,identity=>'/target',name=>'Next'}}; };

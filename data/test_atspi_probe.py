@@ -181,6 +181,7 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(records[0][1]["name"], "Settings")
         self.assertEqual(records[0][1]["pid"], 42)
         self.assertEqual(records[0][1]["identity"], "1")
+        self.assertEqual(records[0][1]["application_index"], 1)
 
     def test_scoped_enumeration_does_not_query_unrelated_windows(self):
         unrelated = FakeAccessible("shell", 99)
@@ -207,6 +208,60 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(records[0][1]["pid"], 42)
         self.assertEqual(order[0], "target")
 
+    def test_scoped_enumeration_revisits_a_pid_verified_application_hint_first(self):
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        unrelated = FakeAccessible("shell", 99)
+        unrelated.get_process_id = mock.Mock(
+            side_effect=AssertionError("unrelated provider must not be queried first")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target, unrelated])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42}, preferred_application_index=0
+            )
+            first = next(records)
+            records.close()
+        self.assertEqual(first[1]["pid"], 42)
+        self.assertEqual(first[1]["application_index"], 0)
+        unrelated.get_process_id.assert_not_called()
+
+    def test_pid_verified_hint_can_stop_before_unrelated_registry_providers(self):
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        unrelated = FakeAccessible("shell", 99)
+        unrelated.get_process_id = mock.Mock(
+            side_effect=AssertionError("unrelated provider must not be queried")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target, unrelated])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = list(
+                atspi_probe._window_records(
+                    allowed_pids={42},
+                    preferred_application_index=0,
+                    stop_after_preferred_match=True,
+                )
+            )
+        self.assertEqual([record["pid"] for _, record in records], [42])
+        unrelated.get_process_id.assert_not_called()
+
+    def test_stale_application_hint_falls_back_after_pid_mismatch(self):
+        stale_slot = FakeAccessible("unrelated", 99)
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [stale_slot, target])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = list(
+                atspi_probe._window_records(
+                    allowed_pids={42}, preferred_application_index=0
+                )
+            )
+        self.assertEqual([record["pid"] for _, record in records], [42])
+        self.assertEqual(records[0][1]["application_index"], 1)
+
     def test_scoped_enumeration_does_not_hide_target_failure(self):
         target = FakeAccessible("app", 42)
         target.get_child_count = mock.Mock(side_effect=FakeError("target unavailable"))
@@ -214,6 +269,27 @@ class AtspiNullChildrenTest(unittest.TestCase):
         with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
              self.assertRaisesRegex(atspi_probe.ProbeError, "incomplete"):
             list(atspi_probe._window_records(allowed_pids={42}))
+
+    def test_dead_registry_provider_is_skipped_without_hiding_live_windows(self):
+        stale_window = FakeAccessible("Gone", 42)
+        stale_window.get_name = mock.Mock(side_effect=FakeError("provider vanished"))
+        stale = FakeAccessible("stale", 42, [stale_window], "application")
+        live = FakeAccessible("live", 43, [FakeAccessible("Settings", 43)], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [stale, live])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "launch_process_exited", side_effect=lambda pid: pid == 42):
+            records = list(atspi_probe._window_records())
+        self.assertEqual([record["pid"] for _, record in records], [43])
+
+    def test_live_registry_provider_failure_remains_incomplete(self):
+        broken_window = FakeAccessible("Broken", 42)
+        broken_window.get_name = mock.Mock(side_effect=FakeError("provider unavailable"))
+        target = FakeAccessible("app", 42, [broken_window], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "launch_process_exited", return_value=False), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "window enumeration was incomplete"):
+            list(atspi_probe._window_records())
 
     def test_empty_scope_returns_no_window(self):
         FakeAtspi.desktop = FakeAccessible("desktop", 1, [FakeAccessible("other", 99)])
@@ -229,6 +305,23 @@ class AtspiNullChildrenTest(unittest.TestCase):
             walked = list(atspi_probe._walk(root))
 
         self.assertEqual(walked, [root, child])
+
+    def test_widget_records_retain_their_application_registry_hint(self) -> None:
+        window = FakeAccessible("Dialog", 42)
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ), mock.patch.object(
+            atspi_probe,
+            "_widget_record",
+            return_value={"showing": True, "defunct": False, "focused": True},
+        ):
+            records = list(
+                atspi_probe._showing_widgets_in_window(
+                    window, 42, "Dialog", None, application_index=7
+                )
+            )
+
+        self.assertEqual(records[0][1]["application_index"], 7)
 
 
 class WidgetLabelTest(unittest.TestCase):

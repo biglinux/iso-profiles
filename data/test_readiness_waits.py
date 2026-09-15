@@ -85,6 +85,39 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertFalse(target[0].get_action_iface().done)
 
+    def test_target_focus_reuses_application_hint_without_scanning_other_apps(self):
+        window = object()
+        target = {
+            "pid": 42,
+            "identity": "/target",
+            "role": "button",
+            "showing": True,
+            "focused": True,
+            "defunct": False,
+            "application_index": 7,
+        }
+
+        def windows(*_args, **_kwargs):
+            yield window, {
+                "pid": 42,
+                "name": "Installer",
+                "application_index": 7,
+            }
+            raise AssertionError("an unrelated application was enumerated")
+
+        with mock.patch.object(probe, "_process_tree", return_value={42}), \
+             mock.patch.object(probe, "_window_records", side_effect=windows) as read, \
+             mock.patch.object(
+                 probe, "_showing_widgets_in_window", return_value=[(object(), target)]
+             ) as walk:
+            result = probe.focused_widget(1, 42, "/target", 7)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(
+            read.call_args.kwargs["preferred_application_index"], 7
+        )
+        self.assertTrue(read.call_args.kwargs["stop_after_preferred_match"])
+        self.assertEqual(walk.call_args.kwargs["application_index"], 7)
+
     def test_read_attempts_receive_decreasing_budget(self):
         target = fixtures.SelectorTest().pair()
         with mock.patch.object(probe, "_widget_matches", side_effect=[probe.ProbeError("starting"), ([target], [target])]) as read:
@@ -93,9 +126,33 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertAlmostEqual(read.call_args_list[1].args[3], 0.9)
 
 
+    def test_baseline_retries_transient_registry_failure_before_persisting(self):
+        snapshot = {"windows": [{"key": "42\0/window", "pid": 42}],
+                    "mem_available_mib": 100.0, "desktop": "KDE"}
+        with mock.patch.object(probe, "accessible_snapshot", side_effect=[
+                 probe.ProbeError("registry transition"), snapshot]) as read, \
+             mock.patch.object(probe, "_x11_window_records", return_value=[]), \
+             mock.patch.object(Path, "write_text") as write:
+            result = probe.save_baseline(Path("baseline.json"), 1)
+        self.assertEqual(result, snapshot)
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(self.sleeps, [0.1])
+        payload = write.call_args.args[0]
+        self.assertIn("42\\u0000/window", payload)
+
+    def test_baseline_persistent_registry_failure_expires_without_writing(self):
+        with mock.patch.object(probe, "accessible_snapshot",
+                               side_effect=probe.ProbeError("registry unavailable")), \
+             mock.patch.object(Path, "write_text") as write, \
+             self.assertRaisesRegex(probe.ProbeError, "registry unavailable"):
+            probe.save_baseline(Path("baseline.json"), 0.25)
+        self.assertAlmostEqual(self.clock, 0.25)
+        write.assert_not_called()
+
     def test_window_open_retries_read_failure_with_same_launch_scope(self):
         record = {"key": "new-window", "pid": 42, "application": "Editor",
-                  "name": "Document", "role": "frame", "children": 1}
+                  "application_index": 7, "name": "Document",
+                  "role": "frame", "children": 1}
         with mock.patch.object(probe, "baseline_keys", return_value=set()), \
              mock.patch.object(probe, "_process_tree", return_value={42}), \
              mock.patch.object(probe, "process_memory", return_value={}), \
@@ -104,6 +161,7 @@ class ReadinessWaitsTest(unittest.TestCase):
             result = probe.wait_for_window_change(Path("unused"), 1, True, 42, sample_memory=False)
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["pid"], 42)
+        self.assertEqual(result["application_index"], 7)
         self.assertTrue(all(call.args[1] == {42} for call in read.call_args_list))
         self.assertEqual(read.call_count, 2)
 
@@ -153,6 +211,23 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertTrue(result["evidence"]["text_interface"])
         self.assertEqual(read.call_count, 2)
         self.assertTrue(all(call.args[1] == {42} for call in read.call_args_list))
+
+    def test_smoke_reuses_pid_verified_application_hint(self):
+        root = smoke_fixtures.Node(
+            "Editor", "frame", [smoke_fixtures.Node(role="text", text=True)]
+        )
+        with mock.patch.object(
+            probe, "_atspi_import",
+            return_value=(smoke_fixtures.API, smoke_fixtures.GLIB),
+        ), mock.patch.object(
+            probe, "_window_records",
+            return_value=[(root, {"pid": 42, "role": "frame", "application_index": 7})],
+        ) as read:
+            result = probe.smoke_window(1, 42, application_index=7)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["application_index"], 7)
+        self.assertEqual(read.call_args.kwargs["preferred_application_index"], 7)
+        self.assertTrue(read.call_args.kwargs["stop_after_preferred_match"])
 
     def test_smoke_permanent_failure_uses_one_shared_deadline(self):
         with mock.patch.object(probe, "_atspi_import", return_value=(smoke_fixtures.API, smoke_fixtures.GLIB)), \

@@ -150,7 +150,15 @@ class SmokeContentTest(unittest.TestCase):
     def window_result(self, pid=42, active=False, expected=42, active_only=False):
         root = Node("Editor", "frame", [Node(role="text", text=True)],
                     states=("SHOWING", "ACTIVE") if active else ("SHOWING",))
-        with mock.patch.object(probe, "_window_records", return_value=[(root, {"pid": pid, "role": "frame"})]), \
+        record = {
+            "pid": pid,
+            "role": "frame",
+            "identity": "/window/0",
+            "name": "Editor",
+            "application_window_count": 1,
+            "application_index": 7,
+        }
+        with mock.patch.object(probe, "_window_records", return_value=[(root, record)]), \
              mock.patch.object(probe, "launch_process_exited", return_value=False), \
              mock.patch.object(probe.time, "monotonic", return_value=0):
             return probe.smoke_window(0, expected, active_only)
@@ -163,7 +171,12 @@ class SmokeContentTest(unittest.TestCase):
 
     def test_close_requires_active_target_window(self):
         self.assertEqual(self.window_result(active_only=True)["status"], "failed")
-        self.assertEqual(self.window_result(active=True, active_only=True)["status"], "passed")
+        result = self.window_result(active=True, active_only=True)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["window_identity"], "/window/0")
+        self.assertEqual(result["window_role"], "frame")
+        self.assertEqual(result["application_window_count"], 1)
+        self.assertEqual(result["application_index"], 7)
 
     def test_provider_error_is_not_ignored(self):
         with mock.patch.object(probe, "_window_records", side_effect=RuntimeError("bus")):
