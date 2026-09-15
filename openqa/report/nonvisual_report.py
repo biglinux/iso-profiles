@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 EXPECTED = {"kate-save-reopen", "konsole-execute", "dolphin-rename", "brave-live-region"}
-LIMITS = ("Este resultado cobre quatro percursos de aplicativos instalados. Não certifica "
+LIMITS = ("Somente percursos com evidência registrada são avaliados. Este relatório não certifica "
           "o desktop inteiro, a ativação nativa do leitor, SDDM, desbloqueio, diálogos de "
           "autorização, todo o instalador, todos os temas, áudio audível ou dispositivo braille.")
 
@@ -54,4 +54,4 @@ def render_nonvisual_markdown(results: list[dict]) -> str:
     passed = sum(item.get("status") == "passed" for item in results)
     return ("\n### Percursos não visuais\n\n"
             + (f"{passed}/{len(results)} registros aprovados; resultados parciais não certificam acessibilidade.\n"
-               if results else "Sem evidência de execução.\n") + "\n" + LIMITS + "\n")
+               if results else "Não há evidência de execução dos percursos aprofundados opcionais.\n") + "\n" + LIMITS + "\n")

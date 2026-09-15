@@ -73,7 +73,7 @@ jobs:
           fi
           test "$(skopeo manifest-digest "$manifest")" = "$digest"
           printf 'image=%s\n' "$target" >> "$GITHUB_OUTPUT"
-          printf 'Verified runner image: `%s`\n' "$target" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Verified runner image: %s\n' "$target" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

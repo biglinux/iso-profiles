@@ -113,4 +113,18 @@ sub run {
     atspi->set_widget_scope(undef);
 }
 
+# Failure evidence is read-only and best effort; it never repairs a broken GUI
+# or changes the original failure into success. Download it independently of
+# the AT-SPI probe, which may be what failed to start.
+sub post_fail_hook {
+    my $url = data_url('session_diagnostics.py');
+    eval {
+        atspi->run_command('curl --fail --silent --show-error --max-time 15 '
+          . shell_quote($url) . ' --output /tmp/openqa-session-diagnostics.py && '
+          . 'python3 /tmp/openqa-session-diagnostics.py --output /tmp/openqa-session-diagnostics.json', 70);
+        atspi->upload_guest_file('/tmp/openqa-session-diagnostics.json', 'session-diagnostics.json');
+    };
+    eval { select_console 'sut' };
+}
+
 1;

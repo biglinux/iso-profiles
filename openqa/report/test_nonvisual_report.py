@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from nonvisual_report import load_nonvisual, render_nonvisual_html, EXPECTED
+from nonvisual_report import load_nonvisual, render_nonvisual_html, render_nonvisual_markdown, EXPECTED
 
 
 class NonvisualReportTest(unittest.TestCase):
@@ -24,3 +24,16 @@ class NonvisualReportTest(unittest.TestCase):
 
     def test_untrusted_content_is_escaped(self):
         self.assertNotIn("<script>", render_nonvisual_html([{"name": "<script>"}]))
+
+    def test_empty_outputs_do_not_claim_four_completed_tasks(self):
+        for render in (render_nonvisual_html, render_nonvisual_markdown):
+            output = render([])
+            self.assertIn("Não há evidência", output)
+            self.assertIn("opcionais", output)
+            self.assertNotIn("cobre quatro", output)
+
+    def test_partial_output_does_not_claim_complete_task_coverage(self):
+        output = render_nonvisual_markdown([{"name": "kate", "status": "inconclusive"}])
+        self.assertIn("0/1", output)
+        self.assertIn("com evidência registrada", output)
+        self.assertNotIn("cobre quatro", output)
