@@ -910,15 +910,30 @@ def activate_widget(
 
 
 def focused_widget(timeout: float, expected_pid: int | None = None) -> dict[str, Any]:
-    """Observe focus without moving it; never return password contents."""
+    """Wait for one observed focus; do not choose among ambiguous controls."""
     deadline = time.monotonic() + timeout
-    pairs = _read_until_ready(lambda: _visible_widgets(expected_pid, deadline), deadline)
-    focused = [record for _, record in pairs if record.get("focused") and record["showing"]]
-    if len(focused) != 1:
-        return {"status": "failed", "reason": "ambiguous" if focused else "not-found",
-                "complete": True, "matches": len(focused),
-                "error": "expected exactly one focused control in the requested scope"}
-    return {"status": "passed", "widget": focused[0], "complete": True}
+    while True:
+        pairs = _read_until_ready(lambda: _visible_widgets(expected_pid, deadline), deadline)
+        focused = [record for _, record in pairs
+                   if record.get("focused") and record["showing"] and not record.get("defunct")]
+        if len(focused) == 1:
+            return {"status": "passed", "widget": focused[0], "complete": True}
+        if time.monotonic() >= deadline:
+            # Include identities/roles, not field values or arbitrary text.
+            # This distinguishes persistent composite/window focus from a
+            # transition without silently selecting one candidate as correct.
+            candidates = [{"pid": record.get("pid"),
+                           "role": str(record.get("role", ""))[:64],
+                           "identity": str(record.get("identity", ""))[:256]}
+                          for record in focused[:8]]
+            roles = ", ".join(candidate["role"] for candidate in candidates) or "none"
+            return {"status": "failed", "reason": "ambiguous" if focused else "not-found",
+                    "complete": True, "matches": len(focused), "candidates": candidates,
+                    "error": "expected exactly one focused control in the requested scope; "
+                             f"observed roles: {roles}"}
+        # Waiting for publication of focus is a read-only operation. A state
+        # transition must settle within the caller's existing time budget.
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
 
 def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, Any] | None:

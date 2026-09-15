@@ -143,6 +143,53 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertEqual(read.call_count, 1)
         self.assertEqual(self.sleeps, [])
 
+    def test_focus_transition_from_two_candidates_waits_for_unique_state(self):
+        first = fixtures.SelectorTest().pair(focused=True)
+        final = fixtures.SelectorTest().pair(focused=True)
+        with mock.patch.object(probe, "_visible_widgets", side_effect=[[first, final], [final]]) as read:
+            result = probe.focused_widget(1, 42)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(self.sleeps, [0.1])
+
+    def test_focus_absence_can_be_a_pending_state(self):
+        item = fixtures.SelectorTest().pair(focused=True)
+        with mock.patch.object(probe, "_visible_widgets", side_effect=[[], [item]]):
+            self.assertEqual(probe.focused_widget(1, 42)["status"], "passed")
+        self.assertEqual(self.sleeps, [0.1])
+
+    def test_persistent_focus_ambiguity_is_not_resolved_arbitrarily(self):
+        first = fixtures.SelectorTest().pair(focused=True)
+        second = fixtures.SelectorTest().pair(focused=True)
+        first[1].update(identity="/first", name="secret-field-value", role="frame")
+        second[1].update(identity="/second", role="button")
+        with mock.patch.object(probe, "_visible_widgets", return_value=[first, second]):
+            result = probe.focused_widget(0.25, 42)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "ambiguous")
+        self.assertEqual(result["matches"], 2)
+        self.assertEqual(result["candidates"][0]["identity"], "/first")
+        self.assertNotIn("secret-field-value", str(result))
+        self.assertAlmostEqual(self.clock, 0.25)
+
+    def test_focus_diagnostics_are_bounded(self):
+        pairs = [fixtures.SelectorTest().pair(focused=True) for _ in range(20)]
+        for _, record in pairs:
+            record.update(identity="x" * 1000, role="y" * 1000)
+        with mock.patch.object(probe, "_visible_widgets", return_value=pairs):
+            result = probe.focused_widget(0, 42)
+        self.assertEqual(len(result["candidates"]), 8)
+        self.assertEqual(len(result["candidates"][0]["identity"]), 256)
+        self.assertEqual(len(result["candidates"][0]["role"]), 64)
+        self.assertEqual(result["matches"], 20)
+
+    def test_defunct_focus_candidate_is_not_accepted(self):
+        item = fixtures.SelectorTest().pair(focused=True, defunct=True)
+        with mock.patch.object(probe, "_visible_widgets", return_value=[item]):
+            result = probe.focused_widget(0.25, 42)
+        self.assertEqual(result["reason"], "not-found")
+        self.assertAlmostEqual(self.clock, 0.25)
+
 
 class AtspiCallBudgetTest(unittest.TestCase):
     def test_new_probe_has_no_fresh_fifteen_second_startup_grace(self):

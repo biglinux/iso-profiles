@@ -130,3 +130,20 @@ Isso segue a definição de `SHOWING`, que inclui os ancestrais do controle:
 Essa correção ainda precisa de confirmação na ISO; não converte as falhas do
 run anterior em aprovações. No BIOS do mesmo run, 5 de 11 smokes passaram e 6
 falharam; a troca para Ctrl+Q não resolveu todos os encerramentos observados.
+
+
+## Publicação de foco após a troca de janela
+
+Na execução UEFI `34925637884`, fonte `f2749233`, a leitura e a navegação
+avançaram além do erro anterior: o aviso de firmware foi confirmado e a página
+principal expôs o botão Instalar. O bloqueio seguinte ocorreu quando a sonda
+recebeu dois objetos com `FOCUSED`. Ela retornava imediatamente, sem aguardar o
+prazo de cinco segundos que seu chamador fornecia para obter o foco.
+
+A observação agora aguarda um foco único até o prazo original. Não escolhe entre
+candidatos, não força foco e não envia teclas durante essa espera. Se a duplicidade
+persistir, continua reprovando e registra até oito identidades/papéis (com limites
+de comprimento), sem incluir valores dos campos. A nova mensagem permite distinguir
+composição de widget, duplicidade persistente e transição; nenhuma causa específica
+foi presumida sem essa evidência. São cinco regressões adicionais de estado e
+limite. A aprovação da instalação continua dependendo de execução real.
