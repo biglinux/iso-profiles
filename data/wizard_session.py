@@ -15,7 +15,7 @@ import sys
 import time
 
 WIZARD = b"/usr/share/biglinux/livecd/main.py"
-KEYS = ("DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
+KEYS = ("DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
         "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE")
 LIMIT = 65536
 
@@ -52,6 +52,8 @@ def wizard_environment(proc: Path = Path("/proc"), uid: int | None = None) -> di
             raise ValueError("wizard runtime directory does not belong to the current user")
         if not environment.get("DBUS_SESSION_BUS_ADDRESS", "").startswith("unix:"):
             raise ValueError("wizard did not expose a local session bus")
+        if environment.get("AT_SPI_BUS_ADDRESS") and not environment["AT_SPI_BUS_ADDRESS"].startswith("unix:"):
+            raise ValueError("wizard accessibility address is not a local bus")
         if not (environment.get("WAYLAND_DISPLAY") or environment.get("DISPLAY")):
             continue  # The graphical session has not finished setting up yet.
         if any(any(ord(character) < 32 for character in value) for value in environment.values()):
@@ -63,9 +65,10 @@ def wizard_environment(proc: Path = Path("/proc"), uid: int | None = None) -> di
 
 
 def shell_environment(environment: dict[str, str]) -> str:
-    # Only whitelisted keys are emitted and every value is shell-quoted. Remove
-    # a stale accessibility address so libatspi asks the correct session bus.
-    lines = ["unset AT_SPI_BUS_ADDRESS " + " ".join(KEYS)]
+    # Preserve the wizard's explicit accessibility address when provided by its
+    # bootstrap. It may intentionally point outside the private session bus so
+    # Orca can reach it. Only whitelisted, shell-quoted variables are copied.
+    lines = ["unset " + " ".join(KEYS)]
     lines += [f"export {key}={shlex.quote(environment[key])}" for key in KEYS if key in environment]
     return "; ".join(lines)
 

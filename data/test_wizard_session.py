@@ -84,3 +84,16 @@ class WizardSessionTest(unittest.TestCase):
         process = self.process()
         (process / 'comm').write_bytes(b'grep\n')
         self.assertIsNone(session.wizard_environment(self.root))
+
+    def test_explicit_accessibility_bus_is_preserved(self):
+        environment = dict(self.environment, AT_SPI_BUS_ADDRESS="unix:path=/run/user/1000/at-spi/bus")
+        self.process(environment=environment)
+        result = session.wizard_environment(self.root)
+        command = session.shell_environment(result)
+        output = subprocess.check_output(['bash', '-c', command + '; printf %s "$AT_SPI_BUS_ADDRESS"'], text=True)
+        self.assertEqual(output, environment['AT_SPI_BUS_ADDRESS'])
+
+    def test_remote_accessibility_bus_is_rejected(self):
+        self.process(environment=dict(self.environment, AT_SPI_BUS_ADDRESS="tcp:host=remote,port=1"))
+        with self.assertRaisesRegex(ValueError, 'local bus'):
+            session.wizard_environment(self.root)

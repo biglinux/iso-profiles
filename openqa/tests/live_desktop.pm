@@ -71,17 +71,19 @@ sub run {
     # is what says it worked. Not a changed frame buffer: a repaint is not a
     # navigation, and the wizard animates.
     my $chosen = 0;
+    my $page_error = '';
     for (1 .. 3) {
         # BackSpace reaches the search box from anywhere in the window.
         send_key 'backspace' for 1 .. 12;
         type_string 'Brazil', max_interval => 20;
         send_key 'ret';
         my $next = eval { atspi->wait_widget('table', $PAGE{keyboard}, 20) };
+        $page_error = ref $next eq 'HASH' ? ($next->{error} // '') : ($@ || 'no page result');
         next unless ref $next eq 'HASH' && ($next->{status} // '') eq 'passed';
         $chosen = 1;
         last;
     }
-    $chosen or die 'the wizard did not accept the language chosen by search';
+    $chosen or die 'the wizard did not accept the language chosen by search: ' . $page_error;
 
     # Every remaining page selects its first item when it appears
     # (BaseItemView._select_first_item, KeyboardView._select_first_and_announce)

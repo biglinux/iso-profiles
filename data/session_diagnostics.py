@@ -66,6 +66,50 @@ def process_sessions(proc: Path = Path("/proc")) -> list[dict]:
     return sessions
 
 
+def wizard_tree(deadline: float) -> dict:
+    """Record only topology/roles in the wizard, never user text or text values."""
+    try:
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+        Atspi.set_timeout(250, 2000)
+        desktop = Atspi.get_desktop(0)
+        wizard_pids = {item["pid"] for item in process_sessions() if item["process"] == "live-wizard"}
+        from collections import deque
+        queue = deque()
+        for index in range(desktop.get_child_count()):
+            app = desktop.get_child_at_index(index)
+            if app is not None and app.get_process_id() in wizard_pids:
+                queue.append((app, None))
+        seen = {}
+        references = []
+        records = []
+        while queue and len(records) < 300 and time.monotonic() < deadline:
+            node, parent = queue.popleft()
+            identity = str(getattr(node, 'path', '')) or str(id(node))
+            if identity in seen:
+                records.append({"identity": identity, "parent": parent, "first_parent": seen[identity], "repeated": True})
+                continue
+            seen[identity] = parent
+            references.append(node)
+            states = node.get_state_set()
+            record = {"identity": identity, "parent": parent, "role": node.get_role_name(),
+                      "showing": bool(states.contains(Atspi.StateType.SHOWING)),
+                      "defunct": bool(states.contains(Atspi.StateType.DEFUNCT)),
+                      "child_count": node.get_child_count()}
+            records.append(record)
+            for index in range(max(0, min(record["child_count"], 300 - len(queue) - len(records)))):
+                if time.monotonic() >= deadline:
+                    break
+                child = node.get_child_at_index(index)
+                if child is not None:
+                    queue.append((child, identity))
+        return {"records": records, "diagnostic_only": True, "bounded": True}
+    except Exception as error:
+        # Diagnostics must not replace the original test failure.
+        return {"error": type(error).__name__, "diagnostic_only": True}
+
+
 def collect(timeout: float = 45) -> dict:
     deadline = time.monotonic() + timeout
     commands = [
@@ -89,6 +133,7 @@ def collect(timeout: float = 45) -> dict:
     result["session_bus_socket_exists"] = (runtime / "bus").is_socket()
     result["accessibility_sockets"] = [str(path) for path in sorted((runtime / "at-spi").glob("*"))
                                        if path.is_socket()]
+    result["wizard_tree"] = wizard_tree(min(deadline, time.monotonic() + 8))
     return result
 
 
