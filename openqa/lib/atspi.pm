@@ -277,6 +277,11 @@ sub _widget_operation {
     push @args, ('--pid', $pid) if defined $pid;
     push @args, ('--accessible-id', $options{id}) if defined $options{id};
     push @args, ('--window', encode('UTF-8', $options{window})) if defined $options{window};
+    if (defined $options{application_index}) {
+        die 'invalid AT-SPI application index'
+          unless $options{application_index} =~ /\A[0-9]+\z/;
+        push @args, ('--application-index', $options{application_index});
+    }
     push @args, ('--checked', $options{checked} ? 'true' : 'false') if exists $options{checked};
     return $class->result($operation, $timeout, @args);
 }

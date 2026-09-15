@@ -366,3 +366,51 @@ Perl, além da política não visual, compilação Python, sintaxe Bash e
 `git diff --check`. A integração GTK/AT-SPI e a matriz da ISO continuam sendo
 provas separadas obrigatórias; esses testes locais não aprovam a instalação nem
 as aplicações reais.
+
+## Matriz v8 e transferência de escopo v9
+
+A matriz real `35003218961`, fonte `1b055f6a`, executou os quatro shards e
+publicou todos os relatórios. A cobertura dos shards permaneceu completa: 288
+entradas no inventário, 215 lançáveis, 70 exclusões justificadas, três aliases
+e 212 entradas efetivamente testadas. Foram 121 aprovações, 91 falhas e três
+resultados não aplicáveis por capacidade ausente. O consolidado também inclui
+14 verificações adicionais do plano BIOS; elas não são novos aplicativos e não
+devem ser somadas ao inventário.
+
+A regressão não foi tratada com aumento global de timeout nem com exclusões.
+Oitenta das 91 falhas tinham a mesma evidência: `wait-open` já havia comprovado
+PID, índice AT-SPI e identidade exata da janela, mas a consulta seguinte expirava
+em `application enumeration exceeded its deadline`. O índice do registro podia
+mudar quando um provedor antigo desaparecia. A identidade exata era priorizada
+somente se o índice antigo ainda coincidisse; caso contrário, a sonda ignorava a
+janela conhecida e voltava a percorrer provedores sem relação com o teste.
+
+A identidade da janela agora prevalece sobre a posição antiga no registro,
+sempre dentro da árvore de PIDs do lançamento. O índice continua sendo apenas
+uma dica de ordenação: cada candidato tem o PID revalidado e uma dica obsoleta
+não aprova nada. Conteúdo, janela ativa e fechamento reaproveitam a identidade
+exata retornada pela etapa anterior. Um teste de regressão desloca o aplicativo
+do índice 2 para o índice 1 e exige que a sonda encontre a mesma janela sem
+consultar provedores mais antigos.
+
+A execução UEFI confirmou que a correção anterior de foco funcionou: o teste
+alcançou e acionou o botão **Instalar** sem forçar foco ou usar coordenadas. O
+bloqueio seguinte ocorreu na troca do launcher GTK para o Calamares Qt. Ambos
+pertencem à mesma árvore supervisionada, mas a primeira consulta da página Qt
+não carregava a dica do aplicativo GTK e percorria o desktop até expirar.
+
+As consultas de widgets agora podem receber o último índice AT-SPI comprovado.
+Elas começam perto dessa posição, revalidam a árvore de processos do lançamento
+e concluem um aplicativo candidato por vez. Quando um aplicativo da mesma árvore
+expõe uma correspondência única, a busca termina antes de provedores alheios. O
+Calamares preserva o PID raiz do launcher como proveniência, memoriza o índice
+de cada controle encontrado e usa essa dica limitada na página seguinte. Um
+teste simula a transição GTK no índice 14 para Qt no índice 15 e exige parada
+antes de um terceiro processo não relacionado.
+
+As 11 falhas restantes da matriz v8 não foram automaticamente convertidas em
+aprovação. Cinco não expuseram janela AT-SPI (incluindo lstopo e urxvt), o mpv
+abortou com código 134, o Timeshift registrou erro crítico, o Audio Converter não
+encerrou após `Escape` seguido de seu `Ctrl+Q`, dois fluxos do LibreOffice não
+concluíram o contrato de fechamento e três KCMs ainda precisam ser reavaliados
+após a correção estrutural. Esses casos continuam vermelhos até nova evidência.

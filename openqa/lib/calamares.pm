@@ -25,12 +25,14 @@ our @DONE = ('Done', 'Concluir', 'Concluído', 'Finish', 'Finalizar');
 our $BUTTON_ROLES = 'push button|button';
 
 my $launch_pid;
+my $application_index;
 
 sub set_launch_scope {
     my ($class, $pid) = @_;
     die 'Calamares requires a valid launch-tree PID'
       unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     $launch_pid = $pid;
+    $application_index = undef;
     atspi->set_widget_scope($launch_pid);
 }
 
@@ -39,10 +41,31 @@ sub _require_launch_scope {
     return $launch_pid;
 }
 
+sub _scope_options {
+    my ($class) = @_;
+    my %options = (pid => $class->_require_launch_scope);
+    $options{application_index} = $application_index
+      if defined $application_index;
+    return %options;
+}
+
+sub _remember_application {
+    my ($class, $result) = @_;
+    return $result unless ref $result eq 'HASH' && ref $result->{widget} eq 'HASH';
+    my $index = $result->{widget}{application_index};
+    if (defined $index) {
+        die 'installer control exposed an invalid AT-SPI application index'
+          unless $index =~ /\A[0-9]+\z/;
+        $application_index = 0 + $index;
+    }
+    return $result;
+}
+
 sub click_action {
     my ($class, $labels, $timeout) = @_;
-    return atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60,
-        pid => $class->_require_launch_scope);
+    my %options = $class->_scope_options;
+    return $class->_remember_application(
+        atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60, %options));
 }
 
 # Each installer page is identified by a control only that page publishes,
@@ -87,8 +110,9 @@ sub assert_page {
     my ($role, $labels) = $class->page_anchor($page);
     # Do not rediscover globally or narrow to a transient GTK child: Calamares
     # replaces that child with a Qt process, still owned by the same launch.
-    my $found = atspi->assert_widget($role, $labels, $timeout // 60,
-        pid => $class->_require_launch_scope);
+    my %options = $class->_scope_options;
+    my $found = $class->_remember_application(
+        atspi->assert_widget($role, $labels, $timeout // 60, %options));
     die "the installer did not show the '$page' page: "
       . ($found->{error} // 'unknown reason')
       unless ref $found eq 'HASH' && $found->{status} eq 'passed';

@@ -14,6 +14,10 @@ no warnings 'redefine';
         '--pid',42,'--accessible-id','stable-next','--checked','true'], 'selectors retain process scope and stable ID');
     atspi->wait_widget('button', ['Next'], 5, pid => undef);
     ok(!grep($_ eq '--pid', @args), 'explicit page discovery may be unscoped');
+    atspi->wait_widget('button', ['Next'], 5, pid => 42, application_index => 7);
+    is_deeply(\@args, ['atspi','wait-widget',5,'--role','button','--labels','Next',
+        '--pid',42,'--application-index',7],
+        'widget lookup forwards the PID-verified AT-SPI application hint');
 }
 {
     local *atspi::wait_widget = sub { return {status => 'passed', complete => 0}; };

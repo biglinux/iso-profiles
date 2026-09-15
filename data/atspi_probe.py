@@ -275,12 +275,12 @@ def _window_records(
                     f"{type(error).__name__})"
                 ) from error
             candidate = (window_index, window, identity)
-            if preferred_match and identity == preferred_window_identity:
+            if preferred_window_identity is not None and identity == preferred_window_identity:
                 window_candidates.insert(0, candidate)
             else:
                 window_candidates.append(candidate)
 
-        for window_index, window, identity in window_candidates:
+        for window_ordinal, (window_index, window, identity) in enumerate(window_candidates):
             if deadline is not None and time.monotonic() > deadline:
                 raise WalkTruncated("window semantics exceeded its deadline")
             try:
@@ -311,12 +311,14 @@ def _window_records(
                     "role": role,
                     "children": children,
                     "application_window_count": window_count,
+                    "application_candidate_window_count": len(window_candidates),
+                    "application_window_ordinal": window_ordinal,
                     "pid": app_pid,
                     "showing": showing,
                     "defunct": defunct,
                 },
             )
-            if preferred_match and identity == preferred_window_identity:
+            if preferred_window_identity is not None and identity == preferred_window_identity:
                 return
         # A PID-verified registry hint identifies the application object that
         # produced the prior window/widget. Once fully inspected, unrelated
@@ -1097,25 +1099,75 @@ def _widget_matches(
     accessible_id: str | None = None,
     window_name: str | None = None,
     require_sensitive: bool = True,
+    application_index: int | None = None,
+    stop_after_matching_application: bool = False,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], list[tuple[Any, dict[str, Any]]]]:
     roles_wanted = {part.casefold() for part in role.split("|") if part}
-    observed = _visible_widgets(
-        expected_pid, time.monotonic() + budget if budget is not None else None
-    )
-    matches = [pair for pair in observed
-               if (not roles_wanted or pair[1]["role"].casefold() in roles_wanted)
-               and pair[1]["showing"]
-               and (not require_sensitive or pair[1]["sensitive"])
-               and (not accessible_id or pair[1].get("accessible_id") == accessible_id)
-               and (window_name is None or pair[1].get("window") == window_name)
-               and _label_matches(pair[1]["name"], labels)]
-    return matches, observed
+
+    def matches_selector(pair: tuple[Any, dict[str, Any]]) -> bool:
+        widget = pair[1]
+        return (not roles_wanted or widget["role"].casefold() in roles_wanted) \
+            and widget["showing"] \
+            and (not require_sensitive or widget["sensitive"]) \
+            and (not accessible_id or widget.get("accessible_id") == accessible_id) \
+            and (window_name is None or widget.get("window") == window_name) \
+            and _label_matches(widget["name"], labels)
+
+    deadline = time.monotonic() + budget if budget is not None else None
+    if application_index is None:
+        observed = _visible_widgets(expected_pid, deadline)
+        return [pair for pair in observed if matches_selector(pair)], observed
+
+    # A page transition can replace the launcher's GTK application with a Qt
+    # application while both remain descendants of the same supervised launch.
+    # Start near the last PID-verified registry slot and finish one candidate
+    # application at a time. Once that application exposes one unique selector,
+    # unrelated desktop providers cannot make the page more correct. This keeps
+    # the query bounded without accepting a title, coordinate, or stale slot.
+    allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
+    observed: list[tuple[Any, dict[str, Any]]] = []
+    application_matches: list[tuple[Any, dict[str, Any]]] = []
+    current_application: int | None = None
+    for window, record in _window_records(
+        deadline,
+        allowed_pids,
+        preferred_application_index=application_index,
+    ):
+        if allowed_pids is not None and record["pid"] not in allowed_pids:
+            continue
+        record_application = record.get("application_index")
+        if current_application is not None and record_application != current_application:
+            if stop_after_matching_application and application_matches:
+                return application_matches, observed
+            application_matches = []
+        current_application = record_application
+        pairs = list(
+            _showing_widgets_in_window(
+                window,
+                record["pid"],
+                record["name"],
+                deadline,
+                application_index=record_application,
+            )
+        )
+        observed.extend(pairs)
+        application_matches.extend(pair for pair in pairs if matches_selector(pair))
+        last_window = (
+            record.get("application_window_ordinal", 0) + 1
+            >= record.get("application_candidate_window_count", 1)
+        )
+        if stop_after_matching_application and last_window and application_matches:
+            return application_matches, observed
+    return application_matches if stop_after_matching_application else [
+        pair for pair in observed if matches_selector(pair)
+    ], observed
 
 
 def wait_for_widget(
     timeout: float, role: str, labels: list[str], expected_pid: int | None = None,
     *, accessible_id: str | None = None, window_name: str | None = None,
     absent: bool = False, checked: bool | None = None,
+    application_index: int | None = None,
 ) -> dict[str, Any]:
     """A unique match, or confirmed absence; errors are never disappearance."""
     deadline = time.monotonic() + timeout
@@ -1124,6 +1176,8 @@ def wait_for_widget(
             lambda: _widget_matches(
                 role, labels, expected_pid, max(0.01, deadline - time.monotonic()),
                 accessible_id, window_name, require_sensitive=not absent,
+                application_index=application_index,
+                stop_after_matching_application=(application_index is not None and not absent),
             ), deadline,
         )
         if len(matches) > 1:
@@ -1145,18 +1199,25 @@ def wait_for_widget(
 def activate_widget(
     timeout: float, role: str, labels: list[str], expected_pid: int | None = None,
     *, accessible_id: str | None = None, window_name: str | None = None,
+    application_index: int | None = None,
 ) -> dict[str, Any]:
     """Explicit AT action, not a proof of keyboard reachability.
 
     No focus teleportation fallback. The host's keyboard helper traverses
     normal focus and sends a key instead when testing keyboard operation.
     """
-    found = wait_for_widget(timeout, role, labels, expected_pid,
-                            accessible_id=accessible_id, window_name=window_name)
+    found = wait_for_widget(
+        timeout, role, labels, expected_pid,
+        accessible_id=accessible_id, window_name=window_name,
+        application_index=application_index,
+    )
     if found["status"] != "passed":
         return found
-    matches, _observed = _widget_matches(role, labels, expected_pid, 3,
-                                        accessible_id, window_name)
+    found_index = found.get("widget", {}).get("application_index", application_index)
+    matches, _observed = _widget_matches(
+        role, labels, expected_pid, 3, accessible_id, window_name,
+        application_index=found_index, stop_after_matching_application=found_index is not None,
+    )
     if len(matches) != 1:
         return {"status": "failed", "error": "selector changed before activation"}
     accessible, record = matches[0]
@@ -1850,6 +1911,7 @@ def main() -> int:
                 accessible_id=args.accessible_id, window_name=args.window,
                 absent=args.operation == "wait-gone",
                 checked=None if args.checked is None else args.checked == "true",
+                application_index=args.application_index,
             )
         elif args.operation == "activate-widget":
             if not args.role:
@@ -1860,6 +1922,7 @@ def main() -> int:
                 [label for label in args.labels.split("|") if label],
                 args.pid,
                 accessible_id=args.accessible_id, window_name=args.window,
+                application_index=args.application_index,
             )
         elif args.operation == "dump-widgets":
             result = dump_widget_tree(

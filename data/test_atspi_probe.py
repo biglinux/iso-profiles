@@ -283,6 +283,30 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(first[1]["identity"], "/target")
         slow.get_name.assert_not_called()
 
+    def test_exact_window_identity_survives_a_shifted_registry_slot(self):
+        target_window = FakeAccessible("Target", 42)
+        target_window.path = "/target"
+        target = FakeAccessible("target", 42, [target_window], "application")
+        stale = FakeAccessible("stale", 99, [FakeAccessible("Other", 99)], "application")
+        older = FakeAccessible("older", 98)
+        older.get_process_id = mock.Mock(
+            side_effect=AssertionError("exact target identity must stop before older providers")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [older, target, stale])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = list(
+                atspi_probe._window_records(
+                    allowed_pids={42},
+                    preferred_application_index=2,
+                    preferred_window_identity="/target",
+                )
+            )
+        self.assertEqual([record["identity"] for _, record in records], ["/target"])
+        self.assertEqual(records[0][1]["application_index"], 1)
+        older.get_process_id.assert_not_called()
+
     def test_pid_verified_hint_can_stop_before_unrelated_registry_providers(self):
         target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
         unrelated = FakeAccessible("shell", 99)
@@ -552,6 +576,49 @@ class WidgetSearchTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("(insensitive)", result["error"])
+
+    def test_process_transition_uses_nearby_application_hint_and_stops_on_match(self) -> None:
+        old_window = object()
+        target_window = object()
+        unrelated_window = object()
+        windows = [
+            (old_window, {
+                "pid": 4924, "name": "BigLinux Installation",
+                "application_index": 14, "application_window_ordinal": 0,
+                "application_candidate_window_count": 1,
+            }),
+            (target_window, {
+                "pid": 5170, "name": "Calamares",
+                "application_index": 15, "application_window_ordinal": 0,
+                "application_candidate_window_count": 1,
+            }),
+            (unrelated_window, {
+                "pid": 5180, "name": "Unrelated child",
+                "application_index": 16, "application_window_ordinal": 0,
+                "application_candidate_window_count": 1,
+            }),
+        ]
+        visits = []
+
+        def widgets(window, pid, name, deadline, *, application_index=None, **_kwargs):
+            visits.append(application_index)
+            if window is unrelated_window:
+                raise AssertionError("search must stop after the matching launch application")
+            label = "Welcome to the Calamares installer" if window is target_window else "Continue"
+            return [self._pair("label", label)]
+
+        with mock.patch.object(atspi_probe, "_process_tree", return_value={4400, 4924, 5170, 5180}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter(windows)) as read, \
+             mock.patch.object(atspi_probe, "_showing_widgets_in_window", side_effect=widgets):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the Calamares installer"], 4400,
+                application_index=14,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["widget"]["name"], "Welcome to the Calamares installer")
+        self.assertEqual(visits, [14, 15])
+        self.assertEqual(read.call_args.kwargs["preferred_application_index"], 14)
 
 
 class WidgetActivationTest(unittest.TestCase):
