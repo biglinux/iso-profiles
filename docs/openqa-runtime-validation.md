@@ -594,3 +594,24 @@ supervisionado. Também cobre o handoff privilegiado por executável, UID e toke
 Esses testes validam o harness, não certificam a ISO. Crash real do mpv, janelas
 X11 sem AT-SPI, erro crítico do Timeshift, conteúdo inacessível e fechamento não
 comprovado permanecem bloqueantes na próxima matriz.
+
+
+## Runtime v14: testemunha positiva limitada no Qt Calamares
+
+As execuções BIOS e UEFI do runtime v13 comprovaram a transição privilegiada:
+`/usr/bin/calamares`, UID 0 e o token exclusivo encaminhado pelo wrapper foram
+observados no mesmo PID da janela Qt. A consulta seguinte, porém, materializava
+toda a árvore antes de avaliar um seletor de existência e expirou depois de 1 e
+33 nós, respectivamente.
+
+O runtime v14 permite que páginas do Qt Calamares usem uma **testemunha positiva**:
+a busca termina quando encontra um controle com papel, nome e escopo PID exatos.
+Um erro em outro ramo não invalida uma testemunha já observada; sem testemunha,
+qualquer filho ausente, erro do provedor, ciclo, limite estrutural ou prazo
+esgotado continua inconclusivo e bloqueante. Consultas de ausência, estado
+marcado e ações continuam exigindo seus contratos estritos.
+
+Somente o PID privilegiado recém-lançado recebe uma carência AT-SPI limitada de
+5 segundos. O padrão geral continua sem carência adicional, preservando o limite
+de 800 ms por chamada e evitando que aplicações antigas renovem 15 segundos em
+cada processo de sonda.

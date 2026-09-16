@@ -27,6 +27,14 @@ no warnings 'redefine';
     ok(!grep($_ eq '--pid' || $_ eq '--root-pid', @args),
         'explicit unscoped discovery clears both PID and supervisor provenance');
     atspi->set_widget_scope(42);
+    atspi->wait_widget('label', ['Welcome'], 90,
+        positive_witness => 1, startup_timeout_ms => 5000);
+    is_deeply(\@args, ['atspi','wait-widget',90,'--role','label','--labels','Welcome',
+        '--pid',42,'--positive-witness','--startup-timeout-ms',5000],
+        'positive witness and bounded startup grace are explicit opt-in arguments');
+    eval { atspi->wait_widget('button', ['Next'], 5,
+        checked => 1, positive_witness => 1) };
+    like($@, qr/cannot assert checked/, 'positive witness cannot weaken a state assertion');
 }
 {
     local *atspi::wait_widget = sub { return {status => 'passed', complete => 0}; };

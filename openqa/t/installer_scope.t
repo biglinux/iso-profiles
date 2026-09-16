@@ -30,7 +30,11 @@ for my $token (undef, '', 'bad token', 'other-prefix-1') {
     );
     local *atspi::assert_widget = sub {
         my ($class, $role, $labels, $timeout, %options) = @_;
-        push @queries, [$options{pid}, $options{root_pid}, $options{application_index}];
+        push @queries, [
+            $options{pid}, $options{root_pid}, $options{application_index},
+            $options{positive_witness} // 0,
+            $options{startup_timeout_ms},
+        ];
         return {status => 'passed', complete => 1, widget => shift @children};
     };
     calamares->assert_page('launcher-home', 5);
@@ -45,8 +49,8 @@ for my $token (undef, '', 'bad token', 'other-prefix-1') {
     calamares->begin_application_transition(30);
     calamares->assert_page('installer-welcome', 5);
     is_deeply(\@queries,
-        [[42, 42, undef], [303, undef, undef]],
-        'Qt page uses the exact adopted PID without claiming it is a supervisor root');
+        [[42, 42, undef, 0, undef], [303, undef, undef, 1, 5000]],
+        'Qt page uses an exact positive witness and bounded startup grace on the adopted PID');
     is_deeply(\@scopes, [[42, 42], [303, undef]],
         'widget scope narrows from the GTK launch group to the exact privileged Qt PID');
     local *atspi::activate_widget = sub {

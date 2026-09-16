@@ -441,6 +441,25 @@ class ReadinessWaitsTest(unittest.TestCase):
 
 
 class AtspiCallBudgetTest(unittest.TestCase):
+    def test_pid_scoped_new_application_can_request_bounded_startup_grace(self):
+        gi = ModuleType("gi")
+        gi.require_version = mock.Mock()
+        repository = ModuleType("gi.repository")
+        repository.Atspi = mock.Mock()
+        repository.GLib = smoke_fixtures.GLIB
+        gi.repository = repository
+        with mock.patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
+             mock.patch.object(probe, "_ATSPI_APP_TIMEOUT_MS", -1), \
+             mock.patch.object(probe, "_atspi_timeout_set", False):
+            probe.configure_atspi_timeout(5000)
+            probe._atspi_import()
+        repository.Atspi.set_timeout.assert_called_once_with(800, 5000)
+
+    def test_invalid_startup_grace_is_rejected(self):
+        for value in (-2, 15001, 1.5, "5000"):
+            with self.subTest(value=value), self.assertRaises(probe.ProbeError):
+                probe.configure_atspi_timeout(value)
+
     def test_new_probe_has_no_fresh_fifteen_second_startup_grace(self):
         gi = ModuleType("gi")
         gi.require_version = mock.Mock()

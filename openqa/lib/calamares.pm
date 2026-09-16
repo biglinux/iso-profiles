@@ -150,6 +150,14 @@ sub assert_page {
     # Do not rediscover globally or narrow to a transient GTK child: Calamares
     # replaces that child with a Qt process, still owned by the same launch.
     my %options = $class->_scope_options;
+    if (defined $application_pid) {
+        # The privileged Qt application is newly registered and can expose a
+        # large, slow tree.  A page anchor needs one exact positive witness,
+        # not a full census of unrelated descendants.  Absence and actions keep
+        # their strict complete-tree contracts.
+        $options{positive_witness} = 1;
+        $options{startup_timeout_ms} = 5000;
+    }
     my $found = $class->_remember_application(
         atspi->assert_widget($role, $labels, $timeout // 60, %options));
     die "the installer did not show the '$page' page: "

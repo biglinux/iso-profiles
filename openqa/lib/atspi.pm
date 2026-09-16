@@ -485,6 +485,19 @@ sub _widget_operation {
           unless $options{application_index} =~ /\A[0-9]+\z/;
         push @args, ('--application-index', $options{application_index});
     }
+    if ($options{positive_witness}) {
+        die 'positive AT-SPI witness is only valid for wait-widget'
+          unless $operation eq 'wait-widget';
+        die 'positive AT-SPI witness cannot assert checked state'
+          if exists $options{checked};
+        push @args, '--positive-witness';
+    }
+    if (defined $options{startup_timeout_ms}) {
+        die 'invalid AT-SPI startup timeout'
+          unless $options{startup_timeout_ms} =~ /\A(?:-1|[0-9]+)\z/
+          && $options{startup_timeout_ms} <= 15000;
+        push @args, ('--startup-timeout-ms', $options{startup_timeout_ms});
+    }
     push @args, ('--checked', $options{checked} ? 'true' : 'false') if exists $options{checked};
     return $class->result($operation, $timeout, @args);
 }

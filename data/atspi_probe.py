@@ -276,7 +276,28 @@ def sample_process_memory(root_pid: int, duration: float = 2.0) -> dict[str, Any
 
 _ATSPI_CALL_TIMEOUT_MS = 800
 _ATSPI_APP_TIMEOUT_MS = -1
+_ATSPI_MAX_STARTUP_TIMEOUT_MS = 15_000
 _atspi_timeout_set = False
+
+
+def configure_atspi_timeout(startup_timeout_ms: int = -1) -> None:
+    """Configure one probe process before its first AT-SPI call.
+
+    The default disables libatspi's per-application startup grace because the
+    outer waits already own a finite deadline.  A newly launched, PID-scoped
+    provider may opt into a smaller grace explicitly; unrelated applications
+    never inherit it.
+    """
+    if not isinstance(startup_timeout_ms, int) or not (
+        -1 <= startup_timeout_ms <= _ATSPI_MAX_STARTUP_TIMEOUT_MS
+    ):
+        raise ProbeError(
+            "AT-SPI startup timeout must be -1 or an integer from 0 to "
+            f"{_ATSPI_MAX_STARTUP_TIMEOUT_MS} milliseconds"
+        )
+    global _ATSPI_APP_TIMEOUT_MS, _atspi_timeout_set
+    _ATSPI_APP_TIMEOUT_MS = startup_timeout_ms
+    _atspi_timeout_set = False
 
 
 def _atspi_import() -> tuple[Any, Any]:
@@ -1119,6 +1140,100 @@ def _showing_widgets_in_window(
             raise ProbeError(f"incomplete accessibility tree: {error}") from error
 
 
+def _positive_widget_witness_in_window(
+    window: Any,
+    pid: int,
+    window_name: str,
+    deadline: float | None,
+    matches_selector: Callable[[tuple[Any, dict[str, Any]]], bool],
+    limit: int = _WIDGET_TREE_LIMIT,
+    application_index: int | None = None,
+) -> tuple[
+    tuple[Any, dict[str, Any]] | None,
+    list[tuple[Any, dict[str, Any]]],
+    str | None,
+]:
+    """Find one exact positive witness without requiring unrelated subtrees.
+
+    A positive existence claim is complete as soon as the requested semantic
+    control is observed.  Errors in another sibling branch are remembered and
+    make a no-match result incomplete; they never prove absence.  Node, edge,
+    cycle and time limits remain strict.
+    """
+    _atspi, GLib = _atspi_import()
+    work = deque([(window, frozenset())])
+    seen: set[int] = set()
+    references: list[Any] = []
+    observed: list[tuple[Any, dict[str, Any]]] = []
+    incomplete: list[str] = []
+    visited = examined = 0
+    while work:
+        if deadline is not None and time.monotonic() > deadline:
+            raise WalkTruncated(f"positive witness search incomplete after {visited} nodes")
+        node, ancestors = work.popleft()
+        if examined >= limit * 4:
+            raise WalkTruncated("positive witness reference budget exhausted")
+        examined += 1
+        if node is None:
+            incomplete.append("widget query encountered a missing child")
+            continue
+        identity = id(node)
+        if identity in ancestors:
+            incomplete.append("cyclic accessibility tree")
+            continue
+        if identity in seen:
+            continue
+        if visited >= limit:
+            raise WalkTruncated(f"positive witness search incomplete after {visited} nodes")
+        seen.add(identity)
+        references.append(node)
+        visited += 1
+        try:
+            record = _widget_record(node)
+        except ProbeError as error:
+            incomplete.append(str(error))
+            continue
+        record["pid"] = pid
+        record["window"] = window_name
+        if application_index is not None:
+            record["application_index"] = application_index
+        if record["defunct"] or not record["showing"]:
+            continue
+        pair = (node, record)
+        observed.append(pair)
+        if matches_selector(pair):
+            return pair, observed, None
+        try:
+            count = node.get_child_count()
+            if count < 0:
+                incomplete.append("invalid child count in widget query")
+                continue
+            if examined + count > limit * 4:
+                raise WalkTruncated("positive witness reference budget exhausted")
+            child_ancestors = ancestors | {identity}
+            for index in range(count):
+                if deadline is not None and time.monotonic() > deadline:
+                    raise WalkTruncated(
+                        f"positive witness search incomplete after {visited} nodes"
+                    )
+                try:
+                    child = node.get_child_at_index(index)
+                except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                    incomplete.append(
+                        f"could not read child {index} of {count}: {type(error).__name__}"
+                    )
+                    continue
+                if child is None:
+                    incomplete.append(f"child {index} of {count} was unavailable")
+                    continue
+                work.append((child, child_ancestors))
+        except WalkTruncated:
+            raise
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            incomplete.append(f"incomplete accessibility tree: {error}")
+    return None, observed, incomplete[0] if incomplete else None
+
+
 def _visible_widgets(
     expected_pid: int | None,
     deadline: float | None = None,
@@ -1228,6 +1343,7 @@ def _widget_matches(
     application_index: int | None = None,
     stop_after_matching_application: bool = False,
     supervised_root_pid: int | None = None,
+    positive_witness: bool = False,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], list[tuple[Any, dict[str, Any]]]]:
     roles_wanted = {part.casefold() for part in role.split("|") if part}
 
@@ -1241,6 +1357,41 @@ def _widget_matches(
             and _label_matches(widget["name"], labels)
 
     deadline = time.monotonic() + budget if budget is not None else None
+    if positive_witness:
+        allowed_pids = (
+            _owned_process_scope(expected_pid, supervised_root_pid)
+            if expected_pid is not None or supervised_root_pid is not None
+            else None
+        )
+        observed: list[tuple[Any, dict[str, Any]]] = []
+        incomplete: list[str] = []
+        for window, record in _window_records(
+            deadline,
+            allowed_pids,
+            preferred_application_index=application_index,
+        ):
+            if allowed_pids is not None and record["pid"] not in allowed_pids:
+                continue
+            witness, window_observed, reason = _positive_widget_witness_in_window(
+                window,
+                record["pid"],
+                record["name"],
+                deadline,
+                matches_selector,
+                application_index=record.get("application_index"),
+            )
+            observed.extend(window_observed)
+            if witness is not None:
+                return [witness], observed
+            if reason:
+                incomplete.append(reason)
+        if incomplete:
+            raise ProbeError(
+                "positive witness was not found in a complete accessibility tree: "
+                + incomplete[0]
+            )
+        return [], observed
+
     if application_index is None:
         observed = _visible_widgets(expected_pid, deadline, supervised_root_pid)
         return [pair for pair in observed if matches_selector(pair)], observed
@@ -1300,8 +1451,18 @@ def wait_for_widget(
     absent: bool = False, checked: bool | None = None,
     application_index: int | None = None,
     supervised_root_pid: int | None = None,
+    positive_witness: bool = False,
 ) -> dict[str, Any]:
-    """A unique match, or confirmed absence; errors are never disappearance."""
+    """A unique match, a positive witness, or confirmed absence.
+
+    Positive-witness mode is opt-in and only proves existence.  It cannot be
+    combined with absence or checked-state assertions, both of which require a
+    complete tree.
+    """
+    if positive_witness and (absent or checked is not None):
+        raise ProbeError(
+            "positive witness cannot be used for absence or checked-state assertions"
+        )
     deadline = time.monotonic() + timeout
     while True:
         matches, observed = _read_until_ready(
@@ -1311,6 +1472,7 @@ def wait_for_widget(
                 application_index=application_index,
                 stop_after_matching_application=(application_index is not None and not absent),
                 supervised_root_pid=supervised_root_pid,
+                positive_witness=positive_witness,
             ), deadline,
         )
         if len(matches) > 1:
@@ -1321,7 +1483,10 @@ def wait_for_widget(
         if not absent and len(matches) == 1:
             record = matches[0][1]
             if checked is None or record.get("checked") is checked:
-                return {"status": "passed", "widget": record, "matches": 1, "complete": True}
+                result = {"status": "passed", "widget": record, "matches": 1, "complete": True}
+                if positive_witness:
+                    result.update(proof="positive-witness", tree_complete=False)
+                return result
         if time.monotonic() >= deadline:
             result = _failure(role, labels, observed, "required control state not reached")
             result.update(reason="state-not-reached" if matches else "not-found", complete=True)
@@ -2193,6 +2358,8 @@ def main() -> int:
     parser.add_argument("--target-identity")
     parser.add_argument("--application-index", type=int)
     parser.add_argument("--checked", choices=("true", "false"))
+    parser.add_argument("--positive-witness", action="store_true")
+    parser.add_argument("--startup-timeout-ms", type=int, default=-1)
     parser.add_argument("--no-memory-sample", action="store_true")
     parser.add_argument("--settle", type=float, default=2.0)
     parser.add_argument("--content-timeout", type=float, default=10.0)
@@ -2212,6 +2379,16 @@ def main() -> int:
             raise ProbeError("root pid must be greater than one")
         if args.application_index is not None and args.application_index < 0:
             raise ProbeError("application index must be nonnegative")
+        if not -1 <= args.startup_timeout_ms <= _ATSPI_MAX_STARTUP_TIMEOUT_MS:
+            raise ProbeError(
+                "startup timeout must be -1 or from 0 to "
+                f"{_ATSPI_MAX_STARTUP_TIMEOUT_MS} milliseconds"
+            )
+        if args.positive_witness and args.operation != "wait-widget":
+            raise ProbeError("positive witness is only valid for wait-widget")
+        if args.positive_witness and args.checked is not None:
+            raise ProbeError("positive witness cannot assert checked state")
+        configure_atspi_timeout(args.startup_timeout_ms)
         for field, value, maximum in (("settle", args.settle, 10), ("content timeout", args.content_timeout, 120), ("close timeout", args.close_timeout, 120)):
             if not math.isfinite(value) or value < 0 or value > maximum:
                 raise ProbeError(f"{field} must be finite, nonnegative and at most {maximum} seconds")
@@ -2305,6 +2482,7 @@ def main() -> int:
                 checked=None if args.checked is None else args.checked == "true",
                 application_index=args.application_index,
                 supervised_root_pid=args.root_pid,
+                positive_witness=args.positive_witness,
             )
         elif args.operation == "activate-widget":
             if not args.role:

@@ -709,6 +709,108 @@ class WidgetSearchTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("(insensitive)", result["error"])
 
+    @staticmethod
+    def _semantic_record(node):
+        return {
+            "role": node.role,
+            "name": node.name,
+            "showing": True,
+            "sensitive": True,
+            "checked": False,
+            "selected": False,
+            "focused": False,
+            "focusable": True,
+            "defunct": False,
+            "accessible_id": "",
+            "identity": f"/{node.name or 'node'}",
+        }
+
+    def test_positive_witness_stops_before_unrelated_slow_subtree(self) -> None:
+        target = FakeAccessible("Welcome to the Calamares installer", 42, role="label")
+        slow = FakeAccessible("slow", 42)
+        root = FakeAccessible("Calamares", 42, [target, slow])
+        record = {
+            "pid": 42,
+            "name": "Calamares",
+            "application_index": 7,
+        }
+
+        def semantics(node):
+            if node is slow:
+                raise AssertionError("a positive witness must stop before unrelated siblings")
+            return self._semantic_record(node)
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_widget_record", side_effect=semantics):
+            result = atspi_probe.wait_for_widget(
+                1,
+                "label",
+                ["Welcome to the Calamares installer"],
+                42,
+                application_index=7,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["proof"], "positive-witness")
+        self.assertFalse(result["tree_complete"])
+
+    def test_positive_witness_survives_one_broken_sibling(self) -> None:
+        broken = FakeAccessible("broken", 42)
+        target = FakeAccessible("Welcome to the Calamares installer", 42, role="label")
+        root = FakeAccessible("Calamares", 42, [broken, target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        def semantics(node):
+            if node is broken:
+                raise atspi_probe.ProbeError("provider disappeared")
+            return self._semantic_record(node)
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_widget_record", side_effect=semantics):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the Calamares installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+
+    def test_positive_witness_without_target_keeps_broken_tree_inconclusive(self) -> None:
+        broken = FakeAccessible("broken", 42)
+        root = FakeAccessible("Calamares", 42, [broken])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        def semantics(node):
+            if node is broken:
+                raise atspi_probe.ProbeError("provider disappeared")
+            return self._semantic_record(node)
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_widget_record", side_effect=semantics), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "positive witness was not found"):
+            atspi_probe.wait_for_widget(
+                0, "label", ["Welcome to the Calamares installer"], 42,
+                positive_witness=True,
+            )
+
+    def test_positive_witness_cannot_prove_absence_or_checked_state(self) -> None:
+        with self.assertRaisesRegex(atspi_probe.ProbeError, "cannot be used"):
+            atspi_probe.wait_for_widget(
+                0, "button", ["Install"], 42,
+                absent=True, positive_witness=True,
+            )
+        with self.assertRaisesRegex(atspi_probe.ProbeError, "cannot be used"):
+            atspi_probe.wait_for_widget(
+                0, "radio button", ["Erase disk"], 42,
+                checked=True, positive_witness=True,
+            )
+
     def test_process_transition_uses_nearby_application_hint_and_stops_on_match(self) -> None:
         old_window = object()
         target_window = object()
