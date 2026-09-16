@@ -11,6 +11,19 @@ for my $method (sub { calamares->assert_page('launcher-home', 5) },
     eval { $method->() };
     like($@, qr/scope has not been established/, 'installer refuses an unscoped operation');
 }
+{
+    my ($role, $labels) = calamares->page_anchor('installer-welcome');
+    is($role, 'label|heading|static',
+        'installer welcome remains a semantic text anchor');
+    ok((grep { $_ eq 'Welcome to the BigLinux installer' } @{$labels}),
+        'BigLinux branded welcome heading is accepted');
+    ok((grep { $_ eq 'Welcome to the BigCommunity installer' } @{$labels}),
+        'BigCommunity branded welcome heading is accepted');
+    ok((grep { $_ eq 'Welcome to the XivaStudio installer' } @{$labels}),
+        'XivaStudio branded welcome heading is accepted');
+    ok(!(grep { $_ eq 'Welcome to the Calamares installer' } @{$labels}),
+        'obsolete unbranded heading is not the sole assumed page identity');
+}
 for my $pid (undef, 0, 1, '42; false') {
     eval { calamares->set_launch_scope($pid, 'openqa-calamares-valid') };
     like($@, qr/valid launch-tree PID/, 'invalid launch scope is rejected');

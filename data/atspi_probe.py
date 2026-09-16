@@ -322,6 +322,29 @@ def _atspi_import() -> tuple[Any, Any]:
     return Atspi, GLib
 
 
+def _disable_atspi_startup_grace() -> None:
+    """Return a PID-scoped probe to the normal bounded method timeout.
+
+    ``Atspi.set_timeout()`` applies the startup grace process-wide.  It is
+    useful while a newly registered application is publishing its first
+    top-level window, but retaining it while walking every descendant lets one
+    slow provider multiply that grace by every semantic call.  Once an exact
+    PID-owned window has been obtained, the outer wait already owns readiness;
+    subsequent calls use the normal 800 ms bound and may be retried by that
+    outer wait without turning a 90-second page assertion into ten node reads.
+    """
+    global _ATSPI_APP_TIMEOUT_MS, _atspi_timeout_set
+    if _ATSPI_APP_TIMEOUT_MS == -1:
+        return
+    Atspi, _glib = _atspi_import()
+    try:
+        Atspi.set_timeout(_ATSPI_CALL_TIMEOUT_MS, -1)
+    except (AttributeError, TypeError):
+        return
+    _ATSPI_APP_TIMEOUT_MS = -1
+    _atspi_timeout_set = True
+
+
 def _window_records(
     deadline: float | None = None,
     allowed_pids: set[int] | None = None,
@@ -329,6 +352,7 @@ def _window_records(
     stop_after_preferred_match: bool = False,
     preferred_window_identity: str | None = None,
     include_window_state: bool = False,
+    stream_windows: bool = False,
 ) -> Iterable[tuple[Any, dict[str, Any]]]:
     Atspi, GLib = _atspi_import()
     try:
@@ -393,29 +417,30 @@ def _window_records(
             raise ProbeError(
                 f"application enumeration was incomplete (index {app_index}, {type(error).__name__})"
             ) from error
-        window_candidates: list[tuple[int, Any, str]] = []
-        for window_index in range(window_count):
+        def read_window(window_index: int) -> tuple[Any, str] | None:
             if deadline is not None and time.monotonic() > deadline:
                 raise WalkTruncated("window enumeration exceeded its deadline")
             try:
                 window = app.get_child_at_index(window_index)
                 if window is None:
-                    continue
+                    return None
                 identity = getattr(window, "path", "") or str(window_index)
+                return window, identity
             except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
                 if allowed_pids is None and launch_process_exited(app_pid):
-                    break
+                    return None
                 raise ProbeError(
                     f"window enumeration was incomplete (PID {app_pid}, index {window_index}, "
                     f"{type(error).__name__})"
                 ) from error
-            candidate = (window_index, window, identity)
-            if preferred_window_identity is not None and identity == preferred_window_identity:
-                window_candidates.insert(0, candidate)
-            else:
-                window_candidates.append(candidate)
 
-        for window_ordinal, (window_index, window, identity) in enumerate(window_candidates):
+        def read_window_record(
+            window_index: int,
+            window_ordinal: int,
+            candidate_count: int,
+            window: Any,
+            identity: str,
+        ) -> dict[str, Any] | None:
             if deadline is not None and time.monotonic() > deadline:
                 raise WalkTruncated("window semantics exceeded its deadline")
             try:
@@ -430,31 +455,64 @@ def _window_records(
                     defunct = states.contains(Atspi.StateType.DEFUNCT)
             except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
                 if allowed_pids is None and launch_process_exited(app_pid):
-                    break
+                    return None
                 raise ProbeError(
                     f"window enumeration was incomplete (PID {app_pid}, index {window_index}, "
                     f"{type(error).__name__})"
                 ) from error
-            yield (
-                window,
-                {
-                    "key": f"{app_pid}\0{identity}",
-                    "identity": identity,
-                    "application": app_name,
-                    "application_index": app_index,
-                    "name": name,
-                    "role": role,
-                    "children": children,
-                    "application_window_count": window_count,
-                    "application_candidate_window_count": len(window_candidates),
-                    "application_window_ordinal": window_ordinal,
-                    "pid": app_pid,
-                    "showing": showing,
-                    "defunct": defunct,
-                },
-            )
-            if preferred_window_identity is not None and identity == preferred_window_identity:
-                return
+            return {
+                "key": f"{app_pid}\0{identity}",
+                "identity": identity,
+                "application": app_name,
+                "application_index": app_index,
+                "name": name,
+                "role": role,
+                "children": children,
+                "application_window_count": window_count,
+                "application_candidate_window_count": candidate_count,
+                "application_window_ordinal": window_ordinal,
+                "pid": app_pid,
+                "showing": showing,
+                "defunct": defunct,
+            }
+
+        # A positive existence query can inspect the first PID-owned window as
+        # soon as it is available.  Pre-reading every top-level child before
+        # yielding one lets stale auxiliary windows consume the whole caller
+        # deadline even when the first window already contains the witness.
+        if stream_windows and preferred_window_identity is None:
+            for window_index in range(window_count):
+                candidate = read_window(window_index)
+                if candidate is None:
+                    continue
+                window, identity = candidate
+                record = read_window_record(
+                    window_index, window_index, window_count, window, identity
+                )
+                if record is not None:
+                    yield window, record
+        else:
+            window_candidates: list[tuple[int, Any, str]] = []
+            for window_index in range(window_count):
+                candidate = read_window(window_index)
+                if candidate is None:
+                    continue
+                window, identity = candidate
+                item = (window_index, window, identity)
+                if preferred_window_identity is not None and identity == preferred_window_identity:
+                    window_candidates.insert(0, item)
+                else:
+                    window_candidates.append(item)
+
+            for window_ordinal, (window_index, window, identity) in enumerate(window_candidates):
+                record = read_window_record(
+                    window_index, window_ordinal, len(window_candidates), window, identity
+                )
+                if record is None:
+                    continue
+                yield window, record
+                if preferred_window_identity is not None and identity == preferred_window_identity:
+                    return
         # A PID-verified registry hint identifies the application object that
         # produced the prior window/widget. Once fully inspected, unrelated
         # providers cannot improve the same observation. A stale PID mismatch
@@ -1062,23 +1120,38 @@ def _action_candidates(
 _WIDGET_TREE_LIMIT = 1200
 
 
-def _widget_record(accessible: Any) -> dict[str, Any]:
-    """Read semantics, never require a screen rectangle to observe a control."""
+def _widget_state_record(
+    accessible: Any,
+    role: str,
+    name: str,
+    *,
+    include_accessible_id: bool = True,
+) -> dict[str, Any]:
+    """Complete a record after cheap role/name filtering has succeeded."""
     Atspi, GLib = _atspi_import()
     try:
         states = accessible.get_state_set()
-        role = accessible.get_role_name() or ""
-        name = accessible.get_name() or ""
         record = {"role": role, "name": name}
         for key in ("showing", "sensitive", "checked", "selected", "focused", "focusable", "defunct"):
             record[key] = bool(states.contains(getattr(Atspi.StateType, key.upper())))
         # Accessible IDs identify controls, but never replace a human label.
-        getter = getattr(accessible, "get_accessible_id", None)
+        getter = getattr(accessible, "get_accessible_id", None) if include_accessible_id else None
         record["accessible_id"] = getter() or "" if getter else ""
         record["identity"] = str(getattr(accessible, "path", ""))
         return record
     except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
         raise ProbeError(f"could not read control semantics: {error}") from error
+
+
+def _widget_record(accessible: Any) -> dict[str, Any]:
+    """Read semantics, never require a screen rectangle to observe a control."""
+    _atspi, GLib = _atspi_import()
+    try:
+        role = accessible.get_role_name() or ""
+        name = accessible.get_name() or ""
+    except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+        raise ProbeError(f"could not read control identity: {error}") from error
+    return _widget_state_record(accessible, role, name)
 
 
 def _showing_widgets_in_window(
@@ -1146,6 +1219,9 @@ def _positive_widget_witness_in_window(
     window_name: str,
     deadline: float | None,
     matches_selector: Callable[[tuple[Any, dict[str, Any]]], bool],
+    roles_wanted: set[str],
+    labels: list[str],
+    include_accessible_id: bool = False,
     limit: int = _WIDGET_TREE_LIMIT,
     application_index: int | None = None,
 ) -> tuple[
@@ -1188,21 +1264,47 @@ def _positive_widget_witness_in_window(
         seen.add(identity)
         references.append(node)
         visited += 1
+        # Read the cheapest discriminators first.  A page anchor normally
+        # targets one of a handful of roles, so querying state, accessible ID
+        # and every name on hundreds of layout containers needlessly multiplies
+        # the provider's method timeout.  The exact candidate still receives a
+        # complete semantic/state check before it can become evidence.
         try:
-            record = _widget_record(node)
-        except ProbeError as error:
-            incomplete.append(str(error))
+            role = node.get_role_name() or ""
+        except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+            incomplete.append(f"could not read control role: {type(error).__name__}")
             continue
-        record["pid"] = pid
-        record["window"] = window_name
-        if application_index is not None:
-            record["application_index"] = application_index
-        if record["defunct"] or not record["showing"]:
-            continue
-        pair = (node, record)
-        observed.append(pair)
-        if matches_selector(pair):
-            return pair, observed, None
+        if roles_wanted and role.casefold() not in roles_wanted:
+            record = None
+        else:
+            try:
+                name = node.get_name() or ""
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                incomplete.append(f"could not read control name: {type(error).__name__}")
+                continue
+            if not _label_matches(name, labels):
+                record = None
+            else:
+                try:
+                    record = _widget_state_record(
+                        node,
+                        role,
+                        name,
+                        include_accessible_id=include_accessible_id,
+                    )
+                except ProbeError as error:
+                    incomplete.append(str(error))
+                    continue
+        if record is not None:
+            record["pid"] = pid
+            record["window"] = window_name
+            if application_index is not None:
+                record["application_index"] = application_index
+            if not record["defunct"] and record["showing"]:
+                pair = (node, record)
+                observed.append(pair)
+                if matches_selector(pair):
+                    return pair, observed, None
         try:
             count = node.get_child_count()
             if count < 0:
@@ -1369,15 +1471,23 @@ def _widget_matches(
             deadline,
             allowed_pids,
             preferred_application_index=application_index,
+            stream_windows=True,
         ):
             if allowed_pids is not None and record["pid"] not in allowed_pids:
                 continue
+            # The exact PID-owned top-level is now observable.  Keep the outer
+            # page wait, but stop granting descendant calls an application
+            # startup grace on top of their normal bounded method timeout.
+            _disable_atspi_startup_grace()
             witness, window_observed, reason = _positive_widget_witness_in_window(
                 window,
                 record["pid"],
                 record["name"],
                 deadline,
                 matches_selector,
+                roles_wanted,
+                labels,
+                include_accessible_id=accessible_id is not None,
                 application_index=record.get("application_index"),
             )
             observed.extend(window_observed)

@@ -126,8 +126,25 @@ our %PAGE_ANCHORS = (
     'launcher-home' => [$BUTTON_ROLES, ['Install', 'Instalar']],
     'launcher-tips' => ['label|heading|static',
         ['Manual Partitioning Recommendations', 'Recomendações de Particionamento Manual']],
-    'installer-welcome' => ['label|heading|static',
-        ['Welcome to the Calamares installer', 'Bem-vindo ao instalador Calamares']],
+    # BigLinux branding sets welcomeStyleCalamares=false and productName=BigLinux,
+    # so Calamares renders the traditional branded heading, not the generic
+    # "Welcome to the Calamares installer" text. Keep the generic forms for
+    # profiles that deliberately select the alternative style, and include the
+    # other product names shipped by this repository.
+    'installer-welcome' => ['label|heading|static', [
+        'Welcome to the BigLinux installer',
+        'Welcome to the BigCommunity installer',
+        'Welcome to the XivaStudio installer',
+        'Welcome to the Calamares installer for BigLinux',
+        'Welcome to the Calamares installer for BigCommunity',
+        'Welcome to the Calamares installer for XivaStudio',
+        'Bem-vindo ao instalador BigLinux',
+        'Bem-vindo ao instalador do BigLinux',
+        'Bem-vindo ao instalador BigCommunity',
+        'Bem-vindo ao instalador do BigCommunity',
+        'Bem-vindo ao instalador XivaStudio',
+        'Bem-vindo ao instalador do XivaStudio',
+    ]],
     'installer-location' => ['label|combo box', ['Region', 'Região']],
     'installer-keyboard' => ['label|combo box', ['Keyboard Model', 'Modelo de teclado']],
     'partitions-page' => ['radio button', ['Erase disk', 'Apagar disco']],

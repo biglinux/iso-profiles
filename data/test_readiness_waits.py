@@ -455,6 +455,24 @@ class AtspiCallBudgetTest(unittest.TestCase):
             probe._atspi_import()
         repository.Atspi.set_timeout.assert_called_once_with(800, 5000)
 
+    def test_exact_window_disables_startup_grace_for_descendant_calls(self):
+        gi = ModuleType("gi")
+        gi.require_version = mock.Mock()
+        repository = ModuleType("gi.repository")
+        repository.Atspi = mock.Mock()
+        repository.GLib = smoke_fixtures.GLIB
+        gi.repository = repository
+        with mock.patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
+             mock.patch.object(probe, "_ATSPI_APP_TIMEOUT_MS", 5000), \
+             mock.patch.object(probe, "_atspi_timeout_set", False):
+            probe._atspi_import()
+            probe._disable_atspi_startup_grace()
+            self.assertEqual(probe._ATSPI_APP_TIMEOUT_MS, -1)
+        self.assertEqual(
+            repository.Atspi.set_timeout.call_args_list,
+            [mock.call(800, 5000), mock.call(800, -1)],
+        )
+
     def test_invalid_startup_grace_is_rejected(self):
         for value in (-2, 15001, 1.5, "5000"):
             with self.subTest(value=value), self.assertRaises(probe.ProbeError):

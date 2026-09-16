@@ -615,3 +615,51 @@ Somente o PID privilegiado recém-lançado recebe uma carência AT-SPI limitada 
 5 segundos. O padrão geral continua sem carência adicional, preservando o limite
 de 800 ms por chamada e evitando que aplicações antigas renovem 15 segundos em
 cada processo de sonda.
+
+## Runtime v15: identidade de marca e travessia semântica dirigida
+
+A matriz real `35063441094`, fonte `9c66f85c`, confirmou que o runtime v14
+resolveu a sessão live, o frontend GTK, o handoff privilegiado e a identidade
+do processo Qt. BIOS e UEFI chegaram ao PID exato de `/usr/bin/calamares`, mas
+a primeira página ainda falhou em uma busca positiva que terminou como
+`positive witness search incomplete after 10 nodes` no UEFI e consumiu o prazo
+de enumeração no BIOS.
+
+A causa principal não era um texto lento: o seletor procurava somente
+`Welcome to the Calamares installer`. Os perfis entregues pelo BigLinux definem
+`welcomeStyleCalamares: false` e seus respectivos `productName`. O código do
+módulo welcome do Calamares usa, nessa configuração, a forma tradicional
+`Welcome to the %1 installer`; logo, para o perfil principal, a identidade
+esperada é `Welcome to the BigLinux installer`. Os anchors agora cobrem as
+formas de BigLinux, BigCommunity e XivaStudio, incluindo a forma alternativa
+`Welcome to the Calamares installer for %1` quando um perfil selecionar esse
+estilo. A antiga frase genérica sem produto não é aceita como identidade única.
+
+A busca positiva também foi tornada estritamente dirigida:
+
+- cada top-level pertencente ao PID pode ser entregue à busca imediatamente,
+  sem pré-ler todas as janelas auxiliares do mesmo provedor;
+- o papel acessível é lido antes do nome;
+- nomes só são consultados para papéis solicitados pelo anchor;
+- estado, identificador acessível e demais propriedades só são consultados
+  quando papel e rótulo já coincidem;
+- o candidato ainda precisa estar `SHOWING`, não `DEFUNCT` e, quando exigido,
+  `SENSITIVE` antes de ser aceito;
+- depois que um top-level do PID exato foi observado, a carência de startup
+  process-wide é removida e as chamadas descendentes voltam ao limite normal
+  de 800 ms; a espera externa continua dona do prazo total.
+
+Isso não relaxa ausência, estado marcado ou ação: esses contratos continuam
+exigindo árvore completa. Um controle oculto, insensível, ambíguo ou fora do PID
+continua bloqueante. Nenhuma busca por título visual, coordenada, screenshot ou
+processo vivo foi acrescentada.
+
+Foram acrescentadas regressões para entrega antecipada da primeira janela,
+poda de nomes e estados em papéis irrelevantes, poda de estado para rótulo
+incorreto, rejeição de testemunha oculta, remoção da carência após a janela
+exata e anchors de marca dos três perfis. Na árvore local passaram 322 testes
+Python e 229 asserções Perl, além de compilação Python, política não visual,
+sintaxe Bash e `git diff --check`. ShellCheck, actionlint e a integração
+GTK/AT-SPI real continuam obrigatórios no CI antes da publicação. A matriz da
+ISO deve ser repetida; esta correção não converte resultados anteriores em
+aprovação.

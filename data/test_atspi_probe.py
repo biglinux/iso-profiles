@@ -244,7 +244,7 @@ class FakeAccessible:
         self.pid = pid
         self.children = list(children or [])
         self.role = role
-        self.states = {"showing"}
+        self.states = {"showing", "sensitive", "focusable"}
 
     def get_name(self):
         return self.name
@@ -268,7 +268,14 @@ class FakeAccessible:
 class FakeAtspi:
     class StateType:
         SHOWING = "showing"
+        SENSITIVE = "sensitive"
+        CHECKED = "checked"
+        SELECTED = "selected"
+        FOCUSED = "focused"
+        FOCUSABLE = "focusable"
         DEFUNCT = "defunct"
+
+    set_timeout = mock.Mock()
 
     desktop = None
 
@@ -331,6 +338,27 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual([record["pid"] for _, record in records], [42])
         unrelated.get_name.assert_not_called()
         unrelated.get_child_count.assert_not_called()
+
+    def test_streaming_enumeration_yields_first_window_before_reading_later_one(self):
+        first = FakeAccessible("Welcome", 42, role="frame")
+        slow = FakeAccessible("Slow", 42, role="frame")
+        slow.get_name = mock.Mock(
+            side_effect=AssertionError("later top-level window must stay unread")
+        )
+        application = FakeAccessible("calamares", 42, [first, slow], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42}, stream_windows=True
+            )
+            window, record = next(records)
+
+        self.assertIs(window, first)
+        self.assertEqual(record["name"], "Welcome")
+        slow.get_name.assert_not_called()
 
     def test_scoped_enumeration_starts_with_the_recent_target(self):
         order = []
@@ -725,9 +753,93 @@ class WidgetSearchTest(unittest.TestCase):
             "identity": f"/{node.name or 'node'}",
         }
 
+    def test_positive_witness_skips_name_and_state_for_unwanted_roles(self) -> None:
+        layout = FakeAccessible("layout", 42, role="panel")
+        layout.get_name = mock.Mock(
+            side_effect=AssertionError("unwanted roles must not read names")
+        )
+        layout.get_state_set = mock.Mock(
+            side_effect=AssertionError("unwanted roles must not read state")
+        )
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        root = FakeAccessible("Calamares", 42, [layout, target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        layout.get_name.assert_not_called()
+        layout.get_state_set.assert_not_called()
+
+    def test_positive_witness_skips_state_for_wrong_label(self) -> None:
+        wrong = FakeAccessible("Other heading", 42, role="label")
+        wrong.get_state_set = mock.Mock(
+            side_effect=AssertionError("wrong labels must not read state")
+        )
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        root = FakeAccessible("Calamares", 42, [wrong, target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        wrong.get_state_set.assert_not_called()
+
+    def test_positive_witness_still_requires_showing_and_sensitive_state(self) -> None:
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        target.states = {"sensitive"}
+        root = FakeAccessible("Calamares", 42, [target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                0, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "not-found")
+
+    def test_positive_witness_disables_startup_grace_after_scoped_window(self) -> None:
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+        reset = mock.Mock()
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(target, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace", reset):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        reset.assert_called_once_with()
+
     def test_positive_witness_stops_before_unrelated_slow_subtree(self) -> None:
         target = FakeAccessible("Welcome to the Calamares installer", 42, role="label")
         slow = FakeAccessible("slow", 42)
+        slow.get_role_name = mock.Mock(
+            side_effect=AssertionError("a positive witness must stop before unrelated siblings")
+        )
         root = FakeAccessible("Calamares", 42, [target, slow])
         record = {
             "pid": 42,
@@ -735,15 +847,10 @@ class WidgetSearchTest(unittest.TestCase):
             "application_index": 7,
         }
 
-        def semantics(node):
-            if node is slow:
-                raise AssertionError("a positive witness must stop before unrelated siblings")
-            return self._semantic_record(node)
-
         with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
              mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
              mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
-             mock.patch.object(atspi_probe, "_widget_record", side_effect=semantics):
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
             result = atspi_probe.wait_for_widget(
                 1,
                 "label",
@@ -756,22 +863,19 @@ class WidgetSearchTest(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["proof"], "positive-witness")
         self.assertFalse(result["tree_complete"])
+        slow.get_role_name.assert_not_called()
 
     def test_positive_witness_survives_one_broken_sibling(self) -> None:
         broken = FakeAccessible("broken", 42)
+        broken.get_role_name = mock.Mock(side_effect=FakeError("provider disappeared"))
         target = FakeAccessible("Welcome to the Calamares installer", 42, role="label")
         root = FakeAccessible("Calamares", 42, [broken, target])
         record = {"pid": 42, "name": "Calamares", "application_index": 7}
 
-        def semantics(node):
-            if node is broken:
-                raise atspi_probe.ProbeError("provider disappeared")
-            return self._semantic_record(node)
-
         with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
              mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
              mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
-             mock.patch.object(atspi_probe, "_widget_record", side_effect=semantics):
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
             result = atspi_probe.wait_for_widget(
                 1, "label", ["Welcome to the Calamares installer"], 42,
                 positive_witness=True,
@@ -781,18 +885,14 @@ class WidgetSearchTest(unittest.TestCase):
 
     def test_positive_witness_without_target_keeps_broken_tree_inconclusive(self) -> None:
         broken = FakeAccessible("broken", 42)
+        broken.get_role_name = mock.Mock(side_effect=FakeError("provider disappeared"))
         root = FakeAccessible("Calamares", 42, [broken])
         record = {"pid": 42, "name": "Calamares", "application_index": 7}
-
-        def semantics(node):
-            if node is broken:
-                raise atspi_probe.ProbeError("provider disappeared")
-            return self._semantic_record(node)
 
         with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
              mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
              mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
-             mock.patch.object(atspi_probe, "_widget_record", side_effect=semantics), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"), \
              self.assertRaisesRegex(atspi_probe.ProbeError, "positive witness was not found"):
             atspi_probe.wait_for_widget(
                 0, "label", ["Welcome to the Calamares installer"], 42,
