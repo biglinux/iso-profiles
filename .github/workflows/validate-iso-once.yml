@@ -1,10 +1,10 @@
 name: Verify openQA with the published ISO
 
-# Revalidate the reviewed September ISO after runtime-v9 follows an exact
-# PID-scoped window across AT-SPI registry shifts and preserves the launch tree
-# through the GTK-to-Qt Calamares transition. Steam remains an explicit
-# bootstrap exclusion. This trigger follows validated implementation commit
-# a6665889762ccb1de6eba0eb30274c25201d7d83.
+# Revalidate the reviewed September ISO after runtime-v10 treats AT-SPI registry
+# positions as transient hints, resumes newest-first PID discovery, and clears
+# only the GTK provider hint at the supervised GTK-to-Qt Calamares boundary.
+# Steam remains an explicit bootstrap exclusion. This trigger follows validated
+# implementation commit 97defb4fd67109d4b9573528d45c1e5cc207885b.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
