@@ -1587,6 +1587,13 @@ def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, 
     missing_child = False
     while work:
         if time.monotonic() > deadline:
+            # A caller may finish one complete empty scan and enter the next
+            # polling iteration exactly as the shared deadline expires.  No
+            # node was left unread in that new iteration, so this is confirmed
+            # absence, not an incomplete tree.  Expiry after traversal starts
+            # remains inconclusive and blocking.
+            if visited == 0 and examined == 0:
+                return None
             raise WalkTruncated("no accessible content found within the smoke deadline")
         iterator, ancestors = work.popleft()
         node = next(iterator, exhausted)

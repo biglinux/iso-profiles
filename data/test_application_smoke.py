@@ -47,6 +47,10 @@ class SmokeContentTest(unittest.TestCase):
     def test_named_window_alone_is_not_content(self):
         self.assertIsNone(self.content(Node("Editor", "frame")))
 
+    def test_deadline_expired_before_traversal_is_complete_absence(self):
+        with mock.patch.object(probe.time, "monotonic", return_value=2):
+            self.assertIsNone(probe._smoke_content(Node("Editor", "frame"), 1))
+
     def test_empty_editor_text_interface_is_sufficient(self):
         evidence = self.content(Node(children=[Node(role="text", text=True)]))
         self.assertTrue(evidence["text_interface"])
