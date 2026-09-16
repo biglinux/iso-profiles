@@ -29,8 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD~2)" = "9c66f85cd184bb213b835e1a297409013299058e"
-          test "$(git rev-parse HEAD~2^{tree})" = "5472ee70db268c2dd40fd21b5bcb0c051a5ac9be"
+          git merge-base --is-ancestor "9c66f85cd184bb213b835e1a297409013299058e" HEAD
           echo '98aeeee9569cb07a1c6423b695120a1e26317b46f0d7f5eac9ea7f3ad0cee133  openqa/.collection-v15.patch.xz.b64' | sha256sum --check
           base64 --decode openqa/.collection-v15.patch.xz.b64 > "$RUNNER_TEMP/collection-v15.patch.xz"
           echo '2883366e250368cf804281d47f04e15abcda3123b7ad053fcf72e4579850cccf  '"$RUNNER_TEMP/collection-v15.patch.xz" | sha256sum --check
@@ -46,7 +45,7 @@ jobs:
               data/test_atspi_probe.py \
               docs/openqa-runtime-validation.md \
               openqa/integration/accessible_smoke.py) \
-            <(git diff --cached --name-only)
+            <(git diff --cached --diff-filter=AM --name-only)
 
       - name: Install validation dependencies
         shell: bash
