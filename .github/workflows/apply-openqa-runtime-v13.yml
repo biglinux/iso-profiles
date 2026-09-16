@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD~5)" = "ffc1821d4882f4cf3da98cf6b26ebdaad27a6373"
+          test "$(git rev-parse HEAD~6)" = "ffc1821d4882f4cf3da98cf6b26ebdaad27a6373"
 
           echo '0bfe3d64feffd20423a0605bc40e88ab02d8b4f63241e08359ac1b02a3906c44  openqa/.runtime-v13.patch.b64.part00' | sha256sum --check
           echo 'b317f27372d5efd067379910e4142884551ee460936715683465c194de7d2ef5  openqa/.runtime-v13.patch.b64.part01' | sha256sum --check
@@ -57,7 +57,7 @@ jobs:
           git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v13.patch"
           test "$(git write-tree)" = "8d6ca3402f6e1c2a85d357b5cbb55ea86e377f97"
 
-          mapfile -t changed < <(git diff --cached --name-only)
+          mapfile -t changed < <(git diff --cached --name-only HEAD~6)
           diff -u \
             <(printf '%s\n' \
               data/atspi_probe.py \
