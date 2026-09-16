@@ -10,6 +10,7 @@ on:
       - openqa/.runtime-v13.patch.b64.part01
       - openqa/.runtime-v13.patch.b64.part02
       - openqa/.runtime-v13.patch.b64.part03
+      - openqa/.runtime-v13-exitcode-followup.patch
 
 permissions:
   contents: write
@@ -32,12 +33,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD~6)" = "ffc1821d4882f4cf3da98cf6b26ebdaad27a6373"
+          test "$(git rev-parse HEAD~8)" = "ffc1821d4882f4cf3da98cf6b26ebdaad27a6373"
 
           echo '0bfe3d64feffd20423a0605bc40e88ab02d8b4f63241e08359ac1b02a3906c44  openqa/.runtime-v13.patch.b64.part00' | sha256sum --check
           echo 'b317f27372d5efd067379910e4142884551ee460936715683465c194de7d2ef5  openqa/.runtime-v13.patch.b64.part01' | sha256sum --check
           echo '7737cf4043edfa986fddad4679da799e17f932c39073cdb3fbdda41ec32de9c4  openqa/.runtime-v13.patch.b64.part02' | sha256sum --check
           echo 'cedd69c91a9f50235a5058be3257365004094331c56ea67f78ebe47097ba99cd  openqa/.runtime-v13.patch.b64.part03' | sha256sum --check
+          echo 'f49e53c42c2b5cda3364e9946867cf66f7b349b95c33fffdc59f1b9b6d2f423e  openqa/.runtime-v13-exitcode-followup.patch' | sha256sum --check
 
           cat openqa/.runtime-v13.patch.b64.part{00,01,02,03} > "$RUNNER_TEMP/runtime-v13.patch.b64"
           echo '533635e699b1a22f7f65f9c80de149970c748b233423407bc0edc9031fc9ae94  '"$RUNNER_TEMP/runtime-v13.patch.b64" | sha256sum --check
@@ -51,13 +53,19 @@ jobs:
             openqa/.runtime-v13.patch.b64.part01 \
             openqa/.runtime-v13.patch.b64.part02 \
             openqa/.runtime-v13.patch.b64.part03 \
+            openqa/.runtime-v13-exitcode-followup.patch \
             .github/workflows/apply-openqa-runtime-v13.yml
           test "$(git write-tree)" = "bd9b578bafff27b35157ce39c176bccf5751fec0"
 
           git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v13.patch"
-          test "$(git write-tree)" = "8d6ca3402f6e1c2a85d357b5cbb55ea86e377f97"
+          git apply --index --whitespace=error-all openqa/.runtime-v13-exitcode-followup.patch 2>/dev/null || true
+          # The follow-up was removed from the index above, so apply its verified
+          # content from the parent commit without retaining transport files.
+          git show HEAD:openqa/.runtime-v13-exitcode-followup.patch > "$RUNNER_TEMP/runtime-v13-followup.patch"
+          git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v13-followup.patch"
+          test "$(git write-tree)" = "24f0ea71e9dda3c5851f3062a3b34a1a8d5938fe"
 
-          mapfile -t changed < <(git diff --cached --name-only HEAD~6)
+          mapfile -t changed < <(git diff --cached --name-only HEAD~8)
           diff -u \
             <(printf '%s\n' \
               data/atspi_probe.py \
@@ -111,7 +119,7 @@ jobs:
               .github/workflows/mirror-openqa-image.yml \
               .github/workflows/validate-iso-once.yml
             git diff --cached --check
-            test "$(git write-tree)" = "8d6ca3402f6e1c2a85d357b5cbb55ea86e377f97"
+            test "$(git write-tree)" = "24f0ea71e9dda3c5851f3062a3b34a1a8d5938fe"
             dbus-run-session -- xvfb-run -a /usr/bin/python3 \
               openqa/integration/accessible_smoke.py
           } 2>&1 | tee "$RUNNER_TEMP/runtime-v13-validation.log"
@@ -120,14 +128,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git write-tree)" = "8d6ca3402f6e1c2a85d357b5cbb55ea86e377f97"
+          test "$(git write-tree)" = "24f0ea71e9dda3c5851f3062a3b34a1a8d5938fe"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit \
             -m 'fix(openqa): retain exact AT-SPI providers through application smoke' \
             -m 'Keep one PID-scoped AT-SPI client from exact window discovery through accessible-content and close observation, with an explicit READY boundary before the single keyboard request.' \
             -m 'Resolve the privileged GTK-to-Qt Calamares handoff by exact executable path, root UID and a unique startup token already forwarded by the ISO wrapper. Steam remains excluded; crashes, inaccessible windows, incomplete reads and unproven closure remain blocking.'
-          test "$(git rev-parse HEAD^{tree})" = "8d6ca3402f6e1c2a85d357b5cbb55ea86e377f97"
+          test "$(git rev-parse HEAD^{tree})" = "24f0ea71e9dda3c5851f3062a3b34a1a8d5938fe"
           git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
