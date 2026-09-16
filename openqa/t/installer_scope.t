@@ -6,7 +6,8 @@ use calamares;
 no warnings qw(redefine once);
 
 for my $method (sub { calamares->assert_page('launcher-home', 5) },
-                sub { calamares->click_action(['Continue'], 5) }) {
+                sub { calamares->click_action(['Continue'], 5) },
+                sub { calamares->begin_application_transition }) {
     eval { $method->() };
     like($@, qr/scope has not been established/, 'installer refuses an unscoped operation');
 }
@@ -29,9 +30,10 @@ for my $pid (undef, 0, 1, '42; false') {
         return {status => 'passed', complete => 1, widget => shift @children};
     };
     calamares->assert_page('launcher-home', 5);
+    calamares->begin_application_transition;
     calamares->assert_page('installer-welcome', 5);
-    is_deeply(\@queries, [[42, undef], [42, 14]],
-        'Qt page lookup reuses the GTK application slot as a bounded hint within the launch tree');
+    is_deeply(\@queries, [[42, undef], [42, undef]],
+        'GTK-to-Qt transition keeps launch provenance but discards the transient registry slot');
     is_deeply(\@scopes, [42], 'page discovery never switches to a transient child PID');
     local *atspi::activate_widget = sub {
         my ($class, $role, $labels, $timeout, %options) = @_;
@@ -59,7 +61,10 @@ for my $pid (undef, 0, 1, '42; false') {
     local *atspi::set_widget_scope = sub { push @queries, $_[1]; };
     local *atspi::activate_widget = sub {};
     local *calamares::assert_page = sub {};
+    my $transitions = 0;
+    local *calamares::begin_application_transition = sub { $transitions++ };
     installer_scope_fixture::run();
     is_deeply(\@queries, [42], 'installer registers the launcher PID, not first child window');
+    is($transitions, 1, 'installer explicitly marks the one GTK-to-Qt application transition');
 }
 done_testing;

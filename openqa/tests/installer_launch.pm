@@ -62,6 +62,10 @@ sub run {
     atspi->activate_widget($calamares::BUTTON_ROLES, ['Install', 'Instalar'], 90);
     calamares->assert_page('launcher-tips', 60);
     atspi->activate_widget($calamares::BUTTON_ROLES, ['Continue', 'Continuar'], 60);
+    # This action ends the GTK configuration frontend and starts the Qt
+    # installer. Preserve launch provenance, but discard the registry-slot hint
+    # from the application that is expected to disappear.
+    calamares->begin_application_transition;
     calamares->assert_page('installer-welcome', 90);
 }
 

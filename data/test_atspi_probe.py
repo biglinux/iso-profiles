@@ -342,6 +342,33 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual([record["pid"] for _, record in records], [42])
         self.assertEqual(records[0][1]["application_index"], 1)
 
+    def test_stale_hint_resumes_newest_first_instead_of_scanning_neighbours(self):
+        order = []
+        providers = []
+        for index in range(20):
+            pid = 42 if index == 19 else 100 + index
+            children = [FakeAccessible("Target", 42)] if pid == 42 else []
+            provider = FakeAccessible(f"provider-{index}", pid, children, "application")
+            original = provider.get_process_id
+            provider.get_process_id = (
+                lambda label, getter: lambda: (order.append(label), getter())[1]
+            )(f"provider-{index}", original)
+            providers.append(provider)
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, providers)
+
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42}, preferred_application_index=14
+            )
+            first = next(records)
+            records.close()
+
+        self.assertEqual(order, ["provider-14", "provider-19"])
+        self.assertEqual(first[1]["pid"], 42)
+        self.assertEqual(first[1]["application_index"], 19)
+
     def test_scoped_enumeration_does_not_hide_target_failure(self):
         target = FakeAccessible("app", 42)
         target.get_child_count = mock.Mock(side_effect=FakeError("target unavailable"))

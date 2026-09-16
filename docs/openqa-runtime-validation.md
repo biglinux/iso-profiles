@@ -414,3 +414,27 @@ abortou com código 134, o Timeshift registrou erro crítico, o Audio Converter 
 encerrou após `Escape` seguido de seu `Ctrl+Q`, dois fluxos do LibreOffice não
 concluíram o contrato de fechamento e três KCMs ainda precisam ser reavaliados
 após a correção estrutural. Esses casos continuam vermelhos até nova evidência.
+
+
+## Runtime v10: posição AT-SPI é dica, não identidade
+
+A matriz real `35006675104` revelou uma regressão de desempenho: 83 das 91
+falhas de aplicativos terminaram em `application enumeration exceeded its
+deadline`. Quase todas reutilizavam o índice 14 observado por um processo de
+sonda anterior. O índice é apenas a posição momentânea do provedor sob a raiz
+do registry; processos curtos podem entrar e sair entre duas consultas.
+
+A busca agora tenta essa posição uma única vez, sempre revalidando o PID, e
+depois retoma a ordem normal do provedor mais novo para o mais antigo. Ela não
+percorre posições numericamente próximas ao índice antigo. Assim, um alvo novo
+não fica atrás de dezenas de chamadas D-Bus a provedores sem relação com o
+teste. O escopo por árvore de processos, a identidade exata da janela e os
+limites originais continuam obrigatórios.
+
+A mesma execução mostrou que o último Continue do frontend GTK antecede o
+processo Qt do Calamares. Nesse ponto específico, o harness descarta o índice
+GTK, mas conserva o PID raiz supervisionado. A primeira âncora da interface Qt
+redescobre um descendente dessa mesma árvore e passa a registrar seu novo
+índice. Nenhuma busca global por título, clique por coordenada, foco forçado ou
+aumento de timeout foi acrescentado. A correção precisa ser confirmada por uma
+nova matriz da ISO.

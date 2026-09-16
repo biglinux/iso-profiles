@@ -208,26 +208,20 @@ def _window_records(
         if allowed_pids is not None
         else range(application_count)
     )
-    # A widget record carries the registry slot that produced it. Revisit that
-    # slot first on the next focus observation, but always verify its PID: AT-SPI
-    # application indexes are hints and can shift as providers come and go.
+    # A widget record carries the registry slot that produced it, but the slot
+    # is not an identity: short-lived providers can insert or disappear between
+    # probes. Try the old slot once, revalidate its PID, then resume the normal
+    # newest-first order. Searching numerically around a stale slot delays the
+    # newly launched target behind many unrelated providers and can consume the
+    # entire caller budget in get_process_id() calls.
     if (
         preferred_application_index is not None
         and 0 <= preferred_application_index < application_count
     ):
-        # Providers created by one launch can disappear between wait-open and
-        # the next probe, shifting the target slot by one or two positions.
-        # Inspect the nearest slots first instead of walking every older desktop
-        # service before reaching the same application again.
-        nearby: list[int] = []
-        for distance in range(application_count):
-            for index in (
-                preferred_application_index - distance,
-                preferred_application_index + distance,
-            ):
-                if 0 <= index < application_count and index not in nearby:
-                    nearby.append(index)
-        application_indexes = nearby
+        application_indexes = [preferred_application_index] + [
+            index for index in application_indexes
+            if index != preferred_application_index
+        ]
     for app_index in application_indexes:
         if deadline is not None and time.monotonic() > deadline:
             raise WalkTruncated("application enumeration exceeded its deadline")

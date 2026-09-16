@@ -41,6 +41,17 @@ sub _require_launch_scope {
     return $launch_pid;
 }
 
+# The BigLinux GTK launcher starts the Qt Calamares process after its final
+# Continue action. AT-SPI registry positions are transient, so the GTK slot is
+# no longer a useful hint at that boundary. Keep the supervised launch-tree PID
+# as provenance and let the next query discover the newest matching descendant.
+sub begin_application_transition {
+    my ($class) = @_;
+    $class->_require_launch_scope;
+    $application_index = undef;
+    return 1;
+}
+
 sub _scope_options {
     my ($class) = @_;
     my %options = (pid => $class->_require_launch_scope);
