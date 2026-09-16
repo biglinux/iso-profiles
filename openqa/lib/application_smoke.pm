@@ -196,15 +196,41 @@ sub check {
     my $failure;
     eval {
         die 'invalid installed desktop entry: ' . $entry->{skip_reason} if $entry->{skip_reason};
-        # No recurring memory sampling: the window probe supplies one snapshot.
-        my ($baseline, $opened, $method, $seconds, $path, $launch_pid) =
-          atspi->launch_desktop_entry($entry, $timeout, 0);
+        my $close_mode = $contract->{kind} eq 'shared-window'
+          ? 'window-close' : 'process-exit';
+        my ($baseline, $opened, $method, $seconds, $path, $launch_pid);
+        my $closed;
+
+        if (!$contract->{dismiss_auxiliary}) {
+            # Keep one AT-SPI client alive from discovery through content and
+            # close observation. Registry positions and provider proxies are
+            # transient across separate clients; retaining the PID-scoped
+            # object prevents unrelated desktop providers from consuming the
+            # whole budget after the target window was already proven.
+            ($baseline, $opened, $method, $seconds, $path, $launch_pid) =
+              atspi->launch_smoke_desktop_entry(
+                  $entry, $timeout, $settle, $content_timeout,
+                  $close_timeout, $close_key, $close_mode,
+              );
+            $closed = $opened;
+        }
+        else {
+            # Reviewed first-run surfaces need an observed intermediate key
+            # before the application-level Quit shortcut. They retain the
+            # existing multi-step path, which revalidates every surface.
+            ($baseline, $opened, $method, $seconds, $path, $launch_pid) =
+              atspi->launch_desktop_entry($entry, $timeout, 0);
+        }
+
         $metric->{launch_method} = $method;
         $metric->{launch_pid} = $launch_pid;
-        $metric->{open_seconds} = 0 + sprintf('%.2f', $seconds);
+        $metric->{open_seconds} = 0 + sprintf('%.2f',
+            defined $opened->{open_seconds} ? $opened->{open_seconds} : $seconds);
         $metric->{mem_available_before_mib} = $baseline->{mem_available_mib};
         die 'application did not create an accessible window: ' . ($opened->{error} // '')
-          unless ($opened->{status} // '') eq 'passed' && $opened->{accessible_window};
+          unless defined $opened->{pid}
+          && ($opened->{status} // '') ne 'inconclusive'
+          && ($opened->{phase} // '') ne 'open';
         my $pid = $opened->{pid};
         $metric->{window_pid} = $pid;
         $metric->{accessible_window} = JSON::PP::true;
@@ -219,47 +245,62 @@ sub check {
         $metric->{accessible_children} = $opened->{accessible_children};
         $metric->{mem_available_after_open_mib} = $opened->{mem_available_mib};
         $metric->{memory_snapshot} = $opened->{memory};
-        # A short settle catches applications which create a window then crash.
-        # The next probe must still read content from that application.
-        sleep $settle if $settle;
-        my @content_scope = ('--pid', $pid, '--root-pid', $launch_pid);
-        push @content_scope, ('--application-index', $application_index)
-          if defined $application_index;
-        push @content_scope, ('--window-identity', $opened->{window_identity})
-          if defined $opened->{window_identity};
-        my $content = atspi->result('smoke-window', $content_timeout, @content_scope);
-        die 'window did not expose accessible content: ' . ($content->{error} // '')
-          unless ($content->{status} // '') eq 'passed'
-          && ($content->{coverage} // '') eq 'accessible-content-present';
-        $metric->{accessibility_status} = 'available';
-        $metric->{accessible_content} = $content->{evidence};
-        if (defined $content->{pid} && $content->{pid} =~ /\A[0-9]+\z/ && $content->{pid} > 1) {
-            $pid = 0 + $content->{pid};
-            $metric->{window_pid} = $pid;
+
+        if (!$contract->{dismiss_auxiliary}) {
+            die 'window did not expose accessible content: ' . ($opened->{error} // '')
+              unless ($opened->{coverage} // '') eq 'accessible-content-present'
+              && ref $opened->{evidence} eq 'HASH';
+            $metric->{accessibility_status} = 'available';
+            $metric->{accessible_content} = $opened->{evidence};
+            die 'application close observation failed: ' . ($opened->{error} // '')
+              unless ($opened->{status} // '') eq 'passed';
         }
-        if (defined $content->{application_index}
-            && $content->{application_index} =~ /\A[0-9]+\z/) {
-            $application_index = 0 + $content->{application_index};
-            $metric->{application_index} = $application_index;
+        else {
+            # A short settle catches applications which create a window then
+            # crash. The next probe must still read content from that launch.
+            sleep $settle if $settle;
+            my @content_scope = ('--pid', $pid, '--root-pid', $launch_pid);
+            push @content_scope, ('--application-index', $application_index)
+              if defined $application_index;
+            push @content_scope, ('--window-identity', $opened->{window_identity})
+              if defined $opened->{window_identity};
+            my $content = atspi->result('smoke-window', $content_timeout, @content_scope);
+            die 'window did not expose accessible content: ' . ($content->{error} // '')
+              unless ($content->{status} // '') eq 'passed'
+              && ($content->{coverage} // '') eq 'accessible-content-present';
+            $metric->{accessibility_status} = 'available';
+            $metric->{accessible_content} = $content->{evidence};
+            if (defined $content->{pid} && $content->{pid} =~ /\A[0-9]+\z/ && $content->{pid} > 1) {
+                $pid = 0 + $content->{pid};
+                $metric->{window_pid} = $pid;
+            }
+            if (defined $content->{application_index}
+                && $content->{application_index} =~ /\A[0-9]+\z/) {
+                $application_index = 0 + $content->{application_index};
+                $metric->{application_index} = $application_index;
+            }
+            if (defined $content->{window_identity} && $content->{window_identity} ne '') {
+                $opened->{window_identity} = $content->{window_identity};
+                $metric->{window_identity} = $content->{window_identity};
+            }
+            $closed = atspi->close_with_shortcut(
+                $pid, $path, $launch_pid, $close_timeout, $close_key, $close_mode,
+                $opened->{window_identity}, 1, $application_index
+            );
         }
-        if (defined $content->{window_identity} && $content->{window_identity} ne '') {
-            $opened->{window_identity} = $content->{window_identity};
-            $metric->{window_identity} = $content->{window_identity};
-        }
-        my $close_mode = $contract->{kind} eq 'shared-window' ? 'window-close' : 'process-exit';
-        my $closed = atspi->close_with_shortcut(
-            $pid, $path, $launch_pid, $close_timeout, $close_key, $close_mode,
-            $opened->{window_identity}, $contract->{dismiss_auxiliary},
-            $application_index
-        );
+
         $metric->{close_action} = $closed->{close_action};
         $metric->{pre_close_action} = $closed->{pre_close_action}
           if defined $closed->{pre_close_action};
         $metric->{application_exit_code} = $closed->{application_exit_code};
-        $metric->{application_crashed} = $closed->{application_crashed} ? JSON::PP::true : JSON::PP::false;
-        $metric->{graceful_exit} = $closed->{graceful_exit} ? JSON::PP::true : JSON::PP::false;
-        $metric->{window_closed} = $closed->{window_closed} ? JSON::PP::true : JSON::PP::false;
-        $metric->{process_gone} = $closed->{process_gone} ? JSON::PP::true : JSON::PP::false;
+        $metric->{application_crashed} = $closed->{application_crashed}
+          ? JSON::PP::true : JSON::PP::false;
+        $metric->{graceful_exit} = $closed->{graceful_exit}
+          ? JSON::PP::true : JSON::PP::false;
+        $metric->{window_closed} = $closed->{window_closed}
+          ? JSON::PP::true : JSON::PP::false;
+        $metric->{process_gone} = $closed->{process_gone}
+          ? JSON::PP::true : JSON::PP::false;
         if ($contract->{kind} eq 'shared-window') {
             die 'application window did not disappear after its close shortcut'
               unless $closed->{window_closed};
@@ -272,8 +313,10 @@ sub check {
             $metric->{functional_status} = 'window-closed';
         }
         else {
-            die 'application did not exit after its close shortcut' unless $closed->{graceful_exit};
-            die 'application exit status was not observed' unless defined $metric->{application_exit_code};
+            die 'application did not exit after its close shortcut'
+              unless $closed->{graceful_exit};
+            die 'application exit status was not observed'
+              unless defined $metric->{application_exit_code};
             die 'application exited with a disallowed status (wait status '
               . $metric->{application_exit_code} . ')'
               unless $class->_exit_code_allowed($contract, $metric->{application_exit_code});

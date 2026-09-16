@@ -522,11 +522,13 @@ continuam bloqueantes.
 ### Superfícies transitórias em sequência
 
 A mesma matriz mostrou dois comportamentos diferentes no primeiro uso do
-LibreOffice. O Base perdeu toda a sua janela quando o harness fechou o assistente
-como se houvesse obrigatoriamente uma janela principal posterior; por isso o
-Base agora recebe diretamente o atalho documentado `Ctrl+Q`, sem uma ação
-preliminar. No Impress, após fechar o seletor inicial, o diálogo “Tip of the Day”
-apareceu antes do `Ctrl+Q` e interceptou o encerramento.
+LibreOffice. O Base abre o próprio **Database Wizard** como a janela funcional testada. O
+harness anterior fechava essa superfície e depois esperava uma janela principal
+que não era parte desse contrato. O Base agora usa `Alt+F4` sobre a identidade
+exata do assistente e permite que o serviço compartilhado `soffice` continue; não
+há um `Ctrl+Q` global que encerre outros componentes. No Impress, após fechar o
+seletor inicial, o diálogo “Tip of the Day” apareceu antes do `Ctrl+Q` e
+interceptou o encerramento.
 
 Para contratos explicitamente marcados com `dismiss_auxiliary`, o harness agora
 pode fechar até três superfícies observadas em sequência. Cada passo exige uma
@@ -536,3 +538,59 @@ separado recebe `Alt+F4`; uma sobreposição libadwaita no mesmo top-level receb
 `Escape`. Só então é enviado o único atalho de saída do aplicativo. Não há
 sequência cega, clique, busca por título ou aprovação baseada em processo vivo.
 As ações preliminares ficam registradas no resultado.
+
+## Runtime v13: sessão AT-SPI persistente e handoff privilegiado exato
+
+A matriz real `35057247795`, fonte `ffc1821d`, confirmou que o runtime v12
+propagou corretamente o grupo supervisionado, mas ainda criava um cliente AT-SPI
+novo para abertura, conteúdo, foco e fechamento. O inventário continuou completo:
+288 entradas, 215 lançáveis, 70 exclusões justificadas, três aliases, 212 testes
+e três resultados não aplicáveis. Foram 122 aprovações e 90 falhas. Oitenta e uma
+falhas terminaram em `application enumeration exceeded its deadline`; outras duas
+terminaram em `window enumeration exceeded its deadline`.
+
+Em vários casos a etapa de abertura já havia comprovado o PID, o provedor e a
+identidade exata da janela. O cliente seguinte, porém, começava com um novo cache
+e voltava a consultar provedores sem relação com o alvo. Um índice AT-SPI não é
+uma identidade estável entre clientes; mesmo usado como dica, cada consulta a um
+provedor lento pode consumir o limite de chamada antes de alcançar a janela já
+comprovada.
+
+O smoke comum agora usa a operação bifásica `smoke-session`. Um único processo da
+sonda:
+
+1. lê a baseline e descobre uma janela nova dentro do lançamento supervisionado;
+2. conserva o mesmo objeto/provedor AT-SPI durante a estabilização;
+3. confirma conteúdo acessível útil e estado `ACTIVE`;
+4. publica um marcador `READY` com PID e identidade exata;
+5. aguarda uma única tecla normal enviada pelo host;
+6. observa, no mesmo cliente, o desaparecimento daquela janela ou processo.
+
+Nenhuma tecla é enviada antes de `READY`. Erro do provedor não é interpretado
+como desaparecimento. Janela vazia, processo que cai antes do conteúdo, janela
+inativa, encerramento não observado e saída não permitida continuam falhando. Os
+contratos com diálogos de primeira execução explicitamente revisados conservam o
+fluxo em etapas, pois precisam observar uma superfície intermediária antes do
+atalho final.
+
+A mesma matriz avançou integralmente pelas telas GTK do instalador, mas falhou
+após o último **Continue**: o wrapper usa `sudo`, e o Calamares Qt privilegiado
+não pertence ao grupo de processos do frontend do usuário. O runtime v13 marca o
+lançamento com um `DESKTOP_STARTUP_ID` único, já encaminhado pelo wrapper da ISO,
+e resolve a transição exigindo simultaneamente:
+
+- executável real exatamente `/usr/bin/calamares`;
+- UID real e efetivo iguais a 0;
+- token de ambiente exato;
+- mesmo PID e `starttime` observados duas vezes.
+
+A partir daí, widgets e páginas usam somente o PID Qt adotado. Não há busca por
+`comm`, título, posição da janela ou “janela nova no desktop”. O helper apenas lê
+`/proc`; não sinaliza nem modifica processos.
+
+A integração controlada cobre o protocolo persistente em janela normal, conteúdo
+publicado com atraso, janela vazia, SIGSEGV e GUI reparentada no grupo
+supervisionado. Também cobre o handoff privilegiado por executável, UID e token.
+Esses testes validam o harness, não certificam a ISO. Crash real do mpv, janelas
+X11 sem AT-SPI, erro crítico do Timeshift, conteúdo inacessível e fechamento não
+comprovado permanecem bloqueantes na próxima matriz.

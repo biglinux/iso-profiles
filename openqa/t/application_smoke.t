@@ -25,6 +25,40 @@ local *atspi::launch_desktop_entry = sub {
             window_identity => '/org/a11y/window/42'}, 'test', 0.1,
             '/tmp/openqa-gui-status-1-2', 42);
 };
+local *atspi::launch_smoke_desktop_entry = sub {
+    push @calls, ['smoke-launch', @_];
+    my $mode = $_[7] // 'process-exit';
+    my $opened = {
+        status => 'passed', phase => 'closed', pid => 42,
+        application => 'App', window => 'App', accessible_children => 1,
+        application_index => 7, window_identity => '/org/a11y/window/42',
+        open_seconds => 0.1, mem_available_mib => 100,
+        memory => {process_count => 1},
+        coverage => 'accessible-content-present', evidence => {text_interface => 1},
+        graceful_exit => $graceful, process_gone => $process_gone,
+        window_closed => $window_closed, application_crashed => $crashed,
+        application_exit_code => $exit,
+        close_action => 'keyboard.' . ($_[6] // 'alt-f4'),
+    };
+    if ($window ne 'passed') {
+        $opened = {status => 'failed', phase => 'open', error => 'no window'};
+    }
+    elsif ($semantics ne 'passed') {
+        $opened->{status} = 'failed';
+        $opened->{phase} = 'content';
+        delete $opened->{coverage};
+        delete $opened->{evidence};
+        $opened->{error} = 'content unavailable';
+    }
+    elsif (($mode eq 'process-exit' && !$graceful)
+        || ($mode eq 'window-close' && !$window_closed)) {
+        $opened->{status} = 'failed';
+        $opened->{phase} = 'close';
+        $opened->{error} = 'close not observed';
+    }
+    return ({}, $opened, 'persistent-test', 0.1,
+            '/tmp/openqa-gui-status-1-2', 42);
+};
 local *atspi::result = sub {
     push @calls, [@_];
     return {status => $semantics, coverage => 'accessible-content-present', evidence => {text_interface => 1}};
@@ -58,8 +92,11 @@ is($ok->{execution_contract}, 'standard', 'unconfigured application uses standar
 is($ok->{screen_reader_status}, 'not-tested', 'does not claim Orca speech testing');
 is($ok->{window_identity}, '/org/a11y/window/42', 'records the exact opened accessible window');
 is($ok->{application_index}, 7, 'records the PID-verified AT-SPI application hint');
-is($calls[0][-1], 0, 'repeated memory sampling is disabled');
-is(scalar grep($_->[0] eq 'close', @calls), 1, 'sends one close operation');
+my ($persistent_call) = grep { $_->[0] eq 'smoke-launch' } @calls;
+is($persistent_call->[4], 0, 'settle interval is forwarded to the persistent smoke');
+is($persistent_call->[8], 'process-exit', 'standard smoke observes process exit');
+is(scalar grep($_->[0] eq 'close', @calls), 0,
+    'persistent smoke owns the single keyboard close operation');
 my ($cleanup_call) = grep { $_->[0] eq 'cleanup' } @calls;
 is_deeply([@{$cleanup_call}[3 .. 4]], [42, 42],
     'cleanup receives the launch and observed window processes');
@@ -102,8 +139,9 @@ $exit = 1;
 my $cancelled = application_smoke->check($transient, 30);
 is($cancelled->{status}, 'passed', 'transient dialog accepts its declared cancel exit');
 is($cancelled->{functional_status}, 'open-cancel', 'transient dialog scope is reported');
-my ($transient_close) = grep { $_->[0] eq 'close' } @calls;
-is($transient_close->[7], 'process-exit', 'transient dialog still requires the process to exit');
+my ($transient_smoke) = grep { $_->[0] eq 'smoke-launch' } @calls;
+is($transient_smoke->[8], 'process-exit',
+    'transient dialog still requires the process to exit');
 
 reset_state();
 my $shared = {
@@ -119,9 +157,9 @@ my $shared = {
 my $resident = application_smoke->check($shared, 30);
 is($resident->{status}, 'passed', 'resident contract passes when the tested window closes');
 is($resident->{functional_status}, 'window-closed', 'resident scope reports the window boundary');
-my ($shared_close) = grep { $_->[0] eq 'close' } @calls;
-is($shared_close->[7], 'window-close', 'resident contract observes the window rather than forcing process exit');
-is($shared_close->[8], '/org/a11y/window/42', 'resident close tracks the exact opened window');
+my ($shared_smoke) = grep { $_->[0] eq 'smoke-launch' } @calls;
+is($shared_smoke->[8], 'window-close',
+    'resident contract observes the window rather than forcing process exit');
 
 for my $changes (
     {window_closed => 0},
@@ -151,7 +189,7 @@ $capability_status = 3;
 my $not_applicable = application_smoke->check($capability, 30);
 is($not_applicable->{status}, 'skipped', 'missing declared capability is not applicable');
 is($not_applicable->{validation_mode}, 'capability-not-applicable', 'capability skip is explicit');
-is(scalar grep($_->[0] eq 'launch', @calls), 0, 'missing capability never launches the application');
+is(scalar grep($_->[0] =~ /launch/, @calls), 0, 'missing capability never launches the application');
 my ($capability_call) = grep { $_->[0] eq 'command' } @calls;
 unlike($capability_call->[2], qr/\bexit\b/, 'capability probe cannot terminate the interactive login shell');
 
@@ -160,7 +198,7 @@ $capability_status = 2;
 my $preflight_failed = application_smoke->check($capability, 30);
 is($preflight_failed->{status}, 'failed', 'capability probe error is not disguised as absence');
 is($preflight_failed->{validation_mode}, 'capability-preflight', 'probe failure is attributable');
-is(scalar grep($_->[0] eq 'launch', @calls), 0, 'failed capability probe never launches the application');
+is(scalar grep($_->[0] =~ /launch/, @calls), 0, 'failed capability probe never launches the application');
 
 reset_state();
 my $custom = {

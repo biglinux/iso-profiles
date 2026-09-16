@@ -1,4 +1,5 @@
 """Smoke checks need a content witness, not a full accessibility audit."""
+import json
 import os
 import tempfile
 import time
@@ -181,6 +182,109 @@ class SmokeContentTest(unittest.TestCase):
     def test_provider_error_is_not_ignored(self):
         with mock.patch.object(probe, "_window_records", side_effect=RuntimeError("bus")):
             with self.assertRaises(probe.ProbeError): probe.smoke_window(1, 42)
+
+
+class PersistentSmokeSessionTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(probe, "_atspi_import", return_value=(API, GLIB))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.state = Path(self.temporary.name, "state.json")
+        self.state.write_text('{"window_keys": []}', encoding="utf-8")
+
+    @staticmethod
+    def target(active=True):
+        states = ["SHOWING"] + (["ACTIVE"] if active else [])
+        window = Node(
+            "Editor",
+            "frame",
+            [Node(role="text", text=True)],
+            states=tuple(states),
+        )
+        record = {
+            "key": "42\\0/window/0",
+            "pid": 42,
+            "identity": "/window/0",
+            "application": "Editor",
+            "application_index": 7,
+            "name": "Editor",
+            "role": "frame",
+            "children": 1,
+            "application_window_count": 1,
+            "showing": True,
+            "defunct": False,
+        }
+        return window, record
+
+    def test_one_client_reuses_the_proven_window_through_process_exit(self):
+        window, record = self.target()
+        ready = mock.Mock()
+        with mock.patch.object(probe, "_window_records", return_value=[(window, record)]) as records, \
+             mock.patch.object(probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(probe, "_process_scope_exited", side_effect=lambda _scope: ready.called), \
+             mock.patch.object(probe, "_emit_ready", side_effect=ready), \
+             mock.patch.object(probe, "mem_available_mib", return_value=100.0), \
+             mock.patch.object(probe, "process_memory", return_value={"rss_mib": 1.0, "pss_mib": 1.0, "process_count": 1}):
+            result = probe.application_smoke_session(
+                self.state, 0.2, 42, 42, 0, 0.2, 0.2, "process-exit"
+            )
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["process_gone"])
+        self.assertEqual(result["coverage"], "accessible-content-present")
+        ready.assert_called_once()
+        records.assert_called_once()
+
+    def test_shared_window_can_close_while_its_service_remains(self):
+        window, record = self.target()
+        ready = mock.Mock(side_effect=lambda _record: window.states.discard("SHOWING"))
+        with mock.patch.object(probe, "_window_records", return_value=[(window, record)]) as records, \
+             mock.patch.object(probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(probe, "_process_scope_exited", return_value=False), \
+             mock.patch.object(probe, "_emit_ready", side_effect=ready), \
+             mock.patch.object(probe, "mem_available_mib", return_value=100.0), \
+             mock.patch.object(probe, "process_memory", return_value={"rss_mib": 1.0, "pss_mib": 1.0, "process_count": 1}):
+            result = probe.application_smoke_session(
+                self.state, 0.2, 42, 42, 0, 0.2, 0.2, "window-close"
+            )
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["window_closed"])
+        self.assertFalse(result["process_gone"])
+        ready.assert_called_once()
+        records.assert_called_once()
+
+    def test_inactive_target_never_requests_a_close_key(self):
+        window, record = self.target(active=False)
+        ready = mock.Mock()
+        with mock.patch.object(probe, "_window_records", return_value=[(window, record)]), \
+             mock.patch.object(probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(probe, "_process_scope_exited", return_value=False), \
+             mock.patch.object(probe, "_emit_ready", side_effect=ready), \
+             mock.patch.object(probe, "mem_available_mib", return_value=100.0), \
+             mock.patch.object(probe, "process_memory", return_value={}):
+            result = probe.application_smoke_session(
+                self.state, 0.2, 42, 42, 0, 0.2, 0.2, "process-exit"
+            )
+        self.assertEqual(result["phase"], "focus")
+        self.assertEqual(result["status"], "failed")
+        ready.assert_not_called()
+
+    def test_preexisting_window_is_not_reused_as_the_launch_result(self):
+        window, record = self.target()
+        self.state.write_text(
+            json.dumps({"window_keys": [record["key"]]}), encoding="utf-8"
+        )
+        with mock.patch.object(probe, "_window_records", return_value=[(window, record)]), \
+             mock.patch.object(probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(probe, "_process_scope_exited", return_value=True), \
+             mock.patch.object(probe, "_emit_ready") as ready:
+            result = probe.application_smoke_session(
+                self.state, 0.2, 42, 42, 0, 0.2, 0.2, "process-exit"
+            )
+        self.assertEqual(result["phase"], "open")
+        self.assertEqual(result["status"], "failed")
+        ready.assert_not_called()
 
 
 class OptionalApplicationTest(unittest.TestCase):

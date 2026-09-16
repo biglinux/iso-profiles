@@ -25,13 +25,19 @@ our @DONE = ('Done', 'Concluir', 'Concluído', 'Finish', 'Finalizar');
 our $BUTTON_ROLES = 'push button|button';
 
 my $launch_pid;
+my $application_pid;
+my $handoff_token;
 my $application_index;
 
 sub set_launch_scope {
-    my ($class, $pid) = @_;
+    my ($class, $pid, $token) = @_;
     die 'Calamares requires a valid launch-tree PID'
       unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
+    die 'Calamares requires a valid privilege-handoff token'
+      unless defined $token && $token =~ /\Aopenqa-calamares-[A-Za-z0-9-]{1,192}\z/;
     $launch_pid = $pid;
+    $application_pid = undef;
+    $handoff_token = $token;
     $application_index = undef;
     atspi->set_widget_scope($launch_pid, $launch_pid);
 }
@@ -41,21 +47,42 @@ sub _require_launch_scope {
     return $launch_pid;
 }
 
-# The BigLinux GTK launcher starts the Qt Calamares process after its final
-# Continue action. AT-SPI registry positions are transient, so the GTK slot is
-# no longer a useful hint at that boundary. Keep the supervised launch-tree PID
-# as provenance and let the next query discover the newest matching descendant.
+# The BigLinux GTK launcher starts Qt Calamares through sudo and dbus-launch.
+# That deliberate privilege boundary can move the Qt process outside the user
+# supervisor's process group.  Resolve the handoff by an exact executable,
+# root UID and the unique DESKTOP_STARTUP_ID that the product wrapper explicitly
+# forwards.  A title, process name or globally new accessibility window is not
+# sufficient provenance.
 sub begin_application_transition {
-    my ($class) = @_;
+    my ($class, $timeout) = @_;
     $class->_require_launch_scope;
+    die 'Calamares handoff token has not been established'
+      unless defined $handoff_token;
+    my $resolved = atspi->wait_process_handoff(
+        '/usr/bin/calamares', 'DESKTOP_STARTUP_ID', $handoff_token, 0,
+        $timeout // 90,
+    );
+    die 'the privileged Qt Calamares process could not be identified: '
+      . ($resolved->{error} // 'incomplete process observation')
+      unless ref $resolved eq 'HASH' && ($resolved->{status} // '') eq 'passed';
+    $application_pid = $resolved->{pid};
     $application_index = undef;
-    return 1;
+    # The exact Qt PID is now the authority.  Do not claim it is a setsid
+    # supervisor root: ordinary descendant scoping is sufficient from here.
+    atspi->set_widget_scope($application_pid, undef);
+    return $resolved;
 }
 
 sub _scope_options {
     my ($class) = @_;
     my $root_pid = $class->_require_launch_scope;
-    my %options = (pid => $root_pid, root_pid => $root_pid);
+    my %options;
+    if (defined $application_pid) {
+        %options = (pid => $application_pid, root_pid => undef);
+    }
+    else {
+        %options = (pid => $root_pid, root_pid => $root_pid);
+    }
     $options{application_index} = $application_index
       if defined $application_index;
     return %options;

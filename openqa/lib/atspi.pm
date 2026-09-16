@@ -17,6 +17,7 @@ my $probe_path = '/tmp/openqa-atspi-probe.py';
 my $supervisor_path = '/tmp/openqa-gui-supervisor.sh';
 my $user_launcher_path = '/tmp/openqa-gui-user-launch.sh';
 my $desktop_launcher_path = '/tmp/desktop_entry_launcher.py';
+my $process_handoff_path = '/tmp/openqa-process-handoff.py';
 my $state_path = '/tmp/openqa-atspi-baseline.json';
 my $session_state_path = '/tmp/openqa-atspi-session-baseline.json';
 my $kernel_version;
@@ -83,6 +84,7 @@ sub install {
     my $supervisor_url = data_url('gui_supervisor.sh');
     my $user_launcher_url = data_url('gui_user_launch.sh');
     my $launcher_url = data_url('desktop_entry_launcher.py');
+    my $process_handoff_url = data_url('process_handoff.py');
 
     select_console 'user-virtio-terminal';
     my $command = join ' ',
@@ -90,7 +92,8 @@ sub install {
       'curl --fail --silent --show-error', shell_quote($supervisor_url), '--output', shell_quote($supervisor_path), '&&',
       'curl --fail --silent --show-error', shell_quote($user_launcher_url), '--output', shell_quote($user_launcher_path), '&&',
       'curl --fail --silent --show-error', shell_quote($launcher_url), '--output', shell_quote($desktop_launcher_path), '&&',
-      'chmod 755', shell_quote($probe_path), shell_quote($supervisor_path), shell_quote($user_launcher_path), shell_quote($desktop_launcher_path), '&&',
+      'curl --fail --silent --show-error', shell_quote($process_handoff_url), '--output', shell_quote($process_handoff_path), '&&',
+      'chmod 755', shell_quote($probe_path), shell_quote($supervisor_path), shell_quote($user_launcher_path), shell_quote($desktop_launcher_path), shell_quote($process_handoff_path), '&&',
       'printf ', shell_quote(marker_format($ready_marker) . '%s\\n'), ' "$(uname -r)"';
     type_string $command;
     send_key 'ret';
@@ -205,6 +208,64 @@ sub result {
     return $result;
 }
 
+# Resolve a process that deliberately crossed a privilege boundary.  The
+# executable, UID and one unique environment value all have to match, and the
+# guest helper observes the same PID/start-time identity twice.  This is a
+# provenance handoff, not a global process-name or window-title search.
+sub wait_process_handoff {
+    my ($class, $executable, $environment_name, $environment_value, $uid, $timeout) = @_;
+    die 'handoff executable must be an absolute path'
+      unless defined $executable && $executable =~ m{\A/[A-Za-z0-9_./+:-]+\z};
+    die 'invalid handoff environment name'
+      unless defined $environment_name && $environment_name =~ /\A[A-Z_][A-Z0-9_]{0,63}\z/;
+    die 'invalid handoff environment value'
+      unless defined $environment_value
+      && $environment_value =~ /\A[A-Za-z0-9_.:@+-]{1,256}\z/;
+    die 'invalid handoff UID'
+      unless defined $uid && $uid =~ /\A[0-9]+\z/;
+    die 'invalid handoff timeout'
+      unless defined $timeout && $timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $timeout <= 180;
+
+    my @command = (
+        'sudo', '-n', '--', 'python3', $process_handoff_path,
+        '--timeout', $timeout,
+        '--executable', $executable,
+        '--uid', $uid,
+        '--environment-name', $environment_name,
+        '--environment-value', $environment_value,
+    );
+    my $probe_command = join ' ', map { shell_quote($_) } @command;
+    my $done = marker_format('__OPENQA_PROCESS_DONE__');
+    my $shell_command = join ' ',
+      'if command -v timeout >/dev/null 2>&1; then timeout --kill-after=2',
+      shell_quote($timeout + $WALK_HEADROOM), $probe_command,
+      '; else', $probe_command, '; fi; printf', shell_quote($done . '\\n');
+
+    select_console 'user-virtio-terminal';
+    type_string $shell_command;
+    send_key 'ret';
+    my $serial = wait_serial(
+        qr/(?:__OPENQA_PROCESS__([0-9a-f]+)\r?\n)?__OPENQA_PROCESS_DONE__/,
+        $timeout + $WALK_HEADROOM + 5,
+    );
+    select_console 'sut';
+    die 'privileged process handoff returned no result' unless defined $serial;
+    my ($hex) = $serial =~ /__OPENQA_PROCESS__([0-9a-f]+)/;
+    die 'privileged process handoff returned no machine-readable record'
+      unless defined $hex;
+    my $result = eval { decode_json(pack 'H*', $hex) };
+    die "privileged process handoff returned invalid JSON: $@"
+      unless ref $result eq 'HASH';
+    if (($result->{status} // '') eq 'passed') {
+        die 'privileged process handoff returned an invalid PID'
+          unless defined $result->{pid} && $result->{pid} =~ /\A[0-9]+\z/
+          && $result->{pid} > 1;
+        $session_launch_pids{$result->{pid}} = 1;
+    }
+    return $result;
+}
+
 sub inventory {
     my ($class) = @_;
     my $result = $class->result('inventory', 30);
@@ -253,6 +314,131 @@ sub launch_desktop_entry {
     # window must belong to the launched process tree. Matching a window title
     # would only add toolkit- and release-specific brittleness.
     return $class->_launch_argv(\@argv, '', $timeout, 'process-tree', $sample_memory);
+}
+
+sub launch_smoke_desktop_entry {
+    my ($class, $entry, $open_timeout, $settle, $content_timeout,
+        $close_timeout, $close_key, $close_mode) = @_;
+    die 'desktop entry is not a mapping' unless ref $entry eq 'HASH';
+    my $path = $entry->{path};
+    die 'desktop entry has no absolute path'
+      unless defined $path
+      && $path =~ m{\A/usr/share/applications/.+\.desktop\z}
+      && $path !~ m{(?:\A|/)\.\.(?:/|\z)};
+    die 'invalid smoke open timeout'
+      unless defined $open_timeout && $open_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $open_timeout <= 180;
+    die 'invalid smoke settle interval'
+      unless defined $settle && $settle =~ /\A[0-9]+(?:\.[0-9]+)?\z/ && $settle <= 10;
+    die 'invalid smoke content timeout'
+      unless defined $content_timeout && $content_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $content_timeout <= 120;
+    die 'invalid smoke close timeout'
+      unless defined $close_timeout && $close_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $close_timeout <= 120;
+    die 'invalid smoke close shortcut'
+      unless defined $close_key && $close_key =~ /\A(?:alt-f4|ctrl-q|esc)\z/;
+    die 'invalid smoke close mode'
+      unless defined $close_mode && $close_mode =~ /\A(?:process-exit|window-close)\z/;
+
+    my @argv = ('python3', $desktop_launcher_path, '--entry', $path);
+    my ($baseline, $status_path, $launch_pid, $launch_memory, $started) =
+      $class->_start_argv(\@argv, '', 0);
+    my @command = (
+        'python3', $probe_path, 'smoke-session',
+        '--state', $state_path,
+        '--timeout', $open_timeout,
+        '--pid', $launch_pid,
+        '--root-pid', $launch_pid,
+        '--settle', $settle,
+        '--content-timeout', $content_timeout,
+        '--close-timeout', $close_timeout,
+        '--close-mode', $close_mode,
+    );
+    my $probe_command = join ' ', map { shell_quote($_) } @command;
+    my $total_timeout = $open_timeout + $settle + $content_timeout
+      + $close_timeout + $WALK_HEADROOM;
+    my $shell_command = join ' ',
+      'if command -v timeout >/dev/null 2>&1; then timeout --kill-after=2',
+      shell_quote($total_timeout), $probe_command,
+      '; else', $probe_command, '; fi; printf',
+      shell_quote(marker_format('__OPENQA_ATSPI_DONE__') . '\\n');
+
+    select_console 'user-virtio-terminal';
+    type_string $shell_command;
+    send_key 'ret';
+    my $ready_budget = $open_timeout + $settle + $content_timeout + $WALK_HEADROOM + 5;
+    my $serial = wait_serial(
+        qr/(?:__OPENQA_ATSPI_READY__([0-9a-f]+)|__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__)/,
+        $ready_budget,
+    );
+    unless (defined $serial) {
+        select_console 'user-virtio-terminal';
+        type_string '', terminate_with => 'ETX';
+        type_string 'printf ' . shell_quote(marker_format('__OPENQA_ATSPI_SESSION_RECOVERED__') . '\\n');
+        send_key 'ret';
+        wait_serial '__OPENQA_ATSPI_SESSION_RECOVERED__', no_regex => 1, timeout => 5;
+        select_console 'sut';
+        die 'application smoke session returned no readiness or failure result';
+    }
+
+    my ($ready_hex, $early_hex) = $serial =~
+      /(?:__OPENQA_ATSPI_READY__([0-9a-f]+)|__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__)/;
+    if (defined $early_hex) {
+        select_console 'sut';
+        my $early = eval { decode_json(pack 'H*', $early_hex) };
+        die "application smoke session returned invalid early JSON: $@"
+          unless ref $early eq 'HASH';
+        $early->{error} = ($early->{error} // 'application smoke failed before readiness')
+          . ': ' . _read_launch_debug($status_path)
+          if ($early->{phase} // '') eq 'open';
+        return ($baseline, $early, 'serial-console-persistent-atspi-smoke',
+            time - $started, $status_path, $launch_pid, $launch_memory);
+    }
+
+    my $ready = eval { decode_json(pack 'H*', $ready_hex // '') };
+    die "application smoke session returned invalid readiness JSON: $@"
+      unless ref $ready eq 'HASH';
+    die 'application smoke session did not prove active accessible content'
+      unless ($ready->{status} // '') eq 'passed'
+      && ($ready->{phase} // '') eq 'ready'
+      && ($ready->{coverage} // '') eq 'accessible-content-present'
+      && $ready->{active}
+      && defined $ready->{pid} && $ready->{pid} =~ /\A[0-9]+\z/ && $ready->{pid} > 1;
+    $class->set_widget_scope($ready->{pid}, $launch_pid);
+
+    # The target was observed active by the same probe that now waits for its
+    # exact window/process outcome. Send exactly one documented keyboard
+    # request; no AT action, coordinate input or signal can satisfy the test.
+    select_console 'sut';
+    send_key $close_key;
+    my $final_serial = wait_serial(
+        qr/__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__/,
+        $close_timeout + $WALK_HEADROOM + 5,
+    );
+    unless (defined $final_serial) {
+        select_console 'user-virtio-terminal';
+        type_string '', terminate_with => 'ETX';
+        type_string 'printf ' . shell_quote(marker_format('__OPENQA_ATSPI_SESSION_RECOVERED__') . '\\n');
+        send_key 'ret';
+        wait_serial '__OPENQA_ATSPI_SESSION_RECOVERED__', no_regex => 1, timeout => 5;
+        select_console 'sut';
+        die 'application smoke session returned no close result';
+    }
+    select_console 'sut';
+    my ($final_hex) = $final_serial =~
+      /__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__/;
+    my $result = eval { decode_json(pack 'H*', $final_hex // '') };
+    die "application smoke session returned invalid final JSON: $@"
+      unless ref $result eq 'HASH';
+    $result->{close_action} = 'keyboard.' . $close_key;
+    my $code = _read_exit_code($status_path, $result->{process_gone} ? 3 : 1);
+    $result->{raw_application_exit_code} = $code;
+    $result->{application_exit_code} = $code;
+    $result->{application_crashed} = is_crash_exit_code($code) ? 1 : 0;
+    delete $session_launch_pids{$launch_pid} if $result->{process_gone};
+    return ($baseline, $result, 'serial-console-persistent-atspi-smoke',
+        time - $started, $status_path, $launch_pid, $launch_memory);
 }
 
 sub x11_wait_open {
@@ -410,8 +596,8 @@ sub activate_widget_until_gone {
     return 1;
 }
 
-sub _launch_argv {
-    my ($class, $argv, $expected_name, $timeout, $expected_pid, $sample_memory) = @_;
+sub _start_argv {
+    my ($class, $argv, $expected_name, $sample_memory) = @_;
     $sample_memory //= 1;
     my $started = time;
     my $baseline = $class->result('baseline', 3);
@@ -436,6 +622,16 @@ sub _launch_argv {
       . ': ' . _read_launch_debug($status_path)
       unless defined $launch_pid;
     $session_launch_pids{$launch_pid} = 1;
+    my $launch_memory = $sample_memory
+      ? eval { $class->result('memory', 1, '--pid', $launch_pid) } : undef;
+    return ($baseline, $status_path, $launch_pid, $launch_memory, $started);
+}
+
+sub _launch_argv {
+    my ($class, $argv, $expected_name, $timeout, $expected_pid, $sample_memory) = @_;
+    $sample_memory //= 1;
+    my ($baseline, $status_path, $launch_pid, $launch_memory, $started) =
+      $class->_start_argv($argv, $expected_name, $sample_memory);
     # 'process-tree' scopes the window search to this launch. A privileged
     # launcher can re-parent the real application outside our tree, so those
     # call sites stay unscoped and prove identity through the flow that follows.
@@ -444,7 +640,6 @@ sub _launch_argv {
       : $expected_pid eq 'process-tree'   ? $launch_pid
       : $expected_pid eq 'pending'        ? undef
       :                                     $expected_pid;
-    my $launch_memory = $sample_memory ? eval { $class->result('memory', 1, '--pid', $launch_pid) } : undef;
     my @wait_arguments = ('--name', $expected_name);
     push @wait_arguments, '--no-memory-sample' unless $sample_memory;
     if (defined $window_pid) {

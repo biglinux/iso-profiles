@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 RESULT_MARKER = "__OPENQA_ATSPI__"
+READY_MARKER = "__OPENQA_ATSPI_READY__"
 INVENTORY_CHUNK_SIZE = 600
 
 
@@ -1726,6 +1727,219 @@ def smoke_window(
         time.sleep(min(0.1, max(0, deadline - time.monotonic())))
 
 
+def _emit_ready(result: dict[str, Any]) -> None:
+    encoded = (
+        json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode().hex()
+    )
+    print(f"{READY_MARKER}{encoded}", flush=True)
+
+
+def application_smoke_session(
+    state_path: Path,
+    open_timeout: float,
+    expected_pid: int,
+    root_pid: int,
+    settle: float,
+    content_timeout: float,
+    close_timeout: float,
+    close_mode: str,
+) -> dict[str, Any]:
+    """Run one bounded nonvisual smoke while retaining the provider proxy.
+
+    Separate short-lived AT-SPI clients must rediscover the provider for every
+    phase.  On a busy desktop, querying unrelated providers can exhaust the
+    whole deadline even after the target window was already proven.  This
+    operation discovers the PID-scoped window once, retains that exact object,
+    confirms useful content and natural focus after the settle interval, then
+    emits a readiness marker.  The host sends one normal keyboard shortcut and
+    this same client observes the exact window/process outcome.
+    """
+    Atspi, GLib = _atspi_import()
+    baseline = baseline_keys(state_path)
+    started = time.monotonic()
+    open_deadline = started + open_timeout
+    target_window: Any | None = None
+    target_record: dict[str, Any] | None = None
+    last_scope: set[int] = set()
+
+    def discover() -> tuple[Any, dict[str, Any]] | None:
+        nonlocal last_scope
+        last_scope = _owned_process_scope(expected_pid, root_pid)
+        for window, record in _window_records(
+            open_deadline, last_scope, include_window_state=True
+        ):
+            if record["pid"] not in last_scope:
+                continue
+            if record["key"] in baseline:
+                continue
+            if not record.get("showing", True) or record.get("defunct", False):
+                continue
+            if record.get("role") not in {"frame", "window", "dialog"}:
+                continue
+            if _is_transient_window(record):
+                continue
+            return window, record
+        return None
+
+    while time.monotonic() <= open_deadline:
+        found = _read_until_ready(discover, open_deadline)
+        if found is not None:
+            target_window, target_record = found
+            break
+        if _process_scope_exited(last_scope):
+            return {
+                "status": "failed",
+                "phase": "open",
+                "error": "launch process exited before exposing an accessible window",
+            }
+        time.sleep(min(0.1, max(0.0, open_deadline - time.monotonic())))
+    if target_window is None or target_record is None:
+        return {
+            "status": "failed",
+            "phase": "open",
+            "error": "accessible application window did not open before the deadline",
+        }
+
+    pid = int(target_record["pid"])
+    identity = str(target_record.get("identity", ""))
+    open_seconds = time.monotonic() - started
+
+    # The settle interval is part of the requested smoke contract: a process
+    # which publishes a window and immediately crashes must not pass.
+    settle_deadline = time.monotonic() + settle
+    while time.monotonic() < settle_deadline:
+        scope = _owned_process_scope(expected_pid, root_pid, (pid,))
+        if _process_scope_exited(scope):
+            return {
+                "status": "failed",
+                "phase": "settle",
+                "pid": pid,
+                "window_identity": identity,
+                "error": "application exited during the settle interval",
+            }
+        time.sleep(min(0.1, max(0.0, settle_deadline - time.monotonic())))
+
+    content_deadline = time.monotonic() + content_timeout
+    evidence: dict[str, Any] | None = None
+    active = False
+    while time.monotonic() <= content_deadline:
+        scope = _owned_process_scope(expected_pid, root_pid, (pid,))
+        if _process_scope_exited(scope):
+            return {
+                "status": "failed",
+                "phase": "content",
+                "pid": pid,
+                "window_identity": identity,
+                "error": "application exited before exposing accessible content",
+            }
+        try:
+            states = target_window.get_state_set()
+            showing = states.contains(Atspi.StateType.SHOWING)
+            defunct = states.contains(Atspi.StateType.DEFUNCT)
+            active = states.contains(Atspi.StateType.ACTIVE)
+            if not showing or defunct:
+                return {
+                    "status": "failed",
+                    "phase": "content",
+                    "pid": pid,
+                    "window_identity": identity,
+                    "error": "application window disappeared before the smoke check",
+                }
+            evidence = _smoke_content(target_window, content_deadline)
+        except WalkTruncated:
+            raise
+        except (ProbeError, GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+            evidence = None
+        if evidence is not None and active:
+            break
+        remaining = content_deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.1, remaining))
+
+    if evidence is None:
+        return {
+            "status": "failed",
+            "phase": "content",
+            "pid": pid,
+            "window_identity": identity,
+            "error": "window did not expose useful accessible content before the deadline",
+        }
+    if not active:
+        return {
+            "status": "failed",
+            "phase": "focus",
+            "pid": pid,
+            "window_identity": identity,
+            "error": "target window was not naturally active before the close shortcut",
+        }
+
+    ready = {
+        "status": "passed",
+        "phase": "ready",
+        "pid": pid,
+        "application": target_record.get("application", ""),
+        "window": target_record.get("name", ""),
+        "role": target_record.get("role", ""),
+        "accessible_children": target_record.get("children", 0),
+        "application_index": target_record.get("application_index"),
+        "window_identity": identity,
+        "application_window_count": target_record.get("application_window_count", 1),
+        "coverage": "accessible-content-present",
+        "evidence": evidence,
+        "active": True,
+        "open_seconds": round(open_seconds, 2),
+        "mem_available_mib": mem_available_mib(),
+        "memory": process_memory(pid),
+    }
+    _emit_ready(ready)
+
+    close_deadline = time.monotonic() + close_timeout
+    last_error = ""
+    while time.monotonic() <= close_deadline:
+        scope = _owned_process_scope(expected_pid, root_pid, (pid,))
+        process_gone = _process_scope_exited(scope)
+        window_closed = process_gone
+        if not window_closed:
+            try:
+                states = target_window.get_state_set()
+                window_closed = (
+                    not states.contains(Atspi.StateType.SHOWING)
+                    or states.contains(Atspi.StateType.DEFUNCT)
+                )
+                last_error = ""
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                # A transient provider error is not proof that the window
+                # disappeared.  Keep observing until the original deadline.
+                last_error = f"{type(error).__name__}: {error}"
+        satisfied = process_gone if close_mode == "process-exit" else window_closed
+        if satisfied:
+            return {
+                **ready,
+                "phase": "closed",
+                "process_gone": process_gone,
+                "window_closed": window_closed,
+                "graceful_exit": process_gone,
+            }
+        time.sleep(min(0.1, max(0.0, close_deadline - time.monotonic())))
+    expectation = (
+        "application process did not exit after its close shortcut"
+        if close_mode == "process-exit"
+        else "application window did not disappear after its close shortcut"
+    )
+    if last_error:
+        expectation += f"; last provider error: {last_error}"
+    return {
+        **ready,
+        "status": "failed",
+        "phase": "close",
+        "process_gone": False,
+        "window_closed": False,
+        "graceful_exit": False,
+        "error": expectation,
+    }
+
+
 def audit_window(timeout: float, expected_pid: int) -> dict[str, Any]:
     """Minimum semantics check, deliberately not a functional certification."""
     pairs = _visible_widgets(expected_pid, time.monotonic() + timeout)
@@ -1947,6 +2161,7 @@ def main() -> int:
             "focused-widget",
             "audit-window",
             "smoke-window",
+            "smoke-session",
             "active-window",
             "activate-widget",
             "dump-widgets",
@@ -1972,6 +2187,10 @@ def main() -> int:
     parser.add_argument("--application-index", type=int)
     parser.add_argument("--checked", choices=("true", "false"))
     parser.add_argument("--no-memory-sample", action="store_true")
+    parser.add_argument("--settle", type=float, default=2.0)
+    parser.add_argument("--content-timeout", type=float, default=10.0)
+    parser.add_argument("--close-timeout", type=float, default=15.0)
+    parser.add_argument("--close-mode", choices=("process-exit", "window-close"), default="process-exit")
     args = parser.parse_args()
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     os.environ.setdefault(
@@ -1986,6 +2205,9 @@ def main() -> int:
             raise ProbeError("root pid must be greater than one")
         if args.application_index is not None and args.application_index < 0:
             raise ProbeError("application index must be nonnegative")
+        for field, value, maximum in (("settle", args.settle, 10), ("content timeout", args.content_timeout, 120), ("close timeout", args.close_timeout, 120)):
+            if not math.isfinite(value) or value < 0 or value > maximum:
+                raise ProbeError(f"{field} must be finite, nonnegative and at most {maximum} seconds")
         if args.operation == "baseline":
             result = save_baseline(args.state, args.timeout)
         elif args.operation == "inventory":
@@ -2034,6 +2256,19 @@ def main() -> int:
                 args.target_identity,
                 args.application_index,
                 args.root_pid,
+            )
+        elif args.operation == "smoke-session":
+            if args.pid is None or args.root_pid is None:
+                raise ProbeError("--pid and --root-pid are required for a smoke session")
+            result = application_smoke_session(
+                args.state,
+                args.timeout,
+                args.pid,
+                args.root_pid,
+                args.settle,
+                args.content_timeout,
+                args.close_timeout,
+                args.close_mode,
             )
         elif args.operation in {"smoke-window", "active-window"}:
             if args.pid is None:

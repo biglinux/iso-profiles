@@ -22,11 +22,17 @@ rodando e sua API de gravação não é requisito do smoke.
 
 `lib/application_smoke.pm` é compartilhado pela varredura live e pela seleção de
 aplicativos instalados. Há uma breve estabilização (2 s), uma consulta limitada de
-conteúdo e um prazo de fechamento (15 s). O atalho padrão é `Alt+F4`; contratos
-podem declarar `Ctrl+Q` quando esse é o comando documentado de sair. Não há clique
-nem ação interna de fechar. Uma janela inativa não recebe o atalho. Saída diferente
-da lista explícita, falta de janela/conteúdo, crash ou necessidade de matar o
-processo reprovam.
+conteúdo e um prazo de fechamento (15 s). Para o contrato comum, um único cliente
+AT-SPI permanece ativo desde a descoberta da janela até a observação do fechamento;
+ele conserva o provedor e a identidade exata já comprovados, em vez de enumerar
+novamente todo o desktop em cada fase. Somente depois de publicar `READY` o host
+envia uma única tecla. Aplicativos com superfícies iniciais explicitamente revisadas
+mantêm o fluxo em etapas, revalidando cada superfície antes da próxima ação.
+
+O atalho padrão é `Alt+F4`; contratos podem declarar `Ctrl+Q` quando esse é o
+comando documentado de sair. Não há clique nem ação interna de fechar. Uma janela
+inativa não recebe o atalho. Saída diferente da lista explícita, falta de
+janela/conteúdo, crash ou necessidade de matar o processo reprovam.
 
 A política é **adaptável à ISO**, não uma lista de pacotes obrigatórios. Entradas
 configuradas ausentes aparecem como `skipped` / não aplicável, nunca como aprovação.
@@ -94,6 +100,13 @@ O harness não reinicia silenciosamente o barramento, não força X11, outro plu
 de toolkit ou variáveis de acessibilidade na aplicação. A preparação de fixtures
 usa console; a ação avaliada usa a GUI. Postcondições em arquivos são observações,
 não uma implementação alternativa da tarefa.
+
+O frontend GTK do instalador e o Calamares Qt atravessam deliberadamente uma
+fronteira de privilégio. A transferência de propriedade usa o executável real
+`/usr/bin/calamares`, UID 0 e um `DESKTOP_STARTUP_ID` único que o wrapper do produto
+encaminha. O observador exige o mesmo PID e `starttime` em duas leituras de `/proc`.
+Nome de processo, título de janela ou qualquer janela globalmente nova não provam
+essa transição.
 
 ## Orca: captura real, capacidade verificada
 
