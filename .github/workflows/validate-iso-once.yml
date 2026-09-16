@@ -1,10 +1,11 @@
 name: Verify openQA with the published ISO
 
-# Revalidate the reviewed September ISO after runtime-v13 keeps one exact
-# PID-scoped AT-SPI provider from window discovery through content and close,
-# and resolves the privileged GTK-to-Qt Calamares handoff by executable, UID
-# and a unique forwarded startup token. No title, coordinate or screenshot
-# fallback is introduced. Steam remains an explicit bootstrap exclusion.
+# Revalidate the reviewed September ISO after runtime-v14 uses one bounded,
+# exact PID-scoped semantic witness for positive Calamares page anchors. Errors
+# in other branches remain blocking when no witness exists; absence, checked
+# state and actions still require complete evidence. Only the newly launched Qt
+# provider receives a five-second startup grace. No title, coordinate or
+# screenshot fallback is introduced. Steam remains an explicit bootstrap exclusion.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
