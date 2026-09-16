@@ -439,7 +439,7 @@ redescobre um descendente dessa mesma árvore e passa a registrar seu novo
 aumento de timeout foi acrescentado. A correção precisa ser confirmada por uma
 nova matriz da ISO.
 
-## Runtime v11: escopo do lançamento após reparenting
+## Runtime v12: escopo explícito do lançamento após reparenting
 
 A matriz real `35038811476`, fonte `48d178c7`, manteve a cobertura completa do
 inventário: 288 entradas, 215 lançáveis, 70 exclusões justificadas, três aliases,
@@ -447,13 +447,13 @@ inventário: 288 entradas, 215 lançáveis, 70 exclusões justificadas, três al
 91 falhas. A Steam permaneceu excluída como instalador bootstrap e não foi
 executada.
 
-O resultado concentrou 81 das 91 falhas no mesmo diagnóstico:
-`application enumeration exceeded its deadline`. A evidência não indicava 81
+O resultado concentrou 82 das 91 falhas no mesmo diagnóstico:
+`application enumeration exceeded its deadline`. A evidência não indicava 82
 aplicativos comprovadamente defeituosos. Em um caso representativo,
-`big-driver-manager.desktop`, `wait-open` comprovou em 0,71 s o PID 5581, o
+`big-driver-manager.desktop`, `wait-open` comprovou em 2,04 s o PID 5621, o
 índice AT-SPI 14 e a identidade exata
 `/org/a11y/atspi/accessible/2147483652`, todos pertencentes ao lançamento de
-PID 5573. Após os dois segundos de estabilização, a consulta de conteúdo com
+PID 5613. Após os dois segundos de estabilização, a consulta de conteúdo com
 esses mesmos identificadores consumiu os 20 segundos e expirou antes de chegar
 ao provedor correto.
 
@@ -470,6 +470,14 @@ O escopo de leitura passa a combinar, sem busca por nome ou título:
 - os PIDs de janela já comprovados pelas etapas anteriores;
 - os membros vivos do grupo de processos criado para o PID raiz supervisionado.
 
+O alargamento por grupo só é habilitado quando o chamador fornece
+explicitamente esse PID raiz. Um PID obtido de uma janela arbitrária, do
+assistente live ou de outro objeto da sessão continua limitado à sua árvore de
+descendentes. Isso impede que uma consulta de acessibilidade importe outros
+processos apenas porque eles compartilham o grupo da sessão gráfica. O PID da
+janela e o PID raiz trafegam separadamente pelas operações de conteúdo, foco e
+fechamento.
+
 O grupo é obtido por `NSpgid` em `/proc/PID/status`; para kernels ou fixtures sem
 essa linha, usa-se o campo `pgrp` de `/proc/PID/stat`. O parser localiza primeiro
 o último `)` do campo `comm`, que pode conter espaços e parênteses, antes de ler
@@ -484,6 +492,17 @@ limpeza não foi ampliada para grupos encontrados a partir de janelas residuais;
 ela continua limitada às árvores desses PIDs, enquanto a limpeza do lançamento
 segue sob responsabilidade do supervisor já existente.
 
+A publicação intermediária do runtime v11 validou a primitiva de grupo em CI, mas
+a matriz real `35049852378` mostrou que a integração ainda estava incompleta: os
+quatro shards e os fluxos BIOS/UEFI continuaram registrando
+`application enumeration exceeded its deadline`, e o UEFI terminou uma leitura
+do instalador como `incomplete tree after 20 nodes`. As operações Perl de
+conteúdo, foco e fechamento ainda enviavam apenas o PID da janela e o índice
+AT-SPI; o PID raiz supervisionado não chegava à sonda Python. O runtime v12
+propaga separadamente `--root-pid` por `atspi.pm` e `calamares.pm`, inclusive em
+`wait-open`, widgets, foco, conteúdo, janela ativa e fechamento. Regressões
+diretas conferem os argumentos enviados e o escopo persistido após a abertura.
+
 Foram acrescentadas regressões para líder já encerrado, filho reparentado, PID
 de janela pertencente a grupo não autorizado, fallback de `/proc/PID/stat`,
 escopo vazio e espera de abertura após o reparenting. A integração GTK/AT-SPI
@@ -491,7 +510,7 @@ agora contém ainda um launcher real que cria a janela no seu grupo, encerra e
 deixa o processo GTK reparentado; o CI deve comprovar abertura, conteúdo,
 foco, `Alt+F4` e desaparecimento da janela sem screenshots.
 
-Na árvore local desta revisão passaram 292 testes Python e 172 asserções Perl,
+Na árvore local desta revisão passaram 297 testes Python e 180 asserções Perl,
 além da política não visual, compilação Python, sintaxe Bash e
 `git diff --check`. PyGObject, `xdotool`, ShellCheck e actionlint não estavam
 disponíveis no executor local; a integração real e essas verificações continuam
@@ -499,3 +518,21 @@ obrigatórias no CI antes da publicação. A correção não aprova a ISO: BIOS,
 e os quatro shards precisam ser reexecutados, e as falhas reais restantes —
 como abort do mpv, janelas X11 sem AT-SPI e encerramentos não comprovados —
 continuam bloqueantes.
+
+### Superfícies transitórias em sequência
+
+A mesma matriz mostrou dois comportamentos diferentes no primeiro uso do
+LibreOffice. O Base perdeu toda a sua janela quando o harness fechou o assistente
+como se houvesse obrigatoriamente uma janela principal posterior; por isso o
+Base agora recebe diretamente o atalho documentado `Ctrl+Q`, sem uma ação
+preliminar. No Impress, após fechar o seletor inicial, o diálogo “Tip of the Day”
+apareceu antes do `Ctrl+Q` e interceptou o encerramento.
+
+Para contratos explicitamente marcados com `dismiss_auxiliary`, o harness agora
+pode fechar até três superfícies observadas em sequência. Cada passo exige uma
+janela ativa do mesmo PID e do mesmo lançamento supervisionado; depois de cada
+tecla há nova observação estável antes de qualquer próxima ação. Um diálogo
+separado recebe `Alt+F4`; uma sobreposição libadwaita no mesmo top-level recebe
+`Escape`. Só então é enviado o único atalho de saída do aplicativo. Não há
+sequência cega, clique, busca por título ou aprovação baseada em processo vivo.
+As ações preliminares ficam registradas no resultado.

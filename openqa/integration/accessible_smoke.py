@@ -202,7 +202,13 @@ def run() -> None:
                     child_pid = int(pid_file.read_text(encoding="ascii"))
                     check(os.getpgid(child_pid) == root_pid,
                           "reparented: GTK child left the supervised process group")
-                    opened = probe("wait-open", state, root_pid, 8)
+                    opened = probe(
+                        "wait-open",
+                        state,
+                        root_pid,
+                        8,
+                        ("--root-pid", str(root_pid)),
+                    )
                     check(opened.get("status") == "passed",
                           f"reparented: process-group window missing: {opened}")
                     check(opened.get("pid") == child_pid,
@@ -230,7 +236,12 @@ def run() -> None:
                         state,
                         child_pid,
                         4,
-                        ("--window-identity", str(opened["window_identity"])),
+                        (
+                            "--root-pid",
+                            str(root_pid),
+                            "--window-identity",
+                            str(opened["window_identity"]),
+                        ),
                     )
                     check(closed.get("status") == "passed",
                           f"reparented: exact window close was not observed: {closed}")

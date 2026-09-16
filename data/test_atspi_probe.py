@@ -9,6 +9,7 @@ import atspi_probe
 from atspi_probe import (
     _is_transient_window,
     _launch_process_scope,
+    _owned_process_scope,
     _process_scope_exited,
     _label_matches,
     _name_matches,
@@ -94,6 +95,41 @@ class AtspiProbeTest(unittest.TestCase):
 
         self.assertEqual(scope, {100, 220})
         self.assertNotIn(221, scope)
+
+    def test_live_nonleader_root_does_not_import_a_shared_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 100, 1, 50)
+            self._write_process(proc, 101, 1, 50)
+            self._write_process(proc, 102, 100, 50)
+
+            scope = _launch_process_scope(100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 102})
+        self.assertNotIn(101, scope)
+
+    def test_ordinary_pid_scope_does_not_import_session_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 100, 1, 50)
+            self._write_process(proc, 101, 1, 50)
+            self._write_process(proc, 102, 100, 50)
+
+            scope = _owned_process_scope(100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 102})
+        self.assertNotIn(101, scope)
+
+    def test_explicit_supervisor_root_enables_group_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 200, 1, 100)
+            self._write_process(proc, 201, 1, 201)
+
+            scope = _owned_process_scope(200, 100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 200})
+        self.assertNotIn(201, scope)
 
     def test_process_group_falls_back_to_proc_stat(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -38,9 +38,9 @@ my $indexed = atspi->close_with_shortcut(
     42, $path, 42, 15, 'alt-f4', 'process-exit',
     '/org/a11y/window/42', 0, 7);
 my ($indexed_active) = grep { $_->[0] eq 'active-window' } @operations;
-is_deeply([@{$indexed_active}[2 .. 5]],
-    ['--pid', 42, '--application-index', 7],
-    'active-window observation reuses the PID-verified application hint');
+is_deeply([@{$indexed_active}[2 .. 7]],
+    ['--pid', 42, '--root-pid', 42, '--application-index', 7],
+    'active-window observation keeps supervisor provenance and the PID-verified hint');
 ok($indexed->{graceful_exit}, 'indexed close keeps the strict exit contract');
 
 $code = 139;
@@ -66,8 +66,9 @@ ok(!$resident->{process_gone}, 'resident process may remain');
 ok(!$resident->{graceful_exit}, 'process liveness is not mislabeled as exit');
 is($operations[1][0], 'wait-close', 'window-close mode observes disappearance through AT-SPI');
 is($operations[1][1], 17, 'window-close uses the configured bound');
-is_deeply([@{$operations[1]}[2 .. 5]],
-    ['--pid', 42, '--window-identity', '/org/a11y/window/42'],
+is_deeply([@{$operations[1]}[2 .. 7]],
+    ['--pid', 42, '--root-pid', 42,
+        '--window-identity', '/org/a11y/window/42'],
     'window-close scopes disappearance to the opened accessible object');
 
 ($wait, $code, $wait_close) = (1, undef, 1);
@@ -85,9 +86,32 @@ is_deeply(\@keys, ['alt-f4', 'ctrl-q'],
 is($welcomed->{pre_close_action}, 'keyboard.alt-f4',
     'auxiliary dismissal is reported separately');
 my ($scoped_wait) = grep { $_->[0] eq 'wait-close' } @operations;
-is_deeply([@{$scoped_wait}[2 .. 5]],
-    ['--pid', 42, '--window-identity', '/org/a11y/main'],
+is_deeply([@{$scoped_wait}[2 .. 7]],
+    ['--pid', 42, '--root-pid', 42,
+        '--window-identity', '/org/a11y/main'],
     'shared-window close follows the main window after the welcome surface');
+
+($wait, $code, $wait_close) = (1, undef, 1);
+@keys = (); @operations = (); @active_responses = (
+    {status => 'passed', active => 1, pid => 42, window_role => 'dialog',
+        window_identity => '/org/a11y/template', application_window_count => 2},
+    {status => 'passed', active => 1, pid => 42, window_role => 'frame',
+        window_identity => '/org/a11y/main', application_window_count => 1},
+    {status => 'passed', active => 1, pid => 42, window_role => 'frame',
+        window_identity => '/org/a11y/tip', application_window_count => 2},
+    {status => 'passed', active => 1, pid => 42, window_role => 'frame',
+        window_identity => '/org/a11y/main', application_window_count => 1},
+    {status => 'passed', active => 1, pid => 42, window_role => 'frame',
+        window_identity => '/org/a11y/main', application_window_count => 1},
+);
+my $sequential = atspi->close_with_shortcut(
+    42, $path, 42, 17, 'ctrl-q', 'window-close', '/org/a11y/main', 1, 7);
+is_deeply(\@keys, ['alt-f4', 'alt-f4', 'ctrl-q'],
+    'sequential first-run dialogs are each observed and dismissed before Quit');
+is($sequential->{pre_close_action}, 'keyboard.alt-f4,keyboard.alt-f4',
+    'all bounded auxiliary dismissals are reported');
+ok($sequential->{window_closed},
+    'sequential auxiliary path still requires the exact application window to close');
 
 ($wait, $code, $wait_close) = (0, 0, 1);
 @keys = (); @operations = (); @active_responses = (

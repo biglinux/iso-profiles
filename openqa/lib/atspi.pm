@@ -22,6 +22,7 @@ my $session_state_path = '/tmp/openqa-atspi-session-baseline.json';
 my $kernel_version;
 my %session_launch_pids;
 my $widget_pid;
+my $widget_root_pid;
 
 # The guest supervisor reports the shell wait status, so a process killed by a
 # signal arrives as 128+signal. Only a fatal crash disqualifies an application:
@@ -114,6 +115,7 @@ sub reset_baseline {
     %session_launch_pids = ();
 
     $widget_pid = undef;
+    $widget_root_pid = undef;
     # The wizard's exit precedes the next desktop's readiness. Wait for the
     # delivered session and its actual endpoints, without restarting services.
     my $session_url = data_url('desktop_session.py');
@@ -257,14 +259,21 @@ sub x11_wait_open {
     my ($class, $pid, $expected_name, $timeout) = @_;
     die "invalid X11 launch PID '$pid'"
       unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
-    return $class->result('x11-wait-open', $timeout, '--pid', $pid, '--name', $expected_name // '');
+    return $class->result(
+        'x11-wait-open', $timeout,
+        '--pid', $pid, '--root-pid', $pid, '--name', $expected_name // '');
 }
 
 # Scope follows the application, never the translated title or screen position.
 sub set_widget_scope {
-    my ($class, $pid) = @_;
+    my ($class, $pid, $root_pid) = @_;
     die 'invalid widget PID' if defined $pid && ($pid !~ /\A[0-9]+\z/ || $pid <= 1);
+    die 'invalid widget supervisor root PID'
+      if defined $root_pid && ($root_pid !~ /\A[0-9]+\z/ || $root_pid <= 1);
+    die 'widget supervisor root requires a widget PID'
+      if defined $root_pid && !defined $pid;
     $widget_pid = $pid;
+    $widget_root_pid = $root_pid;
 }
 
 sub _widget_operation {
@@ -273,8 +282,16 @@ sub _widget_operation {
     my $label_list = encode('UTF-8', join '|', @{$labels // []});
     die 'AT-SPI widget labels must not contain a newline' if $label_list =~ /[\r\n]/;
     my $pid = exists $options{pid} ? $options{pid} : $widget_pid;
+    my $root_pid = exists $options{root_pid} ? $options{root_pid}
+      : exists $options{pid} && !defined $options{pid} ? undef
+      : $widget_root_pid;
     my @args = ('--role', $role, '--labels', $label_list);
     push @args, ('--pid', $pid) if defined $pid;
+    if (defined $root_pid) {
+        die 'invalid AT-SPI supervisor root PID'
+          unless $root_pid =~ /\A[0-9]+\z/ && $root_pid > 1;
+        push @args, ('--root-pid', $root_pid);
+    }
     push @args, ('--accessible-id', $options{id}) if defined $options{id};
     push @args, ('--window', encode('UTF-8', $options{window})) if defined $options{window};
     if (defined $options{application_index}) {
@@ -315,9 +332,15 @@ sub wait_widget_until {
 }
 
 sub focused_widget {
-    my ($class, $pid, $target_identity, $application_index) = @_;
+    my ($class, $pid, $target_identity, $application_index, $root_pid) = @_;
     $pid //= $widget_pid;
+    $root_pid //= $widget_root_pid;
     my @args = defined $pid ? ('--pid', $pid) : ();
+    if (defined $root_pid) {
+        die 'invalid AT-SPI supervisor root PID'
+          unless $root_pid =~ /\A[0-9]+\z/ && $root_pid > 1;
+        push @args, ('--root-pid', $root_pid);
+    }
     push @args, ('--target-identity', $target_identity)
       if defined $target_identity;
     if (defined $application_index) {
@@ -345,7 +368,8 @@ sub focus_widget {
     my $deadline = time + $timeout;
     for (1 .. 80) {
         die 'keyboard traversal timed out' if time >= $deadline;
-        my $focus = $class->focused_widget($pid, $identity, $application_index);
+        my $focus = $class->focused_widget(
+            $pid, $identity, $application_index, $options{root_pid});
         if (($focus->{status} // '') eq 'passed') {
             my $current = $focus->{widget};
             if (($current->{identity} // '') eq $identity && $current->{pid} == $pid) {
@@ -423,9 +447,17 @@ sub _launch_argv {
     my $launch_memory = $sample_memory ? eval { $class->result('memory', 1, '--pid', $launch_pid) } : undef;
     my @wait_arguments = ('--name', $expected_name);
     push @wait_arguments, '--no-memory-sample' unless $sample_memory;
-    push @wait_arguments, ('--pid', $window_pid) if defined $window_pid;
+    if (defined $window_pid) {
+        push @wait_arguments, ('--pid', $window_pid);
+        push @wait_arguments, ('--root-pid', $launch_pid)
+          if $expected_pid eq 'process-tree';
+    }
     my $opened = $class->result('wait-open', $timeout, @wait_arguments);
-    $class->set_widget_scope($opened->{pid}) if ($opened->{status} // '') eq 'passed';
+    if (($opened->{status} // '') eq 'passed') {
+        my $scope_root = defined $expected_pid && $expected_pid eq 'process-tree'
+          ? $launch_pid : undef;
+        $class->set_widget_scope($opened->{pid}, $scope_root);
+    }
     if ($opened->{status} ne 'passed') {
         # Always attach the launcher's own output. A release gate that reports
         # "no window appeared" and nothing else sends whoever reads it back
@@ -512,6 +544,8 @@ sub close_with_shortcut {
     die 'invalid AT-SPI application index'
       if defined $application_index && $application_index !~ /\A[0-9]+\z/;
     my @active_scope = ('--pid', $pid);
+    push @active_scope, ('--root-pid', $launch_pid)
+      if defined $launch_pid;
     push @active_scope, ('--application-index', $application_index)
       if defined $application_index;
     push @active_scope, ('--window-identity', $window_identity)
@@ -520,56 +554,97 @@ sub close_with_shortcut {
     die 'cannot close an unobserved or inactive application: ' . ($active->{error} // '')
       unless ($active->{status} // '') eq 'passed' && $active->{active} && $active->{pid} == $pid;
 
-    my $pre_close_action;
-    my $window_count = $active->{application_window_count} // 1;
-    my $active_role = $active->{window_role} // '';
+    my @pre_close_actions;
     if ($dismiss_auxiliary) {
-        # This contract is explicit and limited to reviewed applications with a
-        # first-run dialog. A separate top-level dialog uses the normal desktop
-        # close shortcut. libadwaita overlays stay inside the same top-level and
-        # consume Ctrl+Q, so one Escape request is used instead. In both cases
-        # the application must remain observable before its real Quit shortcut,
-        # and normal exit/window evidence is still required afterwards.
-        my $separate_top_level = $active_role eq 'dialog' || $window_count > 1;
-        my $previous_identity = $active->{window_identity} // '';
-        my $pre_key = $separate_top_level ? 'alt-f4' : 'esc';
-        select_console 'sut';
-        send_key $pre_key;
-        $pre_close_action = 'keyboard.' . $pre_key;
-        my $deadline = time + 5;
-        my $dismissed = 0;
-        while (time < $deadline) {
-            sleep 0.25;
-            my $candidate = eval { $class->result('active-window', 1, @active_scope) };
-            next unless ref $candidate eq 'HASH'
-              && ($candidate->{status} // '') eq 'passed'
-              && $candidate->{active}
-              && $candidate->{pid} == $pid;
-            my $candidate_identity = $candidate->{window_identity} // '';
-            my $candidate_count = $candidate->{application_window_count} // $window_count;
-            if ($separate_top_level) {
-                next unless ($previous_identity ne '' && $candidate_identity ne $previous_identity)
-                  || $candidate_count < $window_count
-                  || ($candidate->{window_role} // '') ne 'dialog';
+        # A reviewed first launch can expose more than one transient surface in
+        # sequence (for example LibreOffice's template chooser followed by Tip
+        # of the Day).  Dismiss only currently observed surfaces from the same
+        # supervised launch, at most three times.  Re-observe after every key;
+        # never guess a second key or accept a different application's window.
+        my $settled = 0;
+        for my $round (1 .. 3) {
+            my $window_count = $active->{application_window_count} // 1;
+            my $active_role = $active->{window_role} // '';
+            my $separate_top_level = $active_role eq 'dialog' || $window_count > 1;
+            my $previous_identity = $active->{window_identity} // '';
+            my $pre_key = $separate_top_level ? 'alt-f4' : 'esc';
+            select_console 'sut';
+            send_key $pre_key;
+            push @pre_close_actions, 'keyboard.' . $pre_key;
+
+            my $deadline = time + 5;
+            my $dismissed = 0;
+            while (time < $deadline) {
+                sleep 0.25;
+                my $candidate = eval { $class->result('active-window', 1, @active_scope) };
+                next unless ref $candidate eq 'HASH'
+                  && ($candidate->{status} // '') eq 'passed'
+                  && $candidate->{active}
+                  && $candidate->{pid} == $pid;
+                my $candidate_identity = $candidate->{window_identity} // '';
+                my $candidate_count = $candidate->{application_window_count} // $window_count;
+                if ($separate_top_level) {
+                    next unless ($previous_identity ne '' && $candidate_identity ne $previous_identity)
+                      || $candidate_count < $window_count
+                      || ($candidate->{window_role} // '') ne 'dialog';
+                }
+                $window_identity = $candidate_identity if $candidate_identity ne '';
+                if (defined $candidate->{application_index}
+                    && $candidate->{application_index} =~ /\A[0-9]+\z/) {
+                    $application_index = $candidate->{application_index};
+                    @active_scope = ('--pid', $pid);
+                    push @active_scope, ('--root-pid', $launch_pid)
+                      if defined $launch_pid;
+                    push @active_scope, ('--application-index', $application_index);
+                }
+                $active = $candidate;
+                $dismissed = 1;
+                last;
             }
-            $window_identity = $candidate_identity if $candidate_identity ne '';
-            if (defined $candidate->{application_index}
-                && $candidate->{application_index} =~ /\A[0-9]+\z/) {
-                $application_index = $candidate->{application_index};
-                @active_scope = ('--pid', $pid, '--application-index', $application_index);
+            die 'auxiliary first-run surface did not return control to the application'
+              unless $dismissed;
+
+            # A second surface can be scheduled immediately after the first
+            # closes.  Require a stable re-observation before the application
+            # Quit shortcut; this remains a bounded semantic check, not a
+            # screenshot comparison or an unobserved key sequence.
+            sleep 0.5;
+            my $stable = eval { $class->result('active-window', 1, @active_scope) };
+            die 'application focus could not be re-observed after auxiliary dismissal'
+              unless ref $stable eq 'HASH'
+              && ($stable->{status} // '') eq 'passed'
+              && $stable->{active}
+              && $stable->{pid} == $pid;
+            my $stable_identity = $stable->{window_identity} // '';
+            $window_identity = $stable_identity if $stable_identity ne '';
+            if (defined $stable->{application_index}
+                && $stable->{application_index} =~ /\A[0-9]+\z/) {
+                $application_index = $stable->{application_index};
+                @active_scope = ('--pid', $pid);
+                push @active_scope, ('--root-pid', $launch_pid)
+                  if defined $launch_pid;
+                push @active_scope, ('--application-index', $application_index);
             }
-            $active = $candidate;
-            $dismissed = 1;
-            last;
+            $active = $stable;
+            my $stable_count = $active->{application_window_count} // 1;
+            my $stable_role = $active->{window_role} // '';
+            if ($stable_role ne 'dialog' && $stable_count <= 1) {
+                $settled = 1;
+                last;
+            }
         }
-        die 'auxiliary first-run surface did not return control to the application'
-          unless $dismissed;
+        die 'too many sequential auxiliary first-run surfaces'
+          unless $settled;
     }
+    my $pre_close_action = @pre_close_actions
+      ? join(',', @pre_close_actions) : undef;
     select_console 'sut';
     send_key $key;
     my ($gone, $window_closed) = (0, 0);
     if ($mode eq 'window-close') {
         my @close_scope = ('--pid', $pid);
+        push @close_scope, ('--root-pid', $launch_pid)
+          if defined $launch_pid;
         push @close_scope, ('--window-identity', $window_identity)
           if defined $window_identity;
         my $closed = $class->result('wait-close', $timeout, @close_scope);
@@ -699,7 +774,11 @@ sub terminate_window {
     }
     select_console 'sut';
 
-    my $closed = $class->result('wait-close', $process_gone ? 8 : 2, '--pid', $pid);
+    my @close_scope = ('--pid', $pid);
+    push @close_scope, ('--root-pid', $launch_pid)
+      if defined $launch_pid;
+    my $closed = $class->result(
+        'wait-close', $process_gone ? 8 : 2, @close_scope);
     my $raw_application_exit_code = _read_status_value(
         $status_path,
         'raw_exit_code',

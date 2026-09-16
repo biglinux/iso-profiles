@@ -18,6 +18,15 @@ no warnings 'redefine';
     is_deeply(\@args, ['atspi','wait-widget',5,'--role','button','--labels','Next',
         '--pid',42,'--application-index',7],
         'widget lookup forwards the PID-verified AT-SPI application hint');
+    atspi->set_widget_scope(42, 41);
+    atspi->wait_widget('button', ['Next'], 5, application_index => 7);
+    is_deeply(\@args, ['atspi','wait-widget',5,'--role','button','--labels','Next',
+        '--pid',42,'--root-pid',41,'--application-index',7],
+        'explicit supervisor provenance enables process-group recovery');
+    atspi->wait_widget('button', ['Next'], 5, pid => undef);
+    ok(!grep($_ eq '--pid' || $_ eq '--root-pid', @args),
+        'explicit unscoped discovery clears both PID and supervisor provenance');
+    atspi->set_widget_scope(42);
 }
 {
     local *atspi::wait_widget = sub { return {status => 'passed', complete => 0}; };
@@ -55,6 +64,21 @@ no warnings 'redefine';
         'focus traversal forwards the PID-verified AT-SPI application hint');
 }
 {
+    my @focus_args;
+    local *atspi::assert_widget = sub {
+        return {widget=>{pid=>42,identity=>'/target',name=>'Next',application_index=>7}};
+    };
+    local *atspi::focused_widget = sub {
+        @focus_args = @_;
+        return {status=>'passed',complete=>1,widget=>{pid=>42,identity=>'/target'}};
+    };
+    local *atspi::select_console = sub {};
+    local *atspi::send_key = sub {};
+    atspi->focus_widget('button', ['Next'], 5, root_pid => 41);
+    is($focus_args[4], 41,
+        'focus traversal keeps the explicit supervisor root separate from the target PID');
+}
+{
     my @args;
     local *atspi::result = sub { @args = @_; return {status=>'passed',complete=>1}; };
     atspi->focused_widget(42, '/target', 7);
@@ -62,6 +86,31 @@ no warnings 'redefine';
         ['atspi','focused-widget',5,'--pid',42,'--target-identity','/target',
          '--application-index',7],
         'focused-widget sends the application hint to the guest probe');
+}
+{
+    my @result_calls;
+    my @scope;
+    local *atspi::result = sub {
+        my ($class, $operation, $timeout, @args) = @_;
+        push @result_calls, [$operation, @args];
+        return {status=>'passed',complete=>1,window_count=>1,
+                mem_available_mib=>1024,desktop=>'KDE'} if $operation eq 'baseline';
+        return {status=>'passed',complete=>1,pid=>84,
+                application_index=>3,window_identity=>'/window'} if $operation eq 'wait-open';
+        die "unexpected probe operation $operation";
+    };
+    local *atspi::select_console = sub {};
+    local *atspi::type_string = sub {};
+    local *atspi::send_key = sub {};
+    local *atspi::wait_serial = sub { return 1; };
+    local *atspi::_read_child_pid = sub { return 73; };
+    local *atspi::set_widget_scope = sub { @scope = @_[1,2]; };
+    my @launch = atspi->_launch_argv(['/usr/bin/example'], 'Example', 5, 'process-tree', 0);
+    is_deeply($result_calls[1],
+        ['wait-open','--name','Example','--no-memory-sample','--pid',73,'--root-pid',73],
+        'process-tree launch explicitly forwards the supervisor root to wait-open');
+    is_deeply(\@scope, [84,73],
+        'successful process-tree launch persists target PID and supervisor provenance');
 }
 {
     local *atspi::assert_widget = sub { return {widget=>{pid=>42,identity=>'/target',name=>'Next'}}; };

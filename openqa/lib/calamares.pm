@@ -33,7 +33,7 @@ sub set_launch_scope {
       unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     $launch_pid = $pid;
     $application_index = undef;
-    atspi->set_widget_scope($launch_pid);
+    atspi->set_widget_scope($launch_pid, $launch_pid);
 }
 
 sub _require_launch_scope {
@@ -54,7 +54,8 @@ sub begin_application_transition {
 
 sub _scope_options {
     my ($class) = @_;
-    my %options = (pid => $class->_require_launch_scope);
+    my $root_pid = $class->_require_launch_scope;
+    my %options = (pid => $root_pid, root_pid => $root_pid);
     $options{application_index} = $application_index
       if defined $application_index;
     return %options;

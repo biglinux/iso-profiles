@@ -1,10 +1,10 @@
 name: Verify openQA with the published ISO
 
-# Revalidate the reviewed September ISO after runtime-v11 keeps ownership when
-# wrappers exit or re-parent their GUI inside the supervised process group.
-# PID, exact window identity and AT-SPI semantics remain mandatory; no title,
-# coordinate or screenshot fallback is introduced. Steam remains an explicit
-# bootstrap exclusion. This trigger is based on v10 commit 48d178c7.
+# Revalidate the reviewed September ISO after runtime-v12 keeps ownership when
+# wrappers exit or re-parent their GUI inside an explicitly identified
+# supervisor group. Arbitrary desktop PIDs retain descendant-only scope. PID,
+# exact window identity and AT-SPI semantics remain mandatory; no title,
+# coordinate or screenshot fallback is introduced. Steam remains excluded.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:

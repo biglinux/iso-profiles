@@ -150,11 +150,44 @@ def _launch_process_scope(
         return set()
     scope = _process_tree(root_pid, proc_root)
     scope.update(seeds)
-    group_ids = {root_pid}
     root_group = _process_group_id(root_pid, proc_root)
-    if root_group is not None:
-        group_ids.add(root_group)
+    root_exists = (proc_root / str(root_pid)).exists()
+    # gui_supervisor records the PID returned by `setsid` as both the launch
+    # PID and the process-group ID.  When that leader is still alive, verify
+    # the invariant before widening: a caller that accidentally passes a
+    # normal desktop process must not import every peer in its shared session
+    # group.  After the verified leader exits, /proc can no longer expose its
+    # group, but surviving children retain the former leader PID as their PGID.
+    group_ids = {root_pid} if not root_exists or root_group == root_pid else set()
     scope.update(_process_group_members(group_ids, proc_root))
+    return scope
+
+
+def _owned_process_scope(
+    expected_pid: int | None,
+    supervised_root_pid: int | None = None,
+    known_pids: Iterable[int] = (),
+    proc_root: Path = Path("/proc"),
+) -> set[int]:
+    """Return a PID scope, widening to a process group only when explicit.
+
+    A PID selected from an arbitrary desktop or live-session accessibility
+    object is not proof that its POSIX process group belongs to this test.  The
+    group-based recovery is therefore enabled only when the caller supplies the
+    root PID created by ``gui_supervisor.sh``.  Ordinary PID scopes retain the
+    historical descendant-only behaviour.
+    """
+    proven = {
+        pid
+        for pid in (expected_pid, *known_pids)
+        if isinstance(pid, int) and pid > 1
+    }
+    if supervised_root_pid is not None:
+        return _launch_process_scope(supervised_root_pid, proven, proc_root)
+    if expected_pid is None:
+        return proven
+    scope = _process_tree(expected_pid, proc_root)
+    scope.update(proven)
     return scope
 
 
@@ -616,12 +649,13 @@ def wait_for_x11_window(
     timeout: float,
     expected_pid: int | None = None,
     expected_name: str | None = None,
+    supervised_root_pid: int | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last_windows: list[dict[str, Any]] = []
     while time.monotonic() <= deadline:
         last_windows = _x11_window_records()
-        process_pids = _launch_process_scope(expected_pid) if expected_pid else set()
+        process_pids = _owned_process_scope(expected_pid, supervised_root_pid)
         matches = [
             window
             for window in last_windows
@@ -699,6 +733,7 @@ def wait_for_window_change(
     expected_name: str | None = None,
     sample_memory: bool = True,
     expected_window_identity: str | None = None,
+    supervised_root_pid: int | None = None,
 ) -> dict[str, Any]:
     baseline = baseline_keys(state_path)
     deadline = time.monotonic() + timeout
@@ -719,7 +754,11 @@ def wait_for_window_change(
     while time.monotonic() <= deadline:
         # An application can reach its window through a wrapper or forked
         # helper, so identity is the launched process tree, recomputed per poll.
-        allowed_pids = _launch_process_scope(expected_pid) if expected_pid is not None else None
+        allowed_pids = (
+            _owned_process_scope(expected_pid, supervised_root_pid)
+            if expected_pid is not None
+            else None
+        )
         last_snapshot = _read_until_ready(
             lambda: accessible_snapshot(deadline, allowed_pids), deadline
         )
@@ -1080,9 +1119,15 @@ def _showing_widgets_in_window(
 
 
 def _visible_widgets(
-    expected_pid: int | None, deadline: float | None = None
+    expected_pid: int | None,
+    deadline: float | None = None,
+    supervised_root_pid: int | None = None,
 ) -> list[tuple[Any, dict[str, Any]]]:
-    allowed_pids = _launch_process_scope(expected_pid) if expected_pid is not None else None
+    allowed_pids = (
+        _owned_process_scope(expected_pid, supervised_root_pid)
+        if expected_pid is not None or supervised_root_pid is not None
+        else None
+    )
     widgets: list[tuple[Any, dict[str, Any]]] = []
     for window, record in _window_records(deadline, allowed_pids):
         if allowed_pids is not None and record["pid"] not in allowed_pids:
@@ -1181,6 +1226,7 @@ def _widget_matches(
     require_sensitive: bool = True,
     application_index: int | None = None,
     stop_after_matching_application: bool = False,
+    supervised_root_pid: int | None = None,
 ) -> tuple[list[tuple[Any, dict[str, Any]]], list[tuple[Any, dict[str, Any]]]]:
     roles_wanted = {part.casefold() for part in role.split("|") if part}
 
@@ -1195,7 +1241,7 @@ def _widget_matches(
 
     deadline = time.monotonic() + budget if budget is not None else None
     if application_index is None:
-        observed = _visible_widgets(expected_pid, deadline)
+        observed = _visible_widgets(expected_pid, deadline, supervised_root_pid)
         return [pair for pair in observed if matches_selector(pair)], observed
 
     # A page transition can replace the launcher's GTK application with a Qt
@@ -1204,7 +1250,11 @@ def _widget_matches(
     # application at a time. Once that application exposes one unique selector,
     # unrelated desktop providers cannot make the page more correct. This keeps
     # the query bounded without accepting a title, coordinate, or stale slot.
-    allowed_pids = _launch_process_scope(expected_pid) if expected_pid is not None else None
+    allowed_pids = (
+        _owned_process_scope(expected_pid, supervised_root_pid)
+        if expected_pid is not None or supervised_root_pid is not None
+        else None
+    )
     observed: list[tuple[Any, dict[str, Any]]] = []
     application_matches: list[tuple[Any, dict[str, Any]]] = []
     current_application: int | None = None
@@ -1248,6 +1298,7 @@ def wait_for_widget(
     *, accessible_id: str | None = None, window_name: str | None = None,
     absent: bool = False, checked: bool | None = None,
     application_index: int | None = None,
+    supervised_root_pid: int | None = None,
 ) -> dict[str, Any]:
     """A unique match, or confirmed absence; errors are never disappearance."""
     deadline = time.monotonic() + timeout
@@ -1258,6 +1309,7 @@ def wait_for_widget(
                 accessible_id, window_name, require_sensitive=not absent,
                 application_index=application_index,
                 stop_after_matching_application=(application_index is not None and not absent),
+                supervised_root_pid=supervised_root_pid,
             ), deadline,
         )
         if len(matches) > 1:
@@ -1280,6 +1332,7 @@ def activate_widget(
     timeout: float, role: str, labels: list[str], expected_pid: int | None = None,
     *, accessible_id: str | None = None, window_name: str | None = None,
     application_index: int | None = None,
+    supervised_root_pid: int | None = None,
 ) -> dict[str, Any]:
     """Explicit AT action, not a proof of keyboard reachability.
 
@@ -1290,6 +1343,7 @@ def activate_widget(
         timeout, role, labels, expected_pid,
         accessible_id=accessible_id, window_name=window_name,
         application_index=application_index,
+        supervised_root_pid=supervised_root_pid,
     )
     if found["status"] != "passed":
         return found
@@ -1297,6 +1351,7 @@ def activate_widget(
     matches, _observed = _widget_matches(
         role, labels, expected_pid, 3, accessible_id, window_name,
         application_index=found_index, stop_after_matching_application=found_index is not None,
+        supervised_root_pid=supervised_root_pid,
     )
     if len(matches) != 1:
         return {"status": "failed", "error": "selector changed before activation"}
@@ -1367,6 +1422,7 @@ def focused_widget(
     expected_pid: int | None = None,
     target_identity: str | None = None,
     application_index: int | None = None,
+    supervised_root_pid: int | None = None,
 ) -> dict[str, Any]:
     """Observe keyboard focus without moving it or reading field values.
 
@@ -1381,7 +1437,10 @@ def focused_widget(
         last_focused: list[dict[str, Any]] = []
         while True:
             pairs = _read_until_ready(
-                lambda: _visible_widgets(expected_pid, deadline), deadline
+                lambda: _visible_widgets(
+                    expected_pid, deadline, supervised_root_pid
+                ),
+                deadline,
             )
             focused = [
                 record
@@ -1422,8 +1481,9 @@ def focused_widget(
         target_seen = False
         try:
             allowed_pids = (
-                _launch_process_scope(expected_pid)
-                if expected_pid is not None else None
+                _owned_process_scope(expected_pid, supervised_root_pid)
+                if expected_pid is not None or supervised_root_pid is not None
+                else None
             )
             preferred_observed = False
             for window, window_record in _window_records(
@@ -1605,8 +1665,8 @@ def smoke_window(
     def observe() -> dict[str, Any] | None:
         nonlocal reason, last_scope
         try:
-            allowed_pids = _launch_process_scope(
-                root_pid or expected_pid, (expected_pid,)
+            allowed_pids = _owned_process_scope(
+                expected_pid, root_pid, (expected_pid,)
             )
             last_scope = allowed_pids
             for window, record in _window_records(
@@ -1965,6 +2025,7 @@ def main() -> int:
                 args.name,
                 sample_memory=not args.no_memory_sample,
                 expected_window_identity=args.window_identity,
+                supervised_root_pid=args.root_pid,
             )
         elif args.operation == "focused-widget":
             result = focused_widget(
@@ -1972,6 +2033,7 @@ def main() -> int:
                 args.pid,
                 args.target_identity,
                 args.application_index,
+                args.root_pid,
             )
         elif args.operation in {"smoke-window", "active-window"}:
             if args.pid is None:
@@ -2000,6 +2062,7 @@ def main() -> int:
                 absent=args.operation == "wait-gone",
                 checked=None if args.checked is None else args.checked == "true",
                 application_index=args.application_index,
+                supervised_root_pid=args.root_pid,
             )
         elif args.operation == "activate-widget":
             if not args.role:
@@ -2011,13 +2074,16 @@ def main() -> int:
                 args.pid,
                 accessible_id=args.accessible_id, window_name=args.window,
                 application_index=args.application_index,
+                supervised_root_pid=args.root_pid,
             )
         elif args.operation == "dump-widgets":
             result = dump_widget_tree(
                 args.pid if args.pid and args.pid > 1 else None, args.timeout
             )
         elif args.operation == "x11-wait-open":
-            result = wait_for_x11_window(args.timeout, args.pid, args.name)
+            result = wait_for_x11_window(
+                args.timeout, args.pid, args.name, args.root_pid
+            )
         elif args.operation == "cleanup":
             result = cleanup_new_windows(args.state, args.timeout)
         elif args.operation == "memory":

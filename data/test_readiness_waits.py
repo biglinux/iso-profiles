@@ -211,7 +211,8 @@ class ReadinessWaitsTest(unittest.TestCase):
              mock.patch.object(probe, "accessible_snapshot", side_effect=[
                  {"windows": []}, {"windows": [record]}]) as read:
             result = probe.wait_for_window_change(
-                Path("unused"), 1, True, 42, sample_memory=False
+                Path("unused"), 1, True, 42, sample_memory=False,
+                supervised_root_pid=42,
             )
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["pid"], 99)
@@ -340,7 +341,7 @@ class ReadinessWaitsTest(unittest.TestCase):
             probe, "_atspi_import",
             return_value=(smoke_fixtures.API, smoke_fixtures.GLIB),
         ), mock.patch.object(
-            probe, "_launch_process_scope", return_value={42, 43}
+            probe, "_owned_process_scope", return_value={42, 43}
         ) as scope, mock.patch.object(
             probe, "_window_records", return_value=[(root, record)]
         ) as read:
@@ -351,10 +352,28 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["pid"], 43)
         self.assertEqual(result["window_identity"], "/opened")
-        scope.assert_called_once_with(41, (42,))
+        scope.assert_called_once_with(42, 41, (42,))
         self.assertEqual(read.call_args.args[1], {42, 43})
         self.assertEqual(read.call_args.kwargs["preferred_application_index"], 7)
         self.assertEqual(read.call_args.kwargs["preferred_window_identity"], "/opened")
+
+
+    def test_smoke_without_supervisor_keeps_descendant_only_scope(self):
+        root = smoke_fixtures.Node(
+            "Editor", "frame", [smoke_fixtures.Node(role="text", text=True)]
+        )
+        with mock.patch.object(
+            probe, "_atspi_import",
+            return_value=(smoke_fixtures.API, smoke_fixtures.GLIB),
+        ), mock.patch.object(
+            probe, "_owned_process_scope", return_value={42}
+        ) as scope, mock.patch.object(
+            probe, "_window_records",
+            return_value=[(root, {"pid": 42, "role": "frame"})],
+        ):
+            result = probe.smoke_window(1, 42)
+        self.assertEqual(result["status"], "passed")
+        scope.assert_called_once_with(42, None, (42,))
 
     def test_smoke_permanent_failure_uses_one_shared_deadline(self):
         with mock.patch.object(probe, "_atspi_import", return_value=(smoke_fixtures.API, smoke_fixtures.GLIB)), \

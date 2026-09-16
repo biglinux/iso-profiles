@@ -122,6 +122,17 @@ class ApplicationPolicyTest(unittest.TestCase):
         self.assertEqual(qbittorrent["close_key"], "ctrl-q")
         self.assertEqual(qbittorrent["allowed_exit_codes"], [0])
 
+    def test_libreoffice_base_uses_its_quit_shortcut_without_preclosing_the_wizard(self):
+        contracts = {
+            item["desktop_id"]: AGGREGATOR.normalized_contract(item)
+            for item in self.policy.get("contracts", [])
+        }
+        base = contracts["libreoffice-base.desktop"]
+        self.assertEqual(base["kind"], "shared-window")
+        self.assertEqual(base["close_key"], "ctrl-q")
+        self.assertFalse(base["dismiss_auxiliary"])
+        self.assertTrue(contracts["libreoffice-impress.desktop"]["dismiss_auxiliary"])
+
     def test_nonzero_exit_codes_are_never_globally_accepted(self):
         for item in self.policy.get("contracts", []):
             contract = AGGREGATOR.normalized_contract(item)

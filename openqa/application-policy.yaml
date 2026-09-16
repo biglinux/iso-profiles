@@ -203,7 +203,6 @@ contracts:
   - desktop_id: libreoffice-base.desktop
     kind: shared-window
     close_key: ctrl-q
-    dismiss_auxiliary: true
     content_timeout: 20
     reason: LibreOffice components share the soffice process; the component window is the lifecycle boundary
   - desktop_id: libreoffice-calc.desktop
