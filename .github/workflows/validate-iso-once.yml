@@ -1,11 +1,13 @@
 name: Verify openQA with the published ISO
 
-# Revalidate the reviewed September ISO after runtime-v14 uses one bounded,
-# exact PID-scoped semantic witness for positive Calamares page anchors. Errors
-# in other branches remain blocking when no witness exists; absence, checked
-# state and actions still require complete evidence. Only the newly launched Qt
-# provider receives a five-second startup grace. No title, coordinate or
-# screenshot fallback is introduced. Steam remains an explicit bootstrap exclusion.
+# Revalidate the reviewed September ISO after runtime-v15 matches the branded
+# Calamares welcome heading and uses directed, exact PID-scoped semantic
+# witnesses. Top-level discovery reads role and name before expensive state;
+# descendant calls return to the normal bounded AT-SPI timeout. Hidden,
+# insensitive, ambiguous, incomplete and out-of-scope controls remain blocking.
+# No title, coordinate or screenshot fallback is introduced. Steam remains an
+# explicit bootstrap exclusion. This trigger follows validated implementation
+# commit 5ea0ee23ca0f6e118fcbdc124c25b8cb65917dd2.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
@@ -30,34 +32,35 @@ jobs:
     steps:
       - name: Fetch the reviewed published candidate
         env:
+          ARTIFACT_NAME: review-iso-${{ github.run_id }}
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          RELEASE: biglinux_2026-09-09_k618-r30
-          ISO: biglinux_2026-09-09_k618.iso
+          REVIEW_RELEASE_TAG: biglinux_2026-09-09_k618-r30
         run: |
           set -euo pipefail
-          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/openqa-review-input
-          gh release download "$RELEASE" --repo "$REPOSITORY" --dir /mnt/openqa-review-input \
-            --pattern "$ISO.7z.*" --pattern "$ISO.sha256" --pattern "$ISO.md5"
-          cd /mnt/openqa-review-input
-          7z x -y "$ISO.7z.001"
-          sha256sum --check "$ISO.sha256"
-          md5sum --check "$ISO.md5"
-          rm -- "$ISO.7z."*
+          mkdir -p "$RUNNER_TEMP/review-iso"
+          gh release download "$REVIEW_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'biglinux_2026-09-09_k618.iso' \
+            --pattern 'biglinux_2026-09-09_k618.iso.sha256' \
+            --dir "$RUNNER_TEMP/review-iso"
+          cd "$RUNNER_TEMP/review-iso"
+          sha256sum --check biglinux_2026-09-09_k618.iso.sha256
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: review-iso-${{ github.run_id }}
-          path: /mnt/openqa-review-input/
-          compression-level: 0
+          path: ${{ runner.temp }}/review-iso
           retention-days: 1
           if-no-files-found: error
 
   validation:
-    if: ${{ always() }}
-    needs: [candidate, runner-image]
+    needs: [runner-image, candidate]
+    permissions:
+      contents: read
+      packages: read
     uses: ./.github/workflows/openqa-single-instance-experiment.yml
     with:
-      candidate_artifact: review-iso-${{ github.run_id }}
-      iso_filename: biglinux_2026-09-09_k618.iso
-      version: review
-      build_id: review-${{ github.run_id }}
+      iso_artifact_name: review-iso-${{ github.run_id }}
+      iso_pattern: biglinux_2026-09-09_k618.iso
+      iso_sha256: d1bd6943639391d569723723caa8bcec79c28748b9015e57a8a17452c7a09c96
+      iso_release: biglinux_2026-09-09_k618-r30
+      result_prefix: review
