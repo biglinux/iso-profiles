@@ -17,19 +17,20 @@ my $probe_path = '/tmp/openqa-atspi-probe.py';
 my $supervisor_path = '/tmp/openqa-gui-supervisor.sh';
 my $user_launcher_path = '/tmp/openqa-gui-user-launch.sh';
 my $desktop_launcher_path = '/tmp/desktop_entry_launcher.py';
+my $process_handoff_path = '/tmp/openqa-process-handoff.py';
 my $state_path = '/tmp/openqa-atspi-baseline.json';
 my $session_state_path = '/tmp/openqa-atspi-session-baseline.json';
 my $kernel_version;
 my %session_launch_pids;
+my $widget_pid;
+my $widget_root_pid;
 
 # The guest supervisor reports the shell wait status, so a process killed by a
 # signal arrives as 128+signal. Only a fatal crash disqualifies an application:
 # a non-zero exit, or the SIGTERM/SIGKILL this framework itself sends during
 # cleanup, says nothing about whether the program works.
-# SIGTRAP is deliberately absent: Chromium-based browsers raise it while tearing
-# down, so Brave closing normally arrived as wait status 133 and was reported as
-# a crash. The signals kept here leave no such doubt.
 my %crash_exit_code = map { $_ => 1 } (
+    133,    # SIGTRAP: a teardown exception must be explicit, not global
     132,    # SIGILL
     134,    # SIGABRT
     135,    # SIGBUS
@@ -53,6 +54,16 @@ sub is_crash_exit_code {
     return $crash_exit_code{$code} ? 1 : 0;
 }
 
+sub _baseline_is_complete {
+    my ($baseline) = @_;
+    return ref $baseline eq 'HASH'
+      && ($baseline->{status} // '') eq 'passed'
+      && defined $baseline->{window_count}
+      && $baseline->{window_count} =~ /\A[0-9]+\z/
+      && exists $baseline->{mem_available_mib}
+      && defined $baseline->{desktop};
+}
+
 # Install the guest side of the probe. Once per boot, because the installed
 # system reboots into a filesystem where /tmp is empty again.
 #
@@ -65,8 +76,7 @@ sub is_crash_exit_code {
 # Pinning that dead path then aborted the probe with "Couldn't connect to
 # accessibility bus", and the failure branch ended in `exit 1`, which closed
 # the login shell: every module after it typed into a `login:` prompt. The
-# session owns its accessibility bus; the harness starts the service if it is
-# not running and otherwise leaves it alone.
+# session owns its accessibility bus; the harness never repairs it silently.
 sub install {
     my ($class) = @_;
     my $ready_marker = '__OA_A11Y_READY__';
@@ -74,6 +84,7 @@ sub install {
     my $supervisor_url = data_url('gui_supervisor.sh');
     my $user_launcher_url = data_url('gui_user_launch.sh');
     my $launcher_url = data_url('desktop_entry_launcher.py');
+    my $process_handoff_url = data_url('process_handoff.py');
 
     select_console 'user-virtio-terminal';
     my $command = join ' ',
@@ -81,8 +92,8 @@ sub install {
       'curl --fail --silent --show-error', shell_quote($supervisor_url), '--output', shell_quote($supervisor_path), '&&',
       'curl --fail --silent --show-error', shell_quote($user_launcher_url), '--output', shell_quote($user_launcher_path), '&&',
       'curl --fail --silent --show-error', shell_quote($launcher_url), '--output', shell_quote($desktop_launcher_path), '&&',
-      'chmod 755', shell_quote($probe_path), shell_quote($supervisor_path), shell_quote($user_launcher_path), shell_quote($desktop_launcher_path), '&&',
-      'kquitapp6 krunner >/dev/null 2>&1 || true;',
+      'curl --fail --silent --show-error', shell_quote($process_handoff_url), '--output', shell_quote($process_handoff_path), '&&',
+      'chmod 755', shell_quote($probe_path), shell_quote($supervisor_path), shell_quote($user_launcher_path), shell_quote($desktop_launcher_path), shell_quote($process_handoff_path), '&&',
       'printf ', shell_quote(marker_format($ready_marker) . '%s\\n'), ' "$(uname -r)"';
     type_string $command;
     send_key 'ret';
@@ -106,76 +117,27 @@ sub reset_baseline {
     my ($class) = @_;
     %session_launch_pids = ();
 
-    # The session's own environment, read now. Carrying it across sessions is
-    # what broke this: the wizard's Xwayland display was pinned into the user
-    # manager and the Plasma session that replaced it answered "Could not open
-    # X display" to every probe. A Wayland session also has no DISPLAY until
-    # Xwayland starts, so there is nothing to guess and nothing to cache.
-    select_console 'user-virtio-terminal';
-    my $environment = join ' ',
-      'export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus;',
-      'for name in DISPLAY XAUTHORITY WAYLAND_DISPLAY; do',
-      'value=$(systemctl --user show-environment 2>/dev/null | sed -n "s/^$name=//p" | head -1);',
-      '[ -n "$value" ] && export "$name=$value";',
-      'done;',
-      # The installed system's Plasma session enables none of this by itself,
-      # and without it Qt and GTK publish no tree at all - there would be
-      # nothing to audit. The live session already does it (startbiglive), so
-      # this only fills the gap on the installed one.
-      'gsettings set org.gnome.desktop.interface toolkit-accessibility true 2>/dev/null || true;',
-      'export SAL_ACCESSIBILITY_ENABLED=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 GTK_A11Y=atspi NO_AT_BRIDGE=0;',
-      'systemctl --user set-environment SAL_ACCESSIBILITY_ENABLED=1',
-      'QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 GTK_A11Y=atspi NO_AT_BRIDGE=0 2>/dev/null || true;',
-      # Wait for an accessibility bus that is actually listening.
-      #
-      # Two things are wrong with the obvious ways to ask. systemctl start
-      # --no-block returns before the socket is bound, and the probe that
-      # followed it found nothing. And org.a11y.Bus.GetAddress answers with a
-      # path it no longer serves: at-spi-bus-launcher keeps the address of the
-      # bus it created, and the live wizard's private session
-      # (dbus-run-session) takes that socket with it when it ends - so between
-      # the wizard and the desktop the name is owned, the answer is instant,
-      # and /run/user/1000/at-spi/bus does not exist. Only the socket itself
-      # is evidence, and when it is missing the launcher is restarted: no
-      # client can be harmed by that here, because every client of that bus
-      # already lost it.
-      #
-      # The registry is activated by the launcher over this same bus
-      # (org.a11y.atspi.Registry), so it needs no help - starting it by hand
-      # only added a process that died on a bus that was not there.
-      # What the session left behind, before anything is restarted: this is
-      # the evidence for where a missing socket came from.
-      'pgrep -a at-spi 2>&1 | tail -3; ls -l /run/user/1000/at-spi/ 2>&1 | tail -2;',
-      'for attempt in $(seq 30); do',
-      # ('unix:path=/run/user/1000/at-spi/bus',) with the punctuation dropped.
-      'address=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus',
-      '--method org.a11y.Bus.GetAddress 2>/dev/null | tr -dc "a-zA-Z0-9:=/_.-");',
-      'case $address in',
-      'unix:path=/*) test -S "${address#unix:path=}" && break;;',
-      # An abstract socket has no file to look at; the address is all there is.
-      'unix:*) break;;',
-      'esac;',
-      'systemctl --user restart at-spi-dbus-bus.service >/dev/null 2>&1 || true;',
-      'sleep 1;',
-      'done;',
-      'ls -l /run/user/1000/at-spi/ 2>&1 | tail -2;',
-      'printf ', shell_quote(marker_format('__OA_A11Y_SESSION__') . '\\n');
-    type_string $environment;
-    send_key 'ret';
-    die 'the session environment could not be prepared for accessibility'
-      unless defined wait_serial('__OA_A11Y_SESSION__', no_regex => 1, timeout => 60);
-    select_console 'sut';
+    $widget_pid = undef;
+    $widget_root_pid = undef;
+    # The wizard's exit precedes the next desktop's readiness. Wait for the
+    # delivered session and its actual endpoints, without restarting services.
+    my $session_url = data_url('desktop_session.py');
+    my $ready = $class->run_command(
+        'curl --fail --silent --show-error --max-time 15 ' . shell_quote($session_url)
+          . ' --output /tmp/openqa-desktop-session.py && '
+          . 'session_environment=$(python3 /tmp/openqa-desktop-session.py --timeout 90) && '
+          . 'eval "$session_environment"', 120);
+    die 'the desktop session did not become ready; no accessibility repair was attempted'
+      unless defined $ready && $ready == 0;
 
     my $baseline = $class->result('baseline', 10);
-    if (ref $baseline ne 'HASH'
-        || !exists $baseline->{mem_available_mib}
-        || ref $baseline->{windows} ne 'ARRAY') {
+    if (!_baseline_is_complete($baseline)) {
         die 'the AT-SPI baseline has an unexpected shape: '
           . (ref $baseline ? JSON::PP->new->canonical->encode($baseline) : 'not a structure');
     }
     select_console 'user-virtio-terminal';
     my $saved = _run_guest_command("cp '$state_path' '$session_state_path'", 5);
-    die 'the AT-SPI session baseline could not be saved' unless defined $saved;
+    die 'the AT-SPI session baseline could not be saved' unless defined $saved && $saved == 0;
     select_console 'sut';
     return $baseline;
 }
@@ -191,7 +153,7 @@ sub result {
     # through a serial marker, and no test needs one. It is an operator's tool,
     # run from a console inside the guest (see openqa/README.md).
     die "invalid AT-SPI operation '$operation'"
-      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|activate-widget|close|cleanup|memory|inventory|inventory-chunk)\z/;
+      unless $operation =~ /\A(?:baseline|wait-open|x11-wait-open|wait-close|wait-widget|wait-gone|focused-widget|audit-window|smoke-window|active-window|activate-widget|close|cleanup|memory|inventory|inventory-chunk)\z/;
     die 'invalid AT-SPI timeout' unless defined $timeout && $timeout =~ /\A[0-9]+(?:\.[0-9]+)?\z/;
 
     my @command = (
@@ -246,6 +208,64 @@ sub result {
     return $result;
 }
 
+# Resolve a process that deliberately crossed a privilege boundary.  The
+# executable, UID and one unique environment value all have to match, and the
+# guest helper observes the same PID/start-time identity twice.  This is a
+# provenance handoff, not a global process-name or window-title search.
+sub wait_process_handoff {
+    my ($class, $executable, $environment_name, $environment_value, $uid, $timeout) = @_;
+    die 'handoff executable must be an absolute path'
+      unless defined $executable && $executable =~ m{\A/[A-Za-z0-9_./+:-]+\z};
+    die 'invalid handoff environment name'
+      unless defined $environment_name && $environment_name =~ /\A[A-Z_][A-Z0-9_]{0,63}\z/;
+    die 'invalid handoff environment value'
+      unless defined $environment_value
+      && $environment_value =~ /\A[A-Za-z0-9_.:@+-]{1,256}\z/;
+    die 'invalid handoff UID'
+      unless defined $uid && $uid =~ /\A[0-9]+\z/;
+    die 'invalid handoff timeout'
+      unless defined $timeout && $timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $timeout <= 180;
+
+    my @command = (
+        'sudo', '-n', '--', 'python3', $process_handoff_path,
+        '--timeout', $timeout,
+        '--executable', $executable,
+        '--uid', $uid,
+        '--environment-name', $environment_name,
+        '--environment-value', $environment_value,
+    );
+    my $probe_command = join ' ', map { shell_quote($_) } @command;
+    my $done = marker_format('__OPENQA_PROCESS_DONE__');
+    my $shell_command = join ' ',
+      'if command -v timeout >/dev/null 2>&1; then timeout --kill-after=2',
+      shell_quote($timeout + $WALK_HEADROOM), $probe_command,
+      '; else', $probe_command, '; fi; printf', shell_quote($done . '\\n');
+
+    select_console 'user-virtio-terminal';
+    type_string $shell_command;
+    send_key 'ret';
+    my $serial = wait_serial(
+        qr/(?:__OPENQA_PROCESS__([0-9a-f]+)\r?\n)?__OPENQA_PROCESS_DONE__/,
+        $timeout + $WALK_HEADROOM + 5,
+    );
+    select_console 'sut';
+    die 'privileged process handoff returned no result' unless defined $serial;
+    my ($hex) = $serial =~ /__OPENQA_PROCESS__([0-9a-f]+)/;
+    die 'privileged process handoff returned no machine-readable record'
+      unless defined $hex;
+    my $result = eval { decode_json(pack 'H*', $hex) };
+    die "privileged process handoff returned invalid JSON: $@"
+      unless ref $result eq 'HASH';
+    if (($result->{status} // '') eq 'passed') {
+        die 'privileged process handoff returned an invalid PID'
+          unless defined $result->{pid} && $result->{pid} =~ /\A[0-9]+\z/
+          && $result->{pid} > 1;
+        $session_launch_pids{$result->{pid}} = 1;
+    }
+    return $result;
+}
+
 sub inventory {
     my ($class) = @_;
     my $result = $class->result('inventory', 30);
@@ -282,7 +302,7 @@ sub launch_command {
 }
 
 sub launch_desktop_entry {
-    my ($class, $entry, $timeout) = @_;
+    my ($class, $entry, $timeout, $sample_memory) = @_;
     die 'desktop entry is not a mapping' unless ref $entry eq 'HASH';
     my $path = $entry->{path};
     die 'desktop entry has no absolute path'
@@ -293,98 +313,308 @@ sub launch_desktop_entry {
     # Identity comes from provenance: the launcher execs the application, so its
     # window must belong to the launched process tree. Matching a window title
     # would only add toolkit- and release-specific brittleness.
-    return $class->_launch_argv(\@argv, '', $timeout, 'process-tree');
+    return $class->_launch_argv(\@argv, '', $timeout, 'process-tree', $sample_memory);
+}
+
+sub launch_smoke_desktop_entry {
+    my ($class, $entry, $open_timeout, $settle, $content_timeout,
+        $close_timeout, $close_key, $close_mode) = @_;
+    die 'desktop entry is not a mapping' unless ref $entry eq 'HASH';
+    my $path = $entry->{path};
+    die 'desktop entry has no absolute path'
+      unless defined $path
+      && $path =~ m{\A/usr/share/applications/.+\.desktop\z}
+      && $path !~ m{(?:\A|/)\.\.(?:/|\z)};
+    die 'invalid smoke open timeout'
+      unless defined $open_timeout && $open_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $open_timeout <= 180;
+    die 'invalid smoke settle interval'
+      unless defined $settle && $settle =~ /\A[0-9]+(?:\.[0-9]+)?\z/ && $settle <= 10;
+    die 'invalid smoke content timeout'
+      unless defined $content_timeout && $content_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $content_timeout <= 120;
+    die 'invalid smoke close timeout'
+      unless defined $close_timeout && $close_timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/
+      && $close_timeout <= 120;
+    die 'invalid smoke close shortcut'
+      unless defined $close_key && $close_key =~ /\A(?:alt-f4|ctrl-q|esc)\z/;
+    die 'invalid smoke close mode'
+      unless defined $close_mode && $close_mode =~ /\A(?:process-exit|window-close)\z/;
+
+    my @argv = ('python3', $desktop_launcher_path, '--entry', $path);
+    my ($baseline, $status_path, $launch_pid, $launch_memory, $started) =
+      $class->_start_argv(\@argv, '', 0);
+    my @command = (
+        'python3', $probe_path, 'smoke-session',
+        '--state', $state_path,
+        '--timeout', $open_timeout,
+        '--pid', $launch_pid,
+        '--root-pid', $launch_pid,
+        '--settle', $settle,
+        '--content-timeout', $content_timeout,
+        '--close-timeout', $close_timeout,
+        '--close-mode', $close_mode,
+    );
+    my $probe_command = join ' ', map { shell_quote($_) } @command;
+    my $total_timeout = $open_timeout + $settle + $content_timeout
+      + $close_timeout + $WALK_HEADROOM;
+    my $shell_command = join ' ',
+      'if command -v timeout >/dev/null 2>&1; then timeout --kill-after=2',
+      shell_quote($total_timeout), $probe_command,
+      '; else', $probe_command, '; fi; printf',
+      shell_quote(marker_format('__OPENQA_ATSPI_DONE__') . '\\n');
+
+    select_console 'user-virtio-terminal';
+    type_string $shell_command;
+    send_key 'ret';
+    my $ready_budget = $open_timeout + $settle + $content_timeout + $WALK_HEADROOM + 5;
+    my $serial = wait_serial(
+        qr/(?:__OPENQA_ATSPI_READY__([0-9a-f]+)|__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__)/,
+        $ready_budget,
+    );
+    unless (defined $serial) {
+        select_console 'user-virtio-terminal';
+        type_string '', terminate_with => 'ETX';
+        type_string 'printf ' . shell_quote(marker_format('__OPENQA_ATSPI_SESSION_RECOVERED__') . '\\n');
+        send_key 'ret';
+        wait_serial '__OPENQA_ATSPI_SESSION_RECOVERED__', no_regex => 1, timeout => 5;
+        select_console 'sut';
+        die 'application smoke session returned no readiness or failure result';
+    }
+
+    my ($ready_hex, $early_hex) = $serial =~
+      /(?:__OPENQA_ATSPI_READY__([0-9a-f]+)|__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__)/;
+    if (defined $early_hex) {
+        select_console 'sut';
+        my $early = eval { decode_json(pack 'H*', $early_hex) };
+        die "application smoke session returned invalid early JSON: $@"
+          unless ref $early eq 'HASH';
+        $early->{error} = ($early->{error} // 'application smoke failed before readiness')
+          . ': ' . _read_launch_debug($status_path)
+          if ($early->{phase} // '') eq 'open';
+        return ($baseline, $early, 'serial-console-persistent-atspi-smoke',
+            time - $started, $status_path, $launch_pid, $launch_memory);
+    }
+
+    my $ready = eval { decode_json(pack 'H*', $ready_hex // '') };
+    die "application smoke session returned invalid readiness JSON: $@"
+      unless ref $ready eq 'HASH';
+    die 'application smoke session did not prove active accessible content'
+      unless ($ready->{status} // '') eq 'passed'
+      && ($ready->{phase} // '') eq 'ready'
+      && ($ready->{coverage} // '') eq 'accessible-content-present'
+      && $ready->{active}
+      && defined $ready->{pid} && $ready->{pid} =~ /\A[0-9]+\z/ && $ready->{pid} > 1;
+    $class->set_widget_scope($ready->{pid}, $launch_pid);
+
+    # The target was observed active by the same probe that now waits for its
+    # exact window/process outcome. Send exactly one documented keyboard
+    # request; no AT action, coordinate input or signal can satisfy the test.
+    select_console 'sut';
+    send_key $close_key;
+    my $final_serial = wait_serial(
+        qr/__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__/,
+        $close_timeout + $WALK_HEADROOM + 5,
+    );
+    unless (defined $final_serial) {
+        select_console 'user-virtio-terminal';
+        type_string '', terminate_with => 'ETX';
+        type_string 'printf ' . shell_quote(marker_format('__OPENQA_ATSPI_SESSION_RECOVERED__') . '\\n');
+        send_key 'ret';
+        wait_serial '__OPENQA_ATSPI_SESSION_RECOVERED__', no_regex => 1, timeout => 5;
+        select_console 'sut';
+        die 'application smoke session returned no close result';
+    }
+    select_console 'sut';
+    my ($final_hex) = $final_serial =~
+      /__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__/;
+    my $result = eval { decode_json(pack 'H*', $final_hex // '') };
+    die "application smoke session returned invalid final JSON: $@"
+      unless ref $result eq 'HASH';
+    $result->{close_action} = 'keyboard.' . $close_key;
+    my $code = _read_exit_code($status_path, $result->{process_gone} ? 3 : 1);
+    $result->{raw_application_exit_code} = $code;
+    $result->{application_exit_code} = $code;
+    $result->{application_crashed} = is_crash_exit_code($code) ? 1 : 0;
+    delete $session_launch_pids{$launch_pid} if $result->{process_gone};
+    return ($baseline, $result, 'serial-console-persistent-atspi-smoke',
+        time - $started, $status_path, $launch_pid, $launch_memory);
 }
 
 sub x11_wait_open {
     my ($class, $pid, $expected_name, $timeout) = @_;
     die "invalid X11 launch PID '$pid'"
       unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
-    return $class->result('x11-wait-open', $timeout, '--pid', $pid, '--name', $expected_name // '');
+    return $class->result(
+        'x11-wait-open', $timeout,
+        '--pid', $pid, '--root-pid', $pid, '--name', $expected_name // '');
+}
+
+# Scope follows the application, never the translated title or screen position.
+sub set_widget_scope {
+    my ($class, $pid, $root_pid) = @_;
+    die 'invalid widget PID' if defined $pid && ($pid !~ /\A[0-9]+\z/ || $pid <= 1);
+    die 'invalid widget supervisor root PID'
+      if defined $root_pid && ($root_pid !~ /\A[0-9]+\z/ || $root_pid <= 1);
+    die 'widget supervisor root requires a widget PID'
+      if defined $root_pid && !defined $pid;
+    $widget_pid = $pid;
+    $widget_root_pid = $root_pid;
 }
 
 sub _widget_operation {
-    my ($class, $operation, $role, $labels, $timeout) = @_;
+    my ($class, $operation, $role, $labels, $timeout, %options) = @_;
     die 'AT-SPI widget role is required' unless defined $role && $role ne '';
-    # Labels arrive as characters (their module declares "use utf8"), and the
-    # command is typed into the guest as octets: encode here, as record_info
-    # does, or a translated label reaches the probe as a lone latin-1 byte.
     my $label_list = encode('UTF-8', join '|', @{$labels // []});
     die 'AT-SPI widget labels must not contain a newline' if $label_list =~ /[\r\n]/;
-    return $class->result($operation, $timeout, '--role', $role, '--labels', $label_list);
+    my $pid = exists $options{pid} ? $options{pid} : $widget_pid;
+    my $root_pid = exists $options{root_pid} ? $options{root_pid}
+      : exists $options{pid} && !defined $options{pid} ? undef
+      : $widget_root_pid;
+    my @args = ('--role', $role, '--labels', $label_list);
+    push @args, ('--pid', $pid) if defined $pid;
+    if (defined $root_pid) {
+        die 'invalid AT-SPI supervisor root PID'
+          unless $root_pid =~ /\A[0-9]+\z/ && $root_pid > 1;
+        push @args, ('--root-pid', $root_pid);
+    }
+    push @args, ('--accessible-id', $options{id}) if defined $options{id};
+    push @args, ('--window', encode('UTF-8', $options{window})) if defined $options{window};
+    if (defined $options{application_index}) {
+        die 'invalid AT-SPI application index'
+          unless $options{application_index} =~ /\A[0-9]+\z/;
+        push @args, ('--application-index', $options{application_index});
+    }
+    if ($options{positive_witness}) {
+        die 'positive AT-SPI witness is only valid for wait-widget'
+          unless $operation eq 'wait-widget';
+        die 'positive AT-SPI witness cannot assert checked state'
+          if exists $options{checked};
+        push @args, '--positive-witness';
+    }
+    if (defined $options{startup_timeout_ms}) {
+        die 'invalid AT-SPI startup timeout'
+          unless $options{startup_timeout_ms} =~ /\A(?:-1|[0-9]+)\z/
+          && $options{startup_timeout_ms} <= 15000;
+        push @args, ('--startup-timeout-ms', $options{startup_timeout_ms});
+    }
+    push @args, ('--checked', $options{checked} ? 'true' : 'false') if exists $options{checked};
+    return $class->result($operation, $timeout, @args);
 }
 
 sub wait_widget {
-    my ($class, $role, $labels, $timeout) = @_;
-    return $class->_widget_operation('wait-widget', $role, $labels, $timeout);
+    my ($class, $role, $labels, $timeout, %options) = @_;
+    return $class->_widget_operation('wait-widget', $role, $labels, $timeout, %options);
 }
 
-# Wait a long budget in short guest calls. One blocking serial command for the
-# whole installation would leave the host with nothing to report for the better
-# part of an hour, and openQA would have no chance to notice it went silent.
+sub assert_widget {
+    my ($class, $role, $labels, $timeout, %options) = @_;
+    my $found = $class->wait_widget($role, $labels, $timeout, %options);
+    die 'required accessible control unavailable: ' . ($found->{error} // 'incomplete observation')
+      unless ($found->{status} // '') eq 'passed' && $found->{complete};
+    return $found;
+}
+
 sub wait_widget_until {
     my ($class, $role, $labels, $total_timeout, $slice) = @_;
     $slice //= 60;
     my $deadline = time + $total_timeout;
-    my $found;
-    my $error;
-    while (1) {
-        # A slice that cannot answer is not a verdict: on a guest busy
-        # installing, a tree walk can be cut short. Only the overall deadline
-        # decides, which is the whole reason the wait is sliced.
-        $found = eval { $class->wait_widget($role, $labels, $slice) };
-        $error = $@ if $@;
-        return $found if ref $found eq 'HASH' && $found->{status} eq 'passed';
-        next if time < $deadline;
-        return ref $found eq 'HASH'
-          ? $found
-          : {status => 'failed', error => $error || 'the probe did not answer'};
+    my $found = {status => 'inconclusive', error => 'probe did not answer'};
+    while (time < $deadline) {
+        my $remaining = $deadline - time;
+        my $budget = $remaining < $slice ? $remaining : $slice;
+        my $result = eval { $class->wait_widget($role, $labels, $budget) };
+        $found = ref $result eq 'HASH' ? $result : {status => 'inconclusive', error => "$@"};
+        return $found if ($found->{status} // '') eq 'passed' && $found->{complete};
     }
+    return $found;
 }
 
-# Activate a control by its accessibility identity, asking the control to act
-# on itself. AT-SPI reports widget extents relative to the window rather than
-# to the screen, so a pointer click on the reported rectangle lands one title
-# bar too high; using the control's own action removes the coordinate system
-# from the problem and survives a theme change or a repaint.
+sub focused_widget {
+    my ($class, $pid, $target_identity, $application_index, $root_pid) = @_;
+    $pid //= $widget_pid;
+    $root_pid //= $widget_root_pid;
+    my @args = defined $pid ? ('--pid', $pid) : ();
+    if (defined $root_pid) {
+        die 'invalid AT-SPI supervisor root PID'
+          unless $root_pid =~ /\A[0-9]+\z/ && $root_pid > 1;
+        push @args, ('--root-pid', $root_pid);
+    }
+    push @args, ('--target-identity', $target_identity)
+      if defined $target_identity;
+    if (defined $application_index) {
+        die 'invalid AT-SPI application index'
+          unless $application_index =~ /\A[0-9]+\z/;
+        push @args, ('--application-index', $application_index);
+    }
+    return $class->result('focused-widget', 5, @args);
+}
+
+# Tab traversal is observed after every key. An ID locates a target but cannot
+# teleport focus to it. Radio groups also need arrow navigation. Repeated focus
+# is bounded; no coordinate click, grab_focus, or AT action rescues this test.
+sub focus_widget {
+    my ($class, $role, $labels, $timeout, %options) = @_;
+    my $target = $class->assert_widget($role, $labels, $timeout, %options)->{widget};
+    die 'target has no human-readable accessible name' unless $target->{name} =~ /\S/;
+    my $pid = $target->{pid};
+    my $identity = $target->{identity};
+    my $application_index = $target->{application_index};
+    die 'target has no runtime accessibility identity' unless defined $identity && $identity ne '';
+    die 'target has an invalid AT-SPI application index'
+      if defined $application_index && $application_index !~ /\A[0-9]+\z/;
+    my %visits;
+    my $deadline = time + $timeout;
+    for (1 .. 80) {
+        die 'keyboard traversal timed out' if time >= $deadline;
+        my $focus = $class->focused_widget(
+            $pid, $identity, $application_index, $options{root_pid});
+        if (($focus->{status} // '') eq 'passed') {
+            my $current = $focus->{widget};
+            if (($current->{identity} // '') eq $identity && $current->{pid} == $pid) {
+                return $current;
+            }
+            my $key = ($current->{pid} // '') . ':' . ($current->{identity} // '');
+            die 'keyboard focus cycled before reaching the requested control' if ++$visits{$key} > 3;
+            select_console 'sut';
+            send_key(($role =~ /radio/ && ($current->{role} // '') =~ /radio/) ? 'right' : 'tab');
+        }
+        else {
+            my $reason = $focus->{reason} // '';
+            die 'keyboard focus could not be observed: ' . ($focus->{error} // '')
+              unless ($reason eq 'not-found' || $reason eq 'target-not-focused')
+              && $focus->{complete};
+            select_console 'sut';
+            send_key 'tab';
+        }
+    }
+    die 'keyboard traversal exhausted its bound';
+}
+
 sub activate_widget {
-    my ($class, $role, $labels, $timeout) = @_;
-    my $activated = $class->_widget_operation('activate-widget', $role, $labels, $timeout);
-    die "AT-SPI could not activate the $role: "
-      . ($activated->{error} // 'unknown reason')
-      unless ref $activated eq 'HASH' && $activated->{status} eq 'passed';
-    # A control with no accessibility action was focused instead, so the press
-    # still has to happen. Calamares' finished page reports its "Done" button
-    # with an empty action list, which failed a release job after a complete
-    # and correct installation.
-    if (($activated->{activation} // '') eq 'keyboard') {
-        select_console 'sut';
-        send_key 'ret';
-    }
-    return $activated;
+    my ($class, $role, $labels, $timeout, %options) = @_;
+    my $widget = $class->focus_widget($role, $labels, $timeout, %options);
+    select_console 'sut';
+    send_key($role =~ /check|radio|toggle/ ? 'spc' : 'ret');
+    return {status => 'passed', widget => $widget, activation => 'keyboard'};
 }
 
-# A dialog can swallow an activation that arrives while it is still animating
-# in: the action reports success and nothing happens. Where the control is
-# expected to disappear once it works, that disappearance is the only reliable
-# confirmation, so press again until it does.
 sub activate_widget_until_gone {
     my ($class, $role, $labels, $timeout) = @_;
-    my $found = $class->wait_widget($role, $labels, $timeout);
-    die "AT-SPI could not locate the $role: " . ($found->{error} // 'unknown reason')
-      unless ref $found eq 'HASH' && $found->{status} eq 'passed';
-    for my $attempt (1 .. 3) {
-        $class->activate_widget($role, $labels, 10);
-        my $still = $class->wait_widget($role, $labels, 10);
-        return $attempt unless ref $still eq 'HASH' && $still->{status} eq 'passed';
-    }
-    die "the $role stayed on screen after three activations";
+    $class->activate_widget($role, $labels, $timeout);
+    my $gone = $class->_widget_operation('wait-gone', $role, $labels, $timeout);
+    die 'control disappearance was not confirmed: ' . ($gone->{error} // 'incomplete query')
+      unless ($gone->{status} // '') eq 'passed' && $gone->{complete}
+      && ($gone->{reason} // '') eq 'absent';
+    return 1;
 }
 
-sub _launch_argv {
-    my ($class, $argv, $expected_name, $timeout, $expected_pid) = @_;
+sub _start_argv {
+    my ($class, $argv, $expected_name, $sample_memory) = @_;
+    $sample_memory //= 1;
     my $started = time;
     my $baseline = $class->result('baseline', 3);
+    die 'application baseline is incomplete' unless _baseline_is_complete($baseline);
     my $status_path = sprintf('/tmp/openqa-gui-status-%d-%d', $$, int(time * 1000) % 1_000_000);
     my $user_launcher_arguments = join ' ',
       shell_quote($user_launcher_path),
@@ -405,6 +635,16 @@ sub _launch_argv {
       . ': ' . _read_launch_debug($status_path)
       unless defined $launch_pid;
     $session_launch_pids{$launch_pid} = 1;
+    my $launch_memory = $sample_memory
+      ? eval { $class->result('memory', 1, '--pid', $launch_pid) } : undef;
+    return ($baseline, $status_path, $launch_pid, $launch_memory, $started);
+}
+
+sub _launch_argv {
+    my ($class, $argv, $expected_name, $timeout, $expected_pid, $sample_memory) = @_;
+    $sample_memory //= 1;
+    my ($baseline, $status_path, $launch_pid, $launch_memory, $started) =
+      $class->_start_argv($argv, $expected_name, $sample_memory);
     # 'process-tree' scopes the window search to this launch. A privileged
     # launcher can re-parent the real application outside our tree, so those
     # call sites stay unscoped and prove identity through the flow that follows.
@@ -413,10 +653,19 @@ sub _launch_argv {
       : $expected_pid eq 'process-tree'   ? $launch_pid
       : $expected_pid eq 'pending'        ? undef
       :                                     $expected_pid;
-    my $launch_memory = eval { $class->result('memory', 1, '--pid', $launch_pid) };
     my @wait_arguments = ('--name', $expected_name);
-    push @wait_arguments, ('--pid', $window_pid) if defined $window_pid;
+    push @wait_arguments, '--no-memory-sample' unless $sample_memory;
+    if (defined $window_pid) {
+        push @wait_arguments, ('--pid', $window_pid);
+        push @wait_arguments, ('--root-pid', $launch_pid)
+          if $expected_pid eq 'process-tree';
+    }
     my $opened = $class->result('wait-open', $timeout, @wait_arguments);
+    if (($opened->{status} // '') eq 'passed') {
+        my $scope_root = defined $expected_pid && $expected_pid eq 'process-tree'
+          ? $launch_pid : undef;
+        $class->set_widget_scope($opened->{pid}, $scope_root);
+    }
     if ($opened->{status} ne 'passed') {
         # Always attach the launcher's own output. A release gate that reports
         # "no window appeared" and nothing else sends whoever reads it back
@@ -437,32 +686,216 @@ sub _launch_argv {
 }
 
 sub cleanup {
-    my ($class, $timeout) = @_;
+    my ($class, $timeout, @owned_pids) = @_;
     die 'AT-SPI cleanup requires a positive timeout'
       unless defined $timeout && $timeout =~ /\A[1-9][0-9]*(?:\.[0-9]+)?\z/;
+    my %owned = map { $_ => 1 }
+      grep { defined $_ && $_ =~ /\A[0-9]+\z/ && $_ > 1 }
+      (keys %session_launch_pids, @owned_pids);
     select_console 'user-virtio-terminal';
-    _kill_process_groups(keys %session_launch_pids);
+    _kill_process_groups(keys %owned) if %owned;
     %session_launch_pids = ();
+    my $owned_gone = 1;
+    if (%owned) {
+        my $probe = join ' && ', map {
+            "(test ! -d /proc/$_ || grep -q '^State:[[:space:]]*Z' /proc/$_/status 2>/dev/null)"
+        } sort { $a <=> $b } keys %owned;
+        my $status = _run_guest_command($probe, 4);
+        $owned_gone = defined $status && $status == 0;
+    }
     select_console 'sut';
-    return $class->result('cleanup', $timeout);
+    my ($result, $probe_error);
+    eval { $result = $class->result('cleanup', $timeout); 1 }
+      or $probe_error = $@ || 'cleanup probe failed';
+    return {status => 'failed', error => 'owned application processes remained after cleanup'}
+      unless $owned_gone;
+    return $result if ref $result eq 'HASH' && ($result->{status} // '') eq 'passed';
+    return $result if ref $result eq 'HASH' && ($result->{status} // '') eq 'failed';
+    # The tested application has already proved its normal close contract, and
+    # every process group owned by this launch is gone. A stale, unrelated
+    # AT-SPI provider must not retroactively turn that application into a
+    # failure. Preserve the infrastructure problem as an explicit warning.
+    my $warning = ref $result eq 'HASH' ? ($result->{error} // 'cleanup observation incomplete')
+      : ($probe_error // 'cleanup observation unavailable');
+    return {
+        status => 'passed',
+        degraded => 1,
+        isolation => 'owned-process-groups-gone',
+        warning => $warning,
+    };
+}
+
+# The generic smoke sends exactly one normal close shortcut. It never invokes
+# an AT action, native quit command or kill to make the close test pass.
+sub close_with_shortcut {
+    my ($class, $pid, $status_path, $launch_pid, $timeout, $key, $mode,
+        $window_identity, $dismiss_auxiliary, $application_index) = @_;
+    $timeout //= 15;
+    $key //= 'alt-f4';
+    $mode //= 'process-exit';
+    $dismiss_auxiliary //= 0;
+    die 'invalid close timeout' unless $timeout =~ /\A[1-9][0-9]*\z/;
+    die 'invalid close shortcut' unless $key =~ /\A(?:alt-f4|ctrl-q|esc)\z/;
+    die 'invalid close observation mode'
+      unless $mode =~ /\A(?:process-exit|window-close)\z/;
+    die 'invalid auxiliary-window dismissal contract'
+      unless $dismiss_auxiliary == 0 || $dismiss_auxiliary == 1;
+    die 'auxiliary-window dismissal requires Ctrl+Q'
+      if $dismiss_auxiliary && $key ne 'ctrl-q';
+    die 'invalid application PID' unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
+    die 'invalid supervisor status file' unless defined $status_path
+      && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};
+    die 'invalid accessible window identity'
+      if defined $window_identity
+      && ($window_identity !~ m{\A[A-Za-z0-9_./:-]+\z}
+      || length($window_identity) > 4096);
+    die 'invalid AT-SPI application index'
+      if defined $application_index && $application_index !~ /\A[0-9]+\z/;
+    my @active_scope = ('--pid', $pid);
+    push @active_scope, ('--root-pid', $launch_pid)
+      if defined $launch_pid;
+    push @active_scope, ('--application-index', $application_index)
+      if defined $application_index;
+    push @active_scope, ('--window-identity', $window_identity)
+      if defined $window_identity && !$dismiss_auxiliary;
+    my $active = $class->result('active-window', 5, @active_scope);
+    die 'cannot close an unobserved or inactive application: ' . ($active->{error} // '')
+      unless ($active->{status} // '') eq 'passed' && $active->{active} && $active->{pid} == $pid;
+
+    my @pre_close_actions;
+    if ($dismiss_auxiliary) {
+        # A reviewed first launch can expose more than one transient surface in
+        # sequence (for example LibreOffice's template chooser followed by Tip
+        # of the Day).  Dismiss only currently observed surfaces from the same
+        # supervised launch, at most three times.  Re-observe after every key;
+        # never guess a second key or accept a different application's window.
+        my $settled = 0;
+        for my $round (1 .. 3) {
+            my $window_count = $active->{application_window_count} // 1;
+            my $active_role = $active->{window_role} // '';
+            my $separate_top_level = $active_role eq 'dialog' || $window_count > 1;
+            my $previous_identity = $active->{window_identity} // '';
+            my $pre_key = $separate_top_level ? 'alt-f4' : 'esc';
+            select_console 'sut';
+            send_key $pre_key;
+            push @pre_close_actions, 'keyboard.' . $pre_key;
+
+            my $deadline = time + 5;
+            my $dismissed = 0;
+            while (time < $deadline) {
+                sleep 0.25;
+                my $candidate = eval { $class->result('active-window', 1, @active_scope) };
+                next unless ref $candidate eq 'HASH'
+                  && ($candidate->{status} // '') eq 'passed'
+                  && $candidate->{active}
+                  && $candidate->{pid} == $pid;
+                my $candidate_identity = $candidate->{window_identity} // '';
+                my $candidate_count = $candidate->{application_window_count} // $window_count;
+                if ($separate_top_level) {
+                    next unless ($previous_identity ne '' && $candidate_identity ne $previous_identity)
+                      || $candidate_count < $window_count
+                      || ($candidate->{window_role} // '') ne 'dialog';
+                }
+                $window_identity = $candidate_identity if $candidate_identity ne '';
+                if (defined $candidate->{application_index}
+                    && $candidate->{application_index} =~ /\A[0-9]+\z/) {
+                    $application_index = $candidate->{application_index};
+                    @active_scope = ('--pid', $pid);
+                    push @active_scope, ('--root-pid', $launch_pid)
+                      if defined $launch_pid;
+                    push @active_scope, ('--application-index', $application_index);
+                }
+                $active = $candidate;
+                $dismissed = 1;
+                last;
+            }
+            die 'auxiliary first-run surface did not return control to the application'
+              unless $dismissed;
+
+            # A second surface can be scheduled immediately after the first
+            # closes.  Require a stable re-observation before the application
+            # Quit shortcut; this remains a bounded semantic check, not a
+            # screenshot comparison or an unobserved key sequence.
+            sleep 0.5;
+            my $stable = eval { $class->result('active-window', 1, @active_scope) };
+            die 'application focus could not be re-observed after auxiliary dismissal'
+              unless ref $stable eq 'HASH'
+              && ($stable->{status} // '') eq 'passed'
+              && $stable->{active}
+              && $stable->{pid} == $pid;
+            my $stable_identity = $stable->{window_identity} // '';
+            $window_identity = $stable_identity if $stable_identity ne '';
+            if (defined $stable->{application_index}
+                && $stable->{application_index} =~ /\A[0-9]+\z/) {
+                $application_index = $stable->{application_index};
+                @active_scope = ('--pid', $pid);
+                push @active_scope, ('--root-pid', $launch_pid)
+                  if defined $launch_pid;
+                push @active_scope, ('--application-index', $application_index);
+            }
+            $active = $stable;
+            my $stable_count = $active->{application_window_count} // 1;
+            my $stable_role = $active->{window_role} // '';
+            if ($stable_role ne 'dialog' && $stable_count <= 1) {
+                $settled = 1;
+                last;
+            }
+        }
+        die 'too many sequential auxiliary first-run surfaces'
+          unless $settled;
+    }
+    my $pre_close_action = @pre_close_actions
+      ? join(',', @pre_close_actions) : undef;
+    select_console 'sut';
+    send_key $key;
+    my ($gone, $window_closed) = (0, 0);
+    if ($mode eq 'window-close') {
+        my @close_scope = ('--pid', $pid);
+        push @close_scope, ('--root-pid', $launch_pid)
+          if defined $launch_pid;
+        push @close_scope, ('--window-identity', $window_identity)
+          if defined $window_identity;
+        my $closed = $class->result('wait-close', $timeout, @close_scope);
+        $window_closed = ($closed->{status} // '') eq 'passed'
+          && ($closed->{accessible_window} // 0) ? 1 : 0;
+        # A shared service may outlive its window. Observe whether it exited,
+        # but do not spend the whole close budget a second time.
+        my $wait = $class->run_command(_wait_for_exit_command($pid, 1), 6);
+        $gone = defined $wait && $wait == 0;
+        $window_closed = 1 if $gone;
+    }
+    else {
+        my $wait = $class->run_command(_wait_for_exit_command($pid, $timeout), $timeout + 5);
+        $gone = defined $wait && $wait == 0;
+        $window_closed = $gone;
+    }
+    my $code = _read_exit_code($status_path, $gone ? 3 : 1);
+    delete $session_launch_pids{$launch_pid} if defined $launch_pid && $gone;
+    return {close_action => 'keyboard.' . $key, pre_close_action => $pre_close_action,
+        process_gone => $gone,
+        window_closed => $window_closed, graceful_exit => $gone,
+        raw_application_exit_code => $code,
+        application_exit_code => $code, application_crashed => is_crash_exit_code($code)};
 }
 
 sub terminate_window {
-    my ($class, $pid, $status_path, $launch_pid, $entry) = @_;
+    my ($class, $pid, $status_path, $launch_pid, $entry, $keyboard_only) = @_;
     die "AT-SPI returned invalid application PID '$pid'"
       unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     die "invalid GUI supervisor status path '$status_path'"
       unless defined $status_path && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};
 
     my $keyboard_fallback = 0;
-    my $close = $class->result('close', 8, '--pid', $pid);
+    my $close = $keyboard_only
+      ? {status => 'failed', error => 'keyboard-only task'}
+      : $class->result('close', 8, '--pid', $pid);
     if ($close->{status} ne 'passed') {
         # Some toolkit windows expose no Window/Action close entry even though
         # the focused window still supports the normal desktop close shortcut.
         # The process and crash checks below remain mandatory. This also
         # handles a toolkit close action that is accepted but leaves a dialog
         # or popup focused instead of terminating the application.
-        my $native_close = _native_close_command($entry, $pid);
+        my $native_close = $keyboard_only ? undef : _native_close_command($entry, $pid);
         if (defined $native_close) {
             select_console 'user-virtio-terminal';
             my $native_status = _run_guest_command($native_close, 5);
@@ -497,7 +930,7 @@ sub terminate_window {
         $process_gone = defined $wait_exit && $wait_exit == 0;
     }
     if (!$process_gone) {
-        my $graceful_quit = _graceful_quit_command($entry);
+        my $graceful_quit = $keyboard_only ? undef : _graceful_quit_command($entry);
         if (defined $graceful_quit) {
             select_console 'user-virtio-terminal';
             my $quit_status = _run_guest_command($graceful_quit, 10);
@@ -549,7 +982,11 @@ sub terminate_window {
     }
     select_console 'sut';
 
-    my $closed = $class->result('wait-close', $process_gone ? 8 : 2, '--pid', $pid);
+    my @close_scope = ('--pid', $pid);
+    push @close_scope, ('--root-pid', $launch_pid)
+      if defined $launch_pid;
+    my $closed = $class->result(
+        'wait-close', $process_gone ? 8 : 2, @close_scope);
     my $raw_application_exit_code = _read_status_value(
         $status_path,
         'raw_exit_code',
@@ -567,6 +1004,7 @@ sub terminate_window {
         process_exit_code => $wait_exit,
         process_gone => $process_gone,
         cleanup_signal_exit_code => $cleanup_signal_exit_code,
+        graceful_exit => $process_gone && !defined $cleanup_signal_exit_code,
         raw_application_exit_code => $raw_application_exit_code,
         application_exit_code => $application_exit_code,
         application_crashed => is_crash_exit_code($raw_application_exit_code),
@@ -895,7 +1333,7 @@ sub _read_status_value {
     select_console 'sut';
     return undef unless defined $serial && $serial !~ /(?:^|\r?\n)MISSING\r?\n\Q$marker\E/;
     my ($exit_code) = $serial =~ /(?:^|\r?\n)([0-9]+)\r?\n\Q$marker\E/;
-    return $exit_code;
+    return defined $exit_code ? 0 + $exit_code : undef;
 }
 
 

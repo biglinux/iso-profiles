@@ -1,1 +1,1 @@
-registry.opensuse.org/devel/openqa/containers/opensuse/openqa-single-instance:5.1788175640.07173.14.211@sha256:3dd009d255a100c5cea9e45564a95a8fe468e818dc1ea1d31d2f529893287f64
+ghcr.io/biglinux/iso-profiles/openqa-single-instance@sha256:d30661a2cf685211b09a0c818656ed0a7e1816c1244534570f3559c104b803fd

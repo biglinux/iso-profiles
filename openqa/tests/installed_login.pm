@@ -14,13 +14,12 @@ sub run {
     # only as evidence in the job, never as the condition: SDDM's theme and
     # language are free to change between builds.
     installed_system->assert_greeter;
-    check_screen 'biglinux-sddm-login', 5;
-    # A greeter that just appeared may still be animating its password field in.
-    wait_still_screen stilltime => 3, timeout => 60;
+    save_screenshot;
 
     type_password(installed_system->test_password);
     send_key 'ret';
     installed_system->assert_desktop;
+    record_info 'Coverage boundary', 'SDDM keyboard login is functional evidence, not reader certification';
 }
 
 1;

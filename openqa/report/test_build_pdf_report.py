@@ -139,5 +139,31 @@ class ScreenshotEncodingTest(unittest.TestCase):
             self.assertIsNone(encoded_screenshot(broken))
 
 
+@unittest.skipIf(MISSING, f"report dependencies unavailable: {MISSING}")
+class CoverScopeTest(unittest.TestCase):
+    def rendered_text(self, suites):
+        from unittest.mock import patch
+        from build_pdf_report import Report, cover
+        pdf = Report()
+        with patch.object(pdf, "cell", wraps=pdf.cell) as cell:
+            cover(pdf, suites, {"result": "ok", "context": {}})
+        return "\n".join(str(call.args[2]) for call in cell.call_args_list if len(call.args) > 2)
+
+    def test_live_is_identified_as_a_plan_not_only_firmware(self):
+        from build_pdf_report import Suite
+        text = self.rendered_text([Suite(name="live", firmware="BIOS", modules={"live_desktop": "ok"})])
+        self.assertIn("live (BIOS)", text)
+
+    def test_shard_name_is_not_replaced_by_bios(self):
+        from build_pdf_report import Suite
+        text = self.rendered_text([Suite(name="applications-2", firmware="BIOS", modules={"applications": "ok"})])
+        self.assertIn("applications-2 (BIOS)", text)
+
+    def test_cover_states_when_more_plans_follow(self):
+        from build_pdf_report import Suite
+        text = self.rendered_text([Suite(name=f"plan-{i}", firmware="BIOS", modules={"live_desktop": "ok"}) for i in range(6)])
+        self.assertIn("3/6 planos", text)
+
+
 if __name__ == "__main__":
     unittest.main()

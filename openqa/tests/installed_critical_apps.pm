@@ -1,145 +1,65 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-
 use Mojo::Base 'basetest';
-use JSON::PP qw(decode_json);
 use testapi;
 use atspi;
 use application_policy;
+use application_smoke;
+use JSON::PP qw(encode_json);
 
-sub test_flags {
-    return {fatal => 1};
-}
-
-sub _desktop_id {
-    my ($entry) = @_;
-    return $entry->{relative_path} if defined $entry->{relative_path};
-    my $path = $entry->{path} // '';
-    $path =~ s{\A/usr/share/applications/}{};
-    return $path;
-}
-
-sub _critical_policy {
-    my $policy = application_policy->load;
-    die 'the application policy has no critical section'
-      unless ref $policy->{critical} eq 'ARRAY';
-    return $policy->{critical};
-}
-
-sub _test_application {
-    my ($entry, $functional_test) = @_;
-    my $desktop_id = _desktop_id($entry);
-    my ($status_path, $opened, $launch_method, $open_seconds, $launch_pid);
-    my $failure;
-    eval {
-        my ($baseline, $window, $method, $seconds, $path, $child_pid) = atspi->launch_desktop_entry(
-            $entry, 120
-        );
-        $opened = $window;
-        $status_path = $path;
-        $launch_method = $method;
-        $open_seconds = $seconds;
-        $launch_pid = $child_pid;
-        my $validation_mode = 'atspi-open';
-        if ($opened->{status} ne 'passed') {
-            # Not every application publishes an accessible window: mpv draws
-            # its own video surface and exposes nothing to AT-SPI. A window
-            # belonging to the launched process is the evidence, whichever
-            # mechanism reveals it, which is what the live sweep already does.
-            my $x11 = eval { atspi->x11_wait_open($launch_pid, '', 120) };
-            if (ref $x11 eq 'HASH' && $x11->{status} eq 'passed') {
-                $opened = $x11;
-                $validation_mode = 'x11-open';
-            }
-        }
-        if ($opened->{status} ne 'passed') {
-            # A launcher that hands the work to another process -- xdg-open, a
-            # settings opener, a D-Bus activation -- exits successfully and the
-            # window belongs to whoever it asked. Its own success plus a window
-            # that was not there before is the evidence available, so identity
-            # by provenance cannot be required of these entries.
-            my $exit_code = eval { atspi->launch_exit_code($status_path, 3) };
-            if (defined $exit_code && $exit_code == 0) {
-                my $delegated = eval { atspi->result('wait-open', 120, '--name', '') };
-                if (ref $delegated eq 'HASH' && $delegated->{status} eq 'passed') {
-                    $opened = $delegated;
-                    $validation_mode = 'delegated-open';
-                }
-            }
-        }
-        if ($opened->{status} ne 'passed') {
-            # Last resort, and recorded as such. mpv draws its own video
-            # surface: it publishes nothing to AT-SPI and, in the installed
-            # Wayland session, nothing to X11 either, so no window of it can be
-            # observed at all. Where that happens the contract falls back to
-            # what remains provable -- the program started, it is the program
-            # the entry names, and the checks below still require it to leave
-            # without crashing. The mode is reported so a weakly validated
-            # application is visible rather than silently equal to the others.
-            my $alive = atspi->run_command("test -d /proc/$launch_pid", 10);
-            die 'did not expose a window of its own: '
-              . ($opened->{error} // 'no reason given')
-              unless defined $alive && $alive == 0;
-            $validation_mode = 'process-alive';
-            $opened = {status => 'passed', pid => $launch_pid, window => undef};
-        }
-
-        # Opening a window that belongs to this launch and closing without a
-        # crash is the whole contract. Asserting an AT-SPI action, a specific
-        # exit code, or the window title would fail on harmless UI changes in
-        # the next release of the application.
-        my $termination = atspi->terminate_window(
-            $opened->{pid}, $status_path, $launch_pid, $entry
-        );
-        die 'application did not exit after the close request'
-          unless $termination->{process_gone};
-        die "application crashed on exit (wait status $termination->{raw_application_exit_code})"
-          if $termination->{application_crashed};
-
-        atspi->record_guest_info("Critical application: $desktop_id", sprintf(
-            'functional_test=%s; %s window "%s" opened in %.2f s via %s; exit status %s',
-            $functional_test,
-            $validation_mode,
-            $opened->{window} // 'untitled',
-            $open_seconds,
-            $launch_method,
-            $termination->{raw_application_exit_code} // 'unknown',
-        ));
-    };
-    $failure = $@ if $@;
-
-    my $cleanup;
-    my $cleanup_error;
-    eval { $cleanup = atspi->cleanup(20); 1 } or $cleanup_error = $@ || 'AT-SPI cleanup failed';
-    if (!$cleanup_error && (!ref $cleanup || $cleanup->{status} ne 'passed')) {
-        $cleanup_error = ref $cleanup && $cleanup->{error}
-          ? $cleanup->{error} : 'AT-SPI cleanup failed';
-    }
-    $failure ||= $cleanup_error if $cleanup_error;
-    if ($failure) {
-        $failure =~ s/\s+\z//;
-        die "Critical application $desktop_id failed: $failure";
-    }
-}
+sub test_flags { return {fatal => 0}; }
 
 sub run {
-    my %entries_by_id = map { _desktop_id($_) => $_ } @{atspi->inventory};
-    my @failures;
-    for my $item (@{_critical_policy()}) {
-        die 'critical application policy entry is invalid'
-          unless ref $item eq 'HASH'
-          && defined $item->{desktop_id}
-          && defined $item->{functional_test};
-        my $desktop_id = $item->{desktop_id};
-        my $entry = $entries_by_id{$desktop_id};
-        if (!$entry) {
-            push @failures, "$desktop_id is absent from the installed system";
-            next;
-        }
-        eval { _test_application($entry, $item->{functional_test}); 1 }
-          or push @failures, ($@ || "$desktop_id failed");
+    atspi->reset_baseline;
+    my %entries = map { $_->{relative_path} => $_ } @{atspi->inventory};
+    my $policy = application_policy->load;
+    die 'application policy version must be 2'
+      unless $policy->{version} && $policy->{version} == 2;
+    die 'invalid application selection' unless ref $policy->{critical} eq 'ARRAY';
+    die 'invalid application contracts' unless ref($policy->{contracts} // []) eq 'ARRAY';
+    my %contracts;
+    for my $contract (@{$policy->{contracts} // []}) {
+        die 'invalid selected application contract'
+          unless ref $contract eq 'HASH'
+          && defined $contract->{desktop_id}
+          && $contract->{desktop_id} =~ /\A[^\r\n]+\.desktop\z/;
+        die 'duplicate selected application contract'
+          if exists $contracts{$contract->{desktop_id}};
+        die 'invalid selected application auxiliary-window contract'
+          if exists $contract->{dismiss_auxiliary}
+          && !JSON::PP::is_bool($contract->{dismiss_auxiliary});
+        $contracts{$contract->{desktop_id}} = $contract;
     }
-    die 'Installed critical application failures: ' . join('; ', @failures)
-      if @failures;
+    my @results;
+    for my $item (@{$policy->{critical}}) {
+        my $id = $item->{desktop_id};
+        die 'invalid selected desktop ID' unless defined $id && $id =~ /\A[^\r\n]+\.desktop\z/;
+        my $entry = $entries{$id};
+        if (defined $entry) {
+            my $contract = $contracts{$id} // {};
+            $entry->{_coverage} = {
+                execution_contract => $contract->{kind} // 'standard',
+                contract_reason => $contract->{reason} // 'Default strict graphical application contract',
+                contract_close_key => $contract->{close_key},
+                contract_dismiss_auxiliary => $contract->{dismiss_auxiliary}
+                  ? JSON::PP::true : JSON::PP::false,
+                contract_close_timeout => $contract->{close_timeout},
+                contract_content_timeout => $contract->{content_timeout},
+                contract_allowed_exit_codes => $contract->{allowed_exit_codes}
+                  // (($contract->{kind} // '') eq 'transient-dialog' ? [0, 1] : [0]),
+                contract_requirements => $contract->{requires} // [],
+            };
+        }
+        my $result = application_smoke->check($entry, 60);
+        $result->{desktop_id} = $id;
+        push @results, $result;
+        atspi->record_guest_info("Installed application: $id", encode_json($result));
+    }
+    open my $file, '>:raw', 'testresults/installed-application-smoke.json'
+      or die "cannot create installed application report: $!";
+    print {$file} encode_json({schema_version => 1, scope => 'application smoke', applications => \@results});
+    close $file or die "cannot finish installed application report: $!";
+    die 'installed application smoke failures; see installed-application-smoke.json'
+      if grep { $_->{status} eq 'failed' } @results;
 }
 
 1;

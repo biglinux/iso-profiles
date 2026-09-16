@@ -82,6 +82,38 @@ while (($# > 0)); do
 done
 
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# Finalize locally too, not just when called by GitHub Actions. Preserve the
+# executor's original failure; a reporting failure only changes a successful run.
+phase=preflight
+status=
+# Invoked by the EXIT trap; tested with a failing preflight in the report suite.
+# shellcheck disable=SC2317
+finish_report() {
+    local result=$? report_status=success
+    trap - EXIT
+    # Killing the docker client does not stop its container. Interrupts and all
+    # failed exits must release QEMU/KVM before we collect the final report.
+    if ((result != 0)) && [[ -n "${container_name:-}" ]]; then
+        timeout --kill-after=5 15 docker rm --force "$container_name" >/dev/null 2>&1 || true
+    fi
+    ((result == 0)) || report_status=failure
+    if [[ -n "$results" ]]; then
+        REPORT_NAME="$plan" REPORT_STATUS="$report_status" \
+        ISO_FILENAME="$(basename -- "$iso")" OPENQA_BUILD="$build" GITHUB_SHA="$commit" \
+        REPORT_RUNNER_EXIT_CODE="$result" REPORT_ISOTOVIDEO_EXIT_CODE="$status" \
+        REPORT_STEPS_JSON="{\"$phase\":{\"outcome\":\"$report_status\"}}" \
+        python3 "$repository/openqa/report/finalize_report.py" \
+            --results-root "$results" --output-dir "$results/report" || {
+                echo 'run-plan.sh: detailed report failed; inspect the fallback report' >&2
+                ((result != 0)) || result=1
+            }
+    fi
+    exit "$result"
+}
+trap finish_report EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 gate_file="$repository/openqa/release-gate.yaml"
 image=${image:-$(tr -d '[:space:]' <"$repository/openqa/openqa-image.txt")}
 
@@ -227,20 +259,25 @@ printf 'Running plan %s against %s\n' "$plan" "$iso_name"
 # cannot hold a CI runner for six hours.
 # isotovideo logs to standard output; the file both the report and the KVM
 # check read is written by openQA's worker, which is not here.
+phase=isotovideo
 set +e
 timeout --kill-after=60 "$timeout_seconds" \
     docker "${docker_arguments[@]}" "$image" "${isotovideo_arguments[@]}" \
     2>&1 | tee "$results/autoinst-log.txt"
-status=${PIPESTATUS[0]}
+pipeline_status=("${PIPESTATUS[@]}")
+status=${pipeline_status[0]}
+log_status=${pipeline_status[1]}
 set -e
 
 if ((status == 124 || status == 137)); then
-    # SIGKILL reaches the docker client, which merely detaches: the container
-    # and its QEMU keep the disk and /dev/kvm until they are stopped by name.
-    docker rm --force "$container_name" >/dev/null 2>&1 || true
     echo "run-plan.sh: plan $plan exceeded $timeout_seconds seconds" >&2
-    exit 1
 fi
+# Preserve isotovideo/timeout's actual non-zero status, even when it could not
+# start QEMU or write a KVM command line. The EXIT trap still emits the report.
+((status == 0)) || exit "$status"
+phase=log-collection
+((log_status == 0)) || die "could not archive the executor log (tee status $log_status)"
+phase=backend-verification
 
 # KVM is not implied by QEMU_NO_KVM=0: os-autoinst adds -enable-kvm only when
 # /dev/kvm is readable *inside* the container (backend/qemu.pm), and silently

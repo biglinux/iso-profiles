@@ -30,24 +30,8 @@ if [ -z "$gui_home" ]; then
 	exit 1
 fi
 export HOME="$gui_home"
-export DISPLAY=:0
+unset DISPLAY XAUTHORITY WAYLAND_DISPLAY AT_SPI_BUS_ADDRESS
 export XDG_RUNTIME_DIR="/run/user/$gui_uid"
-if [ -z "${XAUTHORITY:-}" ] || [ ! -r "$XAUTHORITY" ]; then
-	if [ -r "$gui_home/.Xauthority" ]; then
-		export XAUTHORITY="$gui_home/.Xauthority"
-	else
-		for candidate in \
-			"$XDG_RUNTIME_DIR/.Xauthority" \
-			"/run/user/$gui_uid/.Xauthority" \
-			/var/lib/sddm/.Xauthority \
-			/var/run/sddm/.Xauthority; do
-			if [ -r "$candidate" ]; then
-				export XAUTHORITY="$candidate"
-				break
-			fi
-		done
-	fi
-fi
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 session_environment=$(systemctl --user show-environment 2>/dev/null || true)
 session_display=$(printf '%s\n' "$session_environment" | awk -F= '$1 == "DISPLAY" {print substr($0, index($0, "=") + 1); exit}')
@@ -56,14 +40,10 @@ session_wayland_display=$(printf '%s\n' "$session_environment" | awk -F= '$1 == 
 [ -n "$session_display" ] && export DISPLAY="$session_display"
 [ -n "$session_xauthority" ] && export XAUTHORITY="$session_xauthority"
 [ -n "$session_wayland_display" ] && export WAYLAND_DISPLAY="$session_wayland_display"
-for session_variable in QT_QPA_PLATFORM GDK_BACKEND XDG_SESSION_TYPE KDE_FULL_SESSION KDE_SESSION_VERSION; do
+for session_variable in XDG_CURRENT_DESKTOP QT_QPA_PLATFORM GDK_BACKEND XDG_SESSION_TYPE KDE_FULL_SESSION KDE_SESSION_VERSION; do
 	session_value=$(printf '%s\n' "$session_environment" | awk -F= -v key="$session_variable" '$1 == key {print substr($0, index($0, "=") + 1); exit}')
 	[ -n "$session_value" ] && export "$session_variable=$session_value"
 done
-export QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
-export SAL_ACCESSIBILITY_ENABLED=1
-export GTK_A11Y=atspi
-export NO_AT_BRIDGE=0
 
 supervisor=/tmp/openqa-gui-supervisor.sh
 

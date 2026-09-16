@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+import os
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from desktop_entry_launcher import (
@@ -100,7 +102,7 @@ class DesktopEntryLauncherTest(unittest.TestCase):
 
         self.assertEqual(command_for_entry(entry), ["filelight"])
 
-    def test_makes_terminal_vim_exit_cleanly_for_process_validation(self) -> None:
+    def test_terminal_wrapper_does_not_turn_vim_into_a_noninteractive_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry_path = Path(directory, "vim.desktop")
             entry_path.write_text(
@@ -117,7 +119,8 @@ class DesktopEntryLauncherTest(unittest.TestCase):
             _prepare_environment(entry, command)
 
         self.assertIn("vim", command)
-        self.assertEqual(command[-6:], ["-Nu", "NONE", "-n", "-es", "-c", "qa!"])
+        self.assertEqual(command[-1], "vim")
+        self.assertNotIn("-es", command)
 
     def test_resolves_desktop_entry_symlinks_without_leaving_application_root(
         self,
@@ -135,58 +138,22 @@ class DesktopEntryLauncherTest(unittest.TestCase):
 
         self.assertEqual(resolved, target)
 
-    def test_prepares_accessible_environment_for_heavy_gui_apps(self) -> None:
+    def test_preserves_native_environment_and_packaged_gui_arguments(self) -> None:
+        original = {"WAYLAND_DISPLAY": "wayland-1", "SAL_USE_VCLPLUGIN": "kf6"}
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            brave_path = root / "brave-browser.desktop"
-            brave_path.write_text(
-                "[Desktop Entry]\nType=Application\nName=Brave\nExec=brave %U\n",
-                encoding="utf-8",
-            )
-            libreoffice_path = root / "libreoffice-writer.desktop"
-            libreoffice_path.write_text(
-                "[Desktop Entry]\nType=Application\nName=Writer\nExec=libreoffice --writer %U\n",
-                encoding="utf-8",
-            )
-            gimp_path = root / "gimp.desktop"
-            gimp_path.write_text(
-                "[Desktop Entry]\nType=Application\nName=GIMP\nExec=gimp-3.2 %U\n",
-                encoding="utf-8",
-            )
+            for binary in ("brave", "libreoffice", "gimp", "mpv"):
+                with self.subTest(binary=binary):
+                    path = Path(directory, binary + ".desktop")
+                    path.write_text("[Desktop Entry]\nType=Application\nName=Test\n"
+                                    f"Exec={binary} %U\n", encoding="utf-8")
+                    entry = parse_desktop_entry(path)
+                    command = command_for_entry(entry)
+                    with mock.patch.dict(os.environ, original, clear=True):
+                        environment = _prepare_environment(entry, command)
+                    self.assertEqual(command, [binary])
+                    self.assertEqual(environment, original)
 
-            brave = parse_desktop_entry(brave_path)
-            libreoffice = parse_desktop_entry(libreoffice_path)
-            brave_command = command_for_entry(brave)
-            libreoffice_command = command_for_entry(libreoffice)
-            gimp = parse_desktop_entry(gimp_path)
-            gimp_command = command_for_entry(gimp)
-            _prepare_environment(brave, brave_command)
-            libreoffice_environment = _prepare_environment(
-                libreoffice, libreoffice_command
-            )
-            _prepare_environment(gimp, gimp_command)
-
-        self.assertIn("--force-renderer-accessibility", brave_command)
-        self.assertIn("--no-splash", gimp_command)
-        self.assertTrue(
-            any(
-                argument.startswith("-env:UserInstallation=")
-                for argument in libreoffice_command
-            )
-        )
-        self.assertEqual(libreoffice_environment["SAL_USE_VCLPLUGIN"], "gtk3")
-        self.assertEqual(libreoffice_environment["SAL_ACCESSIBILITY_ENABLED"], "1")
-        self.assertEqual(libreoffice_environment["LIBGL_ALWAYS_SOFTWARE"], "1")
-        self.assertEqual(libreoffice_environment["GALLIUM_DRIVER"], "llvmpipe")
-        self.assertEqual(
-            libreoffice_environment["MESA_LOADER_DRIVER_OVERRIDE"], "llvmpipe"
-        )
-        self.assertEqual(libreoffice_environment["QT_QUICK_BACKEND"], "software")
-        self.assertEqual(libreoffice_environment["QT_QPA_PLATFORM"], "xcb")
-        self.assertEqual(libreoffice_environment["QT_ACCESSIBILITY"], "1")
-        self.assertEqual(libreoffice_environment["GDK_BACKEND"], "x11")
-
-    def test_supplies_layout_to_keyboard_display(self) -> None:
+    def test_does_not_repair_missing_desktop_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry_path = Path(directory, "gkbd-keyboard-display.desktop")
             entry_path.write_text(
@@ -201,9 +168,9 @@ class DesktopEntryLauncherTest(unittest.TestCase):
 
             _prepare_environment(entry, command)
 
-        self.assertEqual(command, ["gkbd-keyboard-display", "-l", "us"])
+        self.assertEqual(command, ["gkbd-keyboard-display"])
 
-    def test_forces_software_rendering_for_mpv_before_file_separator(self) -> None:
+    def test_mpv_keeps_its_native_output_and_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry_path = Path(directory, "mpv.desktop")
             entry_path.write_text(
@@ -217,15 +184,8 @@ class DesktopEntryLauncherTest(unittest.TestCase):
             command = command_for_entry(entry)
             environment = _prepare_environment(entry, command)
 
-        separator = command.index("--")
-        self.assertLess(command.index("--no-config"), separator)
-        self.assertLess(command.index("--hwdec=no"), separator)
-        self.assertLess(command.index("--vo=x11"), separator)
-        self.assertLess(command.index("--force-window=immediate"), separator)
-        self.assertLess(command.index("--idle=yes"), separator)
-        self.assertEqual(environment["LIBGL_ALWAYS_SOFTWARE"], "1")
-        self.assertEqual(environment["GALLIUM_DRIVER"], "llvmpipe")
-        self.assertEqual(environment["MESA_LOADER_DRIVER_OVERRIDE"], "llvmpipe")
+        self.assertEqual(command, ["mpv", "--player-operation-mode=pseudo-gui", "--"])
+        self.assertEqual(environment, dict(os.environ))
 
 
 class UnreadableEntryTest(unittest.TestCase):
@@ -244,7 +204,13 @@ class UnreadableEntryTest(unittest.TestCase):
             )
             unreadable.chmod(0o000)
 
-            entries = discover_desktop_entries(root)
+            original_read = Path.read_text
+            def read_checked(path, *args, **kwargs):
+                if path == unreadable:
+                    raise PermissionError("test fixture denies access")
+                return original_read(path, *args, **kwargs)
+            with mock.patch.object(Path, "read_text", read_checked):
+                entries = discover_desktop_entries(root)
 
         self.assertEqual([entry.name for entry in entries], ["Good", "locked"])
         # Nothing to launch, so the coverage inventory classifies and explains it.

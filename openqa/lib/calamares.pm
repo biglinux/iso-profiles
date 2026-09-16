@@ -24,9 +24,87 @@ our @DONE = ('Done', 'Concluir', 'Concluído', 'Finish', 'Finalizar');
 # accept both so the toolkit Calamares happens to use is not a variable.
 our $BUTTON_ROLES = 'push button|button';
 
+my $launch_pid;
+my $application_pid;
+my $handoff_token;
+my $application_index;
+
+sub set_launch_scope {
+    my ($class, $pid, $token) = @_;
+    die 'Calamares requires a valid launch-tree PID'
+      unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
+    die 'Calamares requires a valid privilege-handoff token'
+      unless defined $token && $token =~ /\Aopenqa-calamares-[A-Za-z0-9-]{1,192}\z/;
+    $launch_pid = $pid;
+    $application_pid = undef;
+    $handoff_token = $token;
+    $application_index = undef;
+    atspi->set_widget_scope($launch_pid, $launch_pid);
+}
+
+sub _require_launch_scope {
+    die 'Calamares launch scope has not been established' unless defined $launch_pid;
+    return $launch_pid;
+}
+
+# The BigLinux GTK launcher starts Qt Calamares through sudo and dbus-launch.
+# That deliberate privilege boundary can move the Qt process outside the user
+# supervisor's process group.  Resolve the handoff by an exact executable,
+# root UID and the unique DESKTOP_STARTUP_ID that the product wrapper explicitly
+# forwards.  A title, process name or globally new accessibility window is not
+# sufficient provenance.
+sub begin_application_transition {
+    my ($class, $timeout) = @_;
+    $class->_require_launch_scope;
+    die 'Calamares handoff token has not been established'
+      unless defined $handoff_token;
+    my $resolved = atspi->wait_process_handoff(
+        '/usr/bin/calamares', 'DESKTOP_STARTUP_ID', $handoff_token, 0,
+        $timeout // 90,
+    );
+    die 'the privileged Qt Calamares process could not be identified: '
+      . ($resolved->{error} // 'incomplete process observation')
+      unless ref $resolved eq 'HASH' && ($resolved->{status} // '') eq 'passed';
+    $application_pid = $resolved->{pid};
+    $application_index = undef;
+    # The exact Qt PID is now the authority.  Do not claim it is a setsid
+    # supervisor root: ordinary descendant scoping is sufficient from here.
+    atspi->set_widget_scope($application_pid, undef);
+    return $resolved;
+}
+
+sub _scope_options {
+    my ($class) = @_;
+    my $root_pid = $class->_require_launch_scope;
+    my %options;
+    if (defined $application_pid) {
+        %options = (pid => $application_pid, root_pid => undef);
+    }
+    else {
+        %options = (pid => $root_pid, root_pid => $root_pid);
+    }
+    $options{application_index} = $application_index
+      if defined $application_index;
+    return %options;
+}
+
+sub _remember_application {
+    my ($class, $result) = @_;
+    return $result unless ref $result eq 'HASH' && ref $result->{widget} eq 'HASH';
+    my $index = $result->{widget}{application_index};
+    if (defined $index) {
+        die 'installer control exposed an invalid AT-SPI application index'
+          unless $index =~ /\A[0-9]+\z/;
+        $application_index = 0 + $index;
+    }
+    return $result;
+}
+
 sub click_action {
     my ($class, $labels, $timeout) = @_;
-    return atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60);
+    my %options = $class->_scope_options;
+    return $class->_remember_application(
+        atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60, %options));
 }
 
 # Each installer page is identified by a control only that page publishes,
@@ -48,8 +126,25 @@ our %PAGE_ANCHORS = (
     'launcher-home' => [$BUTTON_ROLES, ['Install', 'Instalar']],
     'launcher-tips' => ['label|heading|static',
         ['Manual Partitioning Recommendations', 'Recomendações de Particionamento Manual']],
-    'installer-welcome' => ['label|heading|static',
-        ['Welcome to the Calamares installer', 'Bem-vindo ao instalador Calamares']],
+    # BigLinux branding sets welcomeStyleCalamares=false and productName=BigLinux,
+    # so Calamares renders the traditional branded heading, not the generic
+    # "Welcome to the Calamares installer" text. Keep the generic forms for
+    # profiles that deliberately select the alternative style, and include the
+    # other product names shipped by this repository.
+    'installer-welcome' => ['label|heading|static', [
+        'Welcome to the BigLinux installer',
+        'Welcome to the BigCommunity installer',
+        'Welcome to the XivaStudio installer',
+        'Welcome to the Calamares installer for BigLinux',
+        'Welcome to the Calamares installer for BigCommunity',
+        'Welcome to the Calamares installer for XivaStudio',
+        'Bem-vindo ao instalador BigLinux',
+        'Bem-vindo ao instalador do BigLinux',
+        'Bem-vindo ao instalador BigCommunity',
+        'Bem-vindo ao instalador do BigCommunity',
+        'Bem-vindo ao instalador XivaStudio',
+        'Bem-vindo ao instalador do XivaStudio',
+    ]],
     'installer-location' => ['label|combo box', ['Region', 'Região']],
     'installer-keyboard' => ['label|combo box', ['Keyboard Model', 'Modelo de teclado']],
     'partitions-page' => ['radio button', ['Erase disk', 'Apagar disco']],
@@ -69,7 +164,19 @@ sub page_anchor {
 sub assert_page {
     my ($class, $page, $timeout) = @_;
     my ($role, $labels) = $class->page_anchor($page);
-    my $found = atspi->wait_widget($role, $labels, $timeout // 60);
+    # Do not rediscover globally or narrow to a transient GTK child: Calamares
+    # replaces that child with a Qt process, still owned by the same launch.
+    my %options = $class->_scope_options;
+    if (defined $application_pid) {
+        # The privileged Qt application is newly registered and can expose a
+        # large, slow tree.  A page anchor needs one exact positive witness,
+        # not a full census of unrelated descendants.  Absence and actions keep
+        # their strict complete-tree contracts.
+        $options{positive_witness} = 1;
+        $options{startup_timeout_ms} = 5000;
+    }
+    my $found = $class->_remember_application(
+        atspi->assert_widget($role, $labels, $timeout // 60, %options));
     die "the installer did not show the '$page' page: "
       . ($found->{error} // 'unknown reason')
       unless ref $found eq 'HASH' && $found->{status} eq 'passed';

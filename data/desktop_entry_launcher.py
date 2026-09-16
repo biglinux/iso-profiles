@@ -24,6 +24,8 @@ class DesktopEntry:
     no_display: bool
     terminal: bool
     dbus_activatable: bool
+    only_show_in: tuple[str, ...] = ()
+    not_show_in: tuple[str, ...] = ()
 
     @property
     def launchable(self) -> bool:
@@ -46,6 +48,29 @@ class DesktopEntry:
             return "DBusActivatable entry requires gio, which is not installed"
         return None
 
+    def not_applicable_reason(self) -> str | None:
+        """Applicability is not a package-installation requirement for this ISO."""
+        if self.hidden:
+            return "desktop entry is hidden"
+        if self.entry_type in {"Link", "Directory"}:
+            return f"desktop entry type is {self.entry_type!r}"
+        # XDG_CURRENT_DESKTOP is ordered; the first matching name decides.
+        shown = not self.only_show_in
+        for desktop in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":"):
+            if desktop and desktop in self.only_show_in:
+                shown = True
+                break
+            if desktop and desktop in self.not_show_in:
+                shown = False
+                break
+        if not shown:
+            return "desktop entry does not apply to the current desktop"
+        if self.try_exec and shutil.which(self.try_exec) is None:
+            return f"not installed (TryExec): {self.try_exec}"
+        if self.terminal:
+            return "terminal command is outside the graphical application smoke test"
+        return None
+
     def as_dict(self, root: Path) -> dict[str, object]:
         launch_binary = None
         if self.skip_reason() is None:
@@ -66,6 +91,7 @@ class DesktopEntry:
             "terminal": self.terminal,
             "dbus_activatable": self.dbus_activatable,
             "skip_reason": self.skip_reason(),
+            "not_applicable_reason": self.not_applicable_reason(),
         }
 
 
@@ -131,13 +157,29 @@ def parse_desktop_entry(path: Path) -> DesktopEntry:
         no_display=_parse_boolean(values.get("NoDisplay")),
         terminal=_parse_boolean(values.get("Terminal")),
         dbus_activatable=_parse_boolean(values.get("DBusActivatable")),
+        only_show_in=tuple(filter(None, values.get("OnlyShowIn", "").split(";"))),
+        not_show_in=tuple(filter(None, values.get("NotShowIn", "").split(";"))),
     )
 
 
 def discover_desktop_entries(
     root: Path = Path("/usr/share/applications"),
 ) -> list[DesktopEntry]:
-    entries = [parse_desktop_entry(path) for path in root.rglob("*.desktop")]
+    """Return a complete inventory, or raise when a directory cannot be read.
+
+    Path.rglob can suppress filesystem errors. An unreadable application tree
+    must not be mistaken for an ISO without applications. Do not follow directory
+    symlinks (which can cycle); individual packaged launcher symlinks stay valid.
+    """
+    entries: list[DesktopEntry] = []
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as children:
+            for child in children:
+                if child.is_dir(follow_symlinks=False):
+                    pending.append(Path(child.path))
+                elif child.name.endswith(".desktop"):
+                    entries.append(parse_desktop_entry(Path(child.path)))
     return sorted(entries, key=lambda entry: str(entry.path))
 
 
@@ -183,21 +225,8 @@ def resolve_entry_path(
 
 def _prepare_environment(entry: DesktopEntry, command: list[str]) -> dict[str, str]:
     environment = os.environ.copy()
-    executable = Path(command[0]).name.casefold()
-    entry_identity = entry.path.stem.casefold()
-
-    # GitHub-hosted runners do not promise virgl or a usable physical GPU. Keep
-    # every graphical application on the same deterministic software path;
-    # this also prevents Qt Quick from selecting ZINK before AT-SPI is ready.
-    environment["LIBGL_ALWAYS_SOFTWARE"] = "1"
-    environment["GALLIUM_DRIVER"] = "llvmpipe"
-    environment["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
-    environment["QT_QUICK_BACKEND"] = "software"
-    environment["QT_QPA_PLATFORM"] = "xcb"
-    environment["QT_ACCESSIBILITY"] = "1"
-    environment["GDK_BACKEND"] = "x11"
-    environment.pop("WAYLAND_DISPLAY", None)
-
+    # Test the session and packaged command users actually receive. Do not force
+    # an alternate toolkit, display server, renderer or accessibility bridge.
     if entry.terminal:
         terminal = shutil.which("konsole") or shutil.which("xterm")
         if terminal:
@@ -206,56 +235,6 @@ def _prepare_environment(entry: DesktopEntry, command: list[str]) -> dict[str, s
                 command[:] = [terminal, "--nofork", "-e", *original_command]
             else:
                 command[:] = [terminal, "-e", *original_command]
-
-    if executable in {"libreoffice", "soffice", "soffice.bin"}:
-        # The GTK VCL backend exposes LibreOffice's accessibility tree reliably
-        # in the live KDE session while isolating the test profile.
-        environment.setdefault("SAL_USE_VCLPLUGIN", "gtk3")
-        environment.setdefault("SAL_ACCESSIBILITY_ENABLED", "1")
-        if not any(
-            argument.startswith("-env:UserInstallation=") for argument in command
-        ):
-            command.append(
-                f"-env:UserInstallation=file:///tmp/openqa-lo-profile-{os.getpid()}"
-            )
-
-    if (
-        "gimp" in executable or "gimp" in entry_identity
-    ) and "--no-splash" not in command:
-        command.append("--no-splash")
-
-    if executable == "gkbd-keyboard-display" and len(command) == 1:
-        # The desktop entry omits the required layout argument.
-        command.extend(["-l", "us"])
-
-    if (
-        "brave" in executable or "brave" in entry_identity
-    ) and "--force-renderer-accessibility" not in command:
-        # Chromium-based browsers otherwise expose only their top-level frame
-        # to AT-SPI in a fresh live session.
-        command.append("--force-renderer-accessibility")
-
-    if executable in {"vim", "nvim"} and "-es" not in command:
-        # Terminal=true entries cannot expose a stable application AT-SPI tree.
-        # Run Vim's real executable through a deterministic Ex command so the
-        # process-only validation can prove startup and clean exit.
-        command.extend(["-Nu", "NONE", "-n", "-es", "-c", "qa!"])
-
-    if executable == "mpv" or entry_identity == "mpv":
-        # GitHub-hosted runners do not provide a stable virgl device. Keep this
-        # application test independent of host GPU availability while still
-        # exercising mpv's X11 window and AT-SPI lifecycle.
-        for option in (
-            "--no-config",
-            "--hwdec=no",
-            "--vo=x11",
-            "--force-window=immediate",
-            "--idle=yes",
-        ):
-            if option in command:
-                continue
-            separator = command.index("--") if "--" in command else len(command)
-            command.insert(separator, option)
 
     return environment
 
@@ -292,8 +271,6 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 2
     command = command_for_entry(entry)
     environment = _prepare_environment(entry, command)
-    environment.setdefault("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1")
-    environment.setdefault("SAL_ACCESSIBILITY_ENABLED", "1")
     os.execvpe(command[0], command, environment)
 
 

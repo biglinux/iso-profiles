@@ -8,6 +8,9 @@ from unittest import mock
 import atspi_probe
 from atspi_probe import (
     _is_transient_window,
+    _launch_process_scope,
+    _owned_process_scope,
+    _process_scope_exited,
     _label_matches,
     _name_matches,
     _normalize_label,
@@ -50,6 +53,108 @@ class AtspiProbeTest(unittest.TestCase):
             result = process_tree_pss_mib(100, proc)
 
         self.assertEqual(result, 1.8)
+
+    @staticmethod
+    def _write_process(
+        proc: Path, pid: int, parent: int, group: int, *, with_namespace_group: bool = True
+    ) -> None:
+        process = proc / str(pid)
+        process.mkdir()
+        nspgid = f"NSpgid:\t{group}\n" if with_namespace_group else ""
+        (process / "status").write_text(
+            f"Name:\ttest\nPPid:\t{parent}\n{nspgid}", encoding="utf-8"
+        )
+        # state, ppid, pgrp, session: comm deliberately contains ')' to prove
+        # that the fallback parser splits after the final closing parenthesis.
+        (process / "stat").write_text(
+            f"{pid} (test) helper) S {parent} {group} {group} 0 0 0 0\n",
+            encoding="utf-8",
+        )
+
+    def test_launch_scope_keeps_reparented_process_group_member(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            # The original group leader 100 has exited. Its GUI child was
+            # re-parented to PID 1 but remains in process group 100.
+            self._write_process(proc, 200, 1, 100)
+            self._write_process(proc, 201, 200, 201)
+            self._write_process(proc, 300, 1, 300)
+
+            scope = _launch_process_scope(100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 200})
+        self.assertNotIn(300, scope)
+
+    def test_known_window_pid_does_not_import_its_unrelated_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 220, 1, 150)
+            self._write_process(proc, 221, 1, 150)
+
+            scope = _launch_process_scope(100, (220,), proc)
+
+        self.assertEqual(scope, {100, 220})
+        self.assertNotIn(221, scope)
+
+    def test_live_nonleader_root_does_not_import_a_shared_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 100, 1, 50)
+            self._write_process(proc, 101, 1, 50)
+            self._write_process(proc, 102, 100, 50)
+
+            scope = _launch_process_scope(100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 102})
+        self.assertNotIn(101, scope)
+
+    def test_ordinary_pid_scope_does_not_import_session_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 100, 1, 50)
+            self._write_process(proc, 101, 1, 50)
+            self._write_process(proc, 102, 100, 50)
+
+            scope = _owned_process_scope(100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 102})
+        self.assertNotIn(101, scope)
+
+    def test_explicit_supervisor_root_enables_group_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 200, 1, 100)
+            self._write_process(proc, 201, 1, 201)
+
+            scope = _owned_process_scope(200, 100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 200})
+        self.assertNotIn(201, scope)
+
+    def test_process_group_falls_back_to_proc_stat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 240, 1, 140, with_namespace_group=False)
+
+            scope = _launch_process_scope(140, proc_root=proc)
+
+        self.assertEqual(scope, {140, 240})
+
+    def test_scope_is_live_after_group_leader_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 260, 1, 160)
+            scope = _launch_process_scope(160, proc_root=proc)
+
+            self.assertFalse(_process_scope_exited(scope, proc))
+            for child in (proc / "260").iterdir():
+                child.unlink()
+            (proc / "260").rmdir()
+            self.assertTrue(_process_scope_exited(scope, proc))
+
+    def test_empty_scope_is_not_proof_of_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertFalse(_process_scope_exited(set(), Path(directory)))
 
     def test_keeps_rss_when_pss_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -125,12 +230,21 @@ class FakeGLib:
     Error = FakeError
 
 
+class FakeStateSet:
+    def __init__(self, states=()) -> None:
+        self.states = set(states)
+
+    def contains(self, state):
+        return state in self.states
+
+
 class FakeAccessible:
     def __init__(self, name: str, pid: int, children=None, role: str = "frame") -> None:
         self.name = name
         self.pid = pid
         self.children = list(children or [])
         self.role = role
+        self.states = {"showing", "sensitive", "focusable"}
 
     def get_name(self):
         return self.name
@@ -147,8 +261,22 @@ class FakeAccessible:
     def get_role_name(self):
         return self.role
 
+    def get_state_set(self):
+        return FakeStateSet(self.states)
+
 
 class FakeAtspi:
+    class StateType:
+        SHOWING = "showing"
+        SENSITIVE = "sensitive"
+        CHECKED = "checked"
+        SELECTED = "selected"
+        FOCUSED = "focused"
+        FOCUSABLE = "focusable"
+        DEFUNCT = "defunct"
+
+    set_timeout = mock.Mock()
+
     desktop = None
 
     @classmethod
@@ -180,6 +308,276 @@ class AtspiNullChildrenTest(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0][1]["name"], "Settings")
         self.assertEqual(records[0][1]["pid"], 42)
+        self.assertEqual(records[0][1]["identity"], "1")
+        self.assertEqual(records[0][1]["application_index"], 1)
+
+    def test_window_state_is_read_only_when_requested(self):
+        window = FakeAccessible("Settings", 42)
+        window.states = {"defunct"}
+        application = FakeAccessible("systemsettings", 42, [window], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            record = list(
+                atspi_probe._window_records(
+                    allowed_pids={42}, include_window_state=True
+                )
+            )[0][1]
+        self.assertFalse(record["showing"])
+        self.assertTrue(record["defunct"])
+
+    def test_scoped_enumeration_does_not_query_unrelated_windows(self):
+        unrelated = FakeAccessible("shell", 99)
+        unrelated.get_name = mock.Mock(side_effect=FakeError("unrelated name unavailable"))
+        unrelated.get_child_count = mock.Mock(side_effect=FakeError("unrelated view unavailable"))
+        target = FakeAccessible("app", 42, [FakeAccessible("Window", 42)])
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [unrelated, target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            records = list(atspi_probe._window_records(allowed_pids={42}))
+        self.assertEqual([record["pid"] for _, record in records], [42])
+        unrelated.get_name.assert_not_called()
+        unrelated.get_child_count.assert_not_called()
+
+    def test_streaming_enumeration_yields_first_window_before_reading_later_one(self):
+        first = FakeAccessible("Welcome", 42, role="frame")
+        slow = FakeAccessible("Slow", 42, role="frame")
+        slow.get_name = mock.Mock(
+            side_effect=AssertionError("later top-level window must stay unread")
+        )
+        application = FakeAccessible("calamares", 42, [first, slow], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42}, stream_windows=True
+            )
+            window, record = next(records)
+
+        self.assertIs(window, first)
+        self.assertEqual(record["name"], "Welcome")
+        slow.get_name.assert_not_called()
+
+    def test_scoped_enumeration_starts_with_the_recent_target(self):
+        order = []
+        old = FakeAccessible("old", 99)
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        old_get_pid, target_get_pid = old.get_process_id, target.get_process_id
+        old.get_process_id = lambda: (order.append("old"), old_get_pid())[1]
+        target.get_process_id = lambda: (order.append("target"), target_get_pid())[1]
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [old, target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            records = list(atspi_probe._window_records(allowed_pids={42}))
+        self.assertEqual(records[0][1]["pid"], 42)
+        self.assertEqual(order[0], "target")
+
+    def test_scoped_enumeration_revisits_a_pid_verified_application_hint_first(self):
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        unrelated = FakeAccessible("shell", 99)
+        unrelated.get_process_id = mock.Mock(
+            side_effect=AssertionError("unrelated provider must not be queried first")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target, unrelated])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42}, preferred_application_index=0
+            )
+            first = next(records)
+            records.close()
+        self.assertEqual(first[1]["pid"], 42)
+        self.assertEqual(first[1]["application_index"], 0)
+        unrelated.get_process_id.assert_not_called()
+
+    def test_exact_window_identity_is_read_before_other_target_windows(self):
+        slow = FakeAccessible("Slow", 42)
+        slow.path = "/slow"
+        slow.get_name = mock.Mock(
+            side_effect=AssertionError("non-target window semantics must not be read first")
+        )
+        target_window = FakeAccessible("Target", 42)
+        target_window.path = "/target"
+        target = FakeAccessible("target", 42, [slow, target_window], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42},
+                preferred_application_index=0,
+                stop_after_preferred_match=True,
+                preferred_window_identity="/target",
+            )
+            first = next(records)
+            records.close()
+        self.assertEqual(first[1]["identity"], "/target")
+        slow.get_name.assert_not_called()
+
+    def test_exact_window_identity_survives_a_shifted_registry_slot(self):
+        target_window = FakeAccessible("Target", 42)
+        target_window.path = "/target"
+        target = FakeAccessible("target", 42, [target_window], "application")
+        stale = FakeAccessible("stale", 99, [FakeAccessible("Other", 99)], "application")
+        older = FakeAccessible("older", 98)
+        older.get_process_id = mock.Mock(
+            side_effect=AssertionError("exact target identity must stop before older providers")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [older, target, stale])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = list(
+                atspi_probe._window_records(
+                    allowed_pids={42},
+                    preferred_application_index=2,
+                    preferred_window_identity="/target",
+                )
+            )
+        self.assertEqual([record["identity"] for _, record in records], ["/target"])
+        self.assertEqual(records[0][1]["application_index"], 1)
+        older.get_process_id.assert_not_called()
+
+    def test_pid_verified_hint_can_stop_before_unrelated_registry_providers(self):
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        unrelated = FakeAccessible("shell", 99)
+        unrelated.get_process_id = mock.Mock(
+            side_effect=AssertionError("unrelated provider must not be queried")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target, unrelated])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = list(
+                atspi_probe._window_records(
+                    allowed_pids={42},
+                    preferred_application_index=0,
+                    stop_after_preferred_match=True,
+                )
+            )
+        self.assertEqual([record["pid"] for _, record in records], [42])
+        unrelated.get_process_id.assert_not_called()
+
+    def test_stale_application_hint_falls_back_after_pid_mismatch(self):
+        stale_slot = FakeAccessible("unrelated", 99)
+        target = FakeAccessible("target", 42, [FakeAccessible("Window", 42)])
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [stale_slot, target])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = list(
+                atspi_probe._window_records(
+                    allowed_pids={42}, preferred_application_index=0
+                )
+            )
+        self.assertEqual([record["pid"] for _, record in records], [42])
+        self.assertEqual(records[0][1]["application_index"], 1)
+
+    def test_stale_hint_resumes_newest_first_instead_of_scanning_neighbours(self):
+        order = []
+        providers = []
+        for index in range(20):
+            pid = 42 if index == 19 else 100 + index
+            children = [FakeAccessible("Target", 42)] if pid == 42 else []
+            provider = FakeAccessible(f"provider-{index}", pid, children, "application")
+            original = provider.get_process_id
+            provider.get_process_id = (
+                lambda label, getter: lambda: (order.append(label), getter())[1]
+            )(f"provider-{index}", original)
+            providers.append(provider)
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, providers)
+
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ):
+            records = atspi_probe._window_records(
+                allowed_pids={42}, preferred_application_index=14
+            )
+            first = next(records)
+            records.close()
+
+        self.assertEqual(order, ["provider-14", "provider-19"])
+        self.assertEqual(first[1]["pid"], 42)
+        self.assertEqual(first[1]["application_index"], 19)
+
+    def test_scoped_enumeration_does_not_hide_target_failure(self):
+        target = FakeAccessible("app", 42)
+        target.get_child_count = mock.Mock(side_effect=FakeError("target unavailable"))
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "incomplete"):
+            list(atspi_probe._window_records(allowed_pids={42}))
+
+    def test_dead_registry_provider_is_skipped_without_hiding_live_windows(self):
+        stale_window = FakeAccessible("Gone", 42)
+        stale_window.get_name = mock.Mock(side_effect=FakeError("provider vanished"))
+        stale = FakeAccessible("stale", 42, [stale_window], "application")
+        live = FakeAccessible("live", 43, [FakeAccessible("Settings", 43)], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [stale, live])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "launch_process_exited", side_effect=lambda pid: pid == 42):
+            records = list(atspi_probe._window_records())
+        self.assertEqual([record["pid"] for _, record in records], [43])
+
+    def test_live_registry_provider_failure_remains_incomplete(self):
+        broken_window = FakeAccessible("Broken", 42)
+        broken_window.get_name = mock.Mock(side_effect=FakeError("provider unavailable"))
+        target = FakeAccessible("app", 42, [broken_window], "application")
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [target])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "launch_process_exited", return_value=False), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "window enumeration was incomplete"):
+            list(atspi_probe._window_records())
+
+    def test_baseline_reads_only_window_identity_and_pid(self):
+        window = FakeAccessible("Sensitive title", 42)
+        window.path = "/org/a11y/window/42"
+        window.get_name = mock.Mock(
+            side_effect=AssertionError("baseline must not read a window name")
+        )
+        window.get_role_name = mock.Mock(
+            side_effect=AssertionError("baseline must not read a window role")
+        )
+        window.get_child_count = mock.Mock(
+            side_effect=AssertionError("baseline must not walk window content")
+        )
+        application = FakeAccessible("editor", 42, [window], "application")
+        application.get_name = mock.Mock(
+            side_effect=AssertionError("baseline must not read an application name")
+        )
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ), mock.patch.object(atspi_probe.time, "monotonic", return_value=0):
+            records = atspi_probe._baseline_window_records(1)
+
+        self.assertEqual(
+            records,
+            [{"key": "42\0/org/a11y/window/42", "pid": 42}],
+        )
+        application.get_name.assert_not_called()
+        window.get_name.assert_not_called()
+        window.get_role_name.assert_not_called()
+        window.get_child_count.assert_not_called()
+
+    def test_baseline_keeps_live_provider_errors_strict(self):
+        application = FakeAccessible("editor", 42, [], "application")
+        application.get_child_count = mock.Mock(side_effect=FakeError("busy"))
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [application])
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ), mock.patch.object(atspi_probe.time, "monotonic", return_value=0), \
+             mock.patch.object(atspi_probe, "launch_process_exited", return_value=False), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "baseline application"):
+            atspi_probe._baseline_window_records(1)
+
+    def test_empty_scope_returns_no_window(self):
+        FakeAtspi.desktop = FakeAccessible("desktop", 1, [FakeAccessible("other", 99)])
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)):
+            self.assertEqual(list(atspi_probe._window_records(allowed_pids=set())), [])
 
     def test_walk_does_not_yield_null_children(self) -> None:
         child = FakeAccessible("child", 42)
@@ -190,6 +588,23 @@ class AtspiNullChildrenTest(unittest.TestCase):
             walked = list(atspi_probe._walk(root))
 
         self.assertEqual(walked, [root, child])
+
+    def test_widget_records_retain_their_application_registry_hint(self) -> None:
+        window = FakeAccessible("Dialog", 42)
+        with mock.patch.object(
+            atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)
+        ), mock.patch.object(
+            atspi_probe,
+            "_widget_record",
+            return_value={"showing": True, "defunct": False, "focused": True},
+        ):
+            records = list(
+                atspi_probe._showing_widgets_in_window(
+                    window, 42, "Dialog", None, application_index=7
+                )
+            )
+
+        self.assertEqual(records[0][1]["application_index"], 7)
 
 
 class WidgetLabelTest(unittest.TestCase):
@@ -322,10 +737,231 @@ class WidgetSearchTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("(insensitive)", result["error"])
 
+    @staticmethod
+    def _semantic_record(node):
+        return {
+            "role": node.role,
+            "name": node.name,
+            "showing": True,
+            "sensitive": True,
+            "checked": False,
+            "selected": False,
+            "focused": False,
+            "focusable": True,
+            "defunct": False,
+            "accessible_id": "",
+            "identity": f"/{node.name or 'node'}",
+        }
+
+    def test_positive_witness_skips_name_and_state_for_unwanted_roles(self) -> None:
+        layout = FakeAccessible("layout", 42, role="panel")
+        layout.get_name = mock.Mock(
+            side_effect=AssertionError("unwanted roles must not read names")
+        )
+        layout.get_state_set = mock.Mock(
+            side_effect=AssertionError("unwanted roles must not read state")
+        )
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        root = FakeAccessible("Calamares", 42, [layout, target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        layout.get_name.assert_not_called()
+        layout.get_state_set.assert_not_called()
+
+    def test_positive_witness_skips_state_for_wrong_label(self) -> None:
+        wrong = FakeAccessible("Other heading", 42, role="label")
+        wrong.get_state_set = mock.Mock(
+            side_effect=AssertionError("wrong labels must not read state")
+        )
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        root = FakeAccessible("Calamares", 42, [wrong, target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        wrong.get_state_set.assert_not_called()
+
+    def test_positive_witness_still_requires_showing_and_sensitive_state(self) -> None:
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        target.states = {"sensitive"}
+        root = FakeAccessible("Calamares", 42, [target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                0, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "not-found")
+
+    def test_positive_witness_disables_startup_grace_after_scoped_window(self) -> None:
+        target = FakeAccessible("Welcome to the BigLinux installer", 42, role="label")
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+        reset = mock.Mock()
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(target, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace", reset):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the BigLinux installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        reset.assert_called_once_with()
+
+    def test_positive_witness_stops_before_unrelated_slow_subtree(self) -> None:
+        target = FakeAccessible("Welcome to the Calamares installer", 42, role="label")
+        slow = FakeAccessible("slow", 42)
+        slow.get_role_name = mock.Mock(
+            side_effect=AssertionError("a positive witness must stop before unrelated siblings")
+        )
+        root = FakeAccessible("Calamares", 42, [target, slow])
+        record = {
+            "pid": 42,
+            "name": "Calamares",
+            "application_index": 7,
+        }
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                1,
+                "label",
+                ["Welcome to the Calamares installer"],
+                42,
+                application_index=7,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["proof"], "positive-witness")
+        self.assertFalse(result["tree_complete"])
+        slow.get_role_name.assert_not_called()
+
+    def test_positive_witness_survives_one_broken_sibling(self) -> None:
+        broken = FakeAccessible("broken", 42)
+        broken.get_role_name = mock.Mock(side_effect=FakeError("provider disappeared"))
+        target = FakeAccessible("Welcome to the Calamares installer", 42, role="label")
+        root = FakeAccessible("Calamares", 42, [broken, target])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the Calamares installer"], 42,
+                positive_witness=True,
+            )
+
+        self.assertEqual(result["status"], "passed")
+
+    def test_positive_witness_without_target_keeps_broken_tree_inconclusive(self) -> None:
+        broken = FakeAccessible("broken", 42)
+        broken.get_role_name = mock.Mock(side_effect=FakeError("provider disappeared"))
+        root = FakeAccessible("Calamares", 42, [broken])
+        record = {"pid": 42, "name": "Calamares", "application_index": 7}
+
+        with mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib)), \
+             mock.patch.object(atspi_probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter([(root, record)])), \
+             mock.patch.object(atspi_probe, "_disable_atspi_startup_grace"), \
+             self.assertRaisesRegex(atspi_probe.ProbeError, "positive witness was not found"):
+            atspi_probe.wait_for_widget(
+                0, "label", ["Welcome to the Calamares installer"], 42,
+                positive_witness=True,
+            )
+
+    def test_positive_witness_cannot_prove_absence_or_checked_state(self) -> None:
+        with self.assertRaisesRegex(atspi_probe.ProbeError, "cannot be used"):
+            atspi_probe.wait_for_widget(
+                0, "button", ["Install"], 42,
+                absent=True, positive_witness=True,
+            )
+        with self.assertRaisesRegex(atspi_probe.ProbeError, "cannot be used"):
+            atspi_probe.wait_for_widget(
+                0, "radio button", ["Erase disk"], 42,
+                checked=True, positive_witness=True,
+            )
+
+    def test_process_transition_uses_nearby_application_hint_and_stops_on_match(self) -> None:
+        old_window = object()
+        target_window = object()
+        unrelated_window = object()
+        windows = [
+            (old_window, {
+                "pid": 4924, "name": "BigLinux Installation",
+                "application_index": 14, "application_window_ordinal": 0,
+                "application_candidate_window_count": 1,
+            }),
+            (target_window, {
+                "pid": 5170, "name": "Calamares",
+                "application_index": 15, "application_window_ordinal": 0,
+                "application_candidate_window_count": 1,
+            }),
+            (unrelated_window, {
+                "pid": 5180, "name": "Unrelated child",
+                "application_index": 16, "application_window_ordinal": 0,
+                "application_candidate_window_count": 1,
+            }),
+        ]
+        visits = []
+
+        def widgets(window, pid, name, deadline, *, application_index=None, **_kwargs):
+            visits.append(application_index)
+            if window is unrelated_window:
+                raise AssertionError("search must stop after the matching launch application")
+            label = "Welcome to the Calamares installer" if window is target_window else "Continue"
+            return [self._pair("label", label)]
+
+        with mock.patch.object(atspi_probe, "_process_tree", return_value={4400, 4924, 5170, 5180}), \
+             mock.patch.object(atspi_probe, "_window_records", return_value=iter(windows)) as read, \
+             mock.patch.object(atspi_probe, "_showing_widgets_in_window", side_effect=widgets):
+            result = atspi_probe.wait_for_widget(
+                1, "label", ["Welcome to the Calamares installer"], 4400,
+                application_index=14,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["widget"]["name"], "Welcome to the Calamares installer")
+        self.assertEqual(visits, [14, 15])
+        self.assertEqual(read.call_args.kwargs["preferred_application_index"], 14)
+
 
 class WidgetActivationTest(unittest.TestCase):
-    """Navigation activates a control through its own accessibility action,
-    never through the reported rectangle, which is window-relative."""
+    def setUp(self):
+        patcher = mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    """The explicit AT-action API does not claim keyboard reachability."""
 
     def _pair(self, name, actions, component=None):
         record = {
@@ -359,7 +995,7 @@ class WidgetActivationTest(unittest.TestCase):
         self.assertEqual(result["action"], "press")
         self.assertEqual(actions.done, ["press"])
 
-    def test_focuses_a_control_that_exposes_no_usable_action(self) -> None:
+    def test_never_teleports_focus_to_rescue_a_control(self) -> None:
         # Calamares' finished page reports its "Done" button with an empty
         # action list, which failed a release job after a complete and correct
         # installation. Focus is the other thing AT-SPI can do to a control,
@@ -373,10 +1009,9 @@ class WidgetActivationTest(unittest.TestCase):
         ):
             result = atspi_probe.activate_widget(0, "button", ["Next"])
 
-        self.assertEqual(result["status"], "passed")
-        self.assertEqual(result["action"], "focus")
-        self.assertEqual(result["activation"], "keyboard")
-        self.assertEqual(component.focus_requests, 1)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("no usable accessibility action", result["error"])
+        self.assertEqual(component.focus_requests, 0)
         self.assertEqual(actions.done, [])
 
     def test_reports_a_control_that_neither_acts_nor_focuses(self) -> None:
@@ -390,8 +1025,8 @@ class WidgetActivationTest(unittest.TestCase):
             result = atspi_probe.activate_widget(0, "button", ["Next"])
 
         self.assertEqual(result["status"], "failed")
-        self.assertIn("neither an accessibility action nor focus", result["error"])
-        self.assertIn("show-menu", result["error"])
+        self.assertIn("no usable accessibility action", result["error"])
+        self.assertEqual(component.focus_requests, 0)
 
     def test_prefers_an_action_over_focus(self) -> None:
         # Focus plus a key press is the fallback, never the first choice: a
@@ -468,6 +1103,11 @@ if __name__ == "__main__":
 
 
 class WalkBoundsTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(atspi_probe, "_atspi_import", return_value=(FakeAtspi, FakeGLib))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     """A walk is bounded by time, not only by node count.
 
     Every node costs several synchronous D-Bus round trips, so an application
@@ -487,7 +1127,7 @@ class WalkBoundsTest(unittest.TestCase):
             return 1
 
         def get_child_at_index(self, _index):
-            return self
+            return type(self)(self._clock)
 
     def test_the_walk_stops_at_its_deadline(self) -> None:
         clock = [0.0]
@@ -500,7 +1140,10 @@ class WalkBoundsTest(unittest.TestCase):
     def test_the_walk_without_a_deadline_still_stops_at_the_node_limit(self) -> None:
         clock = [0.0]
         node = self.SlowAccessible(clock)
-        visited = list(atspi_probe._walk(node, limit=5))
+        visited = []
+        with self.assertRaises(atspi_probe.WalkTruncated):
+            for item in atspi_probe._walk(node, limit=5):
+                visited.append(item)
         self.assertEqual(len(visited), 5)
 
 

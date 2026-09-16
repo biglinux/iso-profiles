@@ -5,6 +5,7 @@ use testapi;
 use atspi;
 use calamares;
 use guest_shell qw(marker_format);
+use Time::HiRes 'time';
 
 sub test_flags {
     return {fatal => 1};
@@ -28,21 +29,24 @@ sub run {
 
     my $is_uefi = $biglinux_firmware_mode =~ /UEFI/;
 
-    # No expected window title: the launcher renames its windows between
-    # releases and localizes them. That a window appeared is enough here; the
-    # installer pages asserted below prove it is really Calamares.
-    # The installer runs in the live desktop session, which live_desktop
-    # already installed the probe into; only the baseline is per session.
+    # Follow the GTK launcher by its supervised process group. A unique desktop
+    # startup identity is forwarded by the product's privilege wrapper and is
+    # later used with the exact /usr/bin/calamares executable and root UID to
+    # prove the Qt handoff. No title or globally new window establishes ownership.
     atspi->reset_baseline;
-    my (undef, $opened, undef, undef, $status_path) = atspi->launch_command(
-        'calamares-biglinux_polkit --software-render',
+    my $handoff_token = sprintf('openqa-calamares-%d-%d', $$, int(time * 1_000_000));
+    my (undef, $opened, undef, undef, $status_path, $launch_pid) = atspi->launch_command(
+        "env DESKTOP_STARTUP_ID=$handoff_token calamares-biglinux_polkit --software-render",
         '',
-        120
+        120,
+        'process-tree'
     );
     unless ($opened->{status} eq 'passed') {
         atspi->abort_launch($status_path);
         die 'The BigLinux Calamares launcher did not expose its first AT-SPI window';
     }
+
+    calamares->set_launch_scope($launch_pid, $handoff_token);
 
     if ($is_uefi) {
         # The EFI warning is one of the launcher's GTK4 dialogs, so its button
@@ -59,6 +63,9 @@ sub run {
     atspi->activate_widget($calamares::BUTTON_ROLES, ['Install', 'Instalar'], 90);
     calamares->assert_page('launcher-tips', 60);
     atspi->activate_widget($calamares::BUTTON_ROLES, ['Continue', 'Continuar'], 60);
+    # This action ends the GTK frontend and starts privileged Qt Calamares.
+    # Resolve that deliberate boundary before querying the installer page.
+    calamares->begin_application_transition(90);
     calamares->assert_page('installer-welcome', 90);
 }
 

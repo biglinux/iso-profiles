@@ -18,10 +18,11 @@ class ProbeOperationsTest(unittest.TestCase):
     two lists live in different files and languages, so nothing but this check
     notices when one of them gains an operation and the other does not."""
 
-    # Operations a person runs from a console inside the guest, which the
-    # harness deliberately does not offer: a whole widget tree does not fit
-    # through a serial marker.
-    OPERATOR_ONLY = {"dump-widgets"}
+    # Operations deliberately kept outside atspi->result(). A whole widget
+    # tree is operator diagnostics; smoke-session is a two-phase protocol
+    # owned by launch_smoke_desktop_entry(), which must interleave one host
+    # keyboard shortcut between READY and the final record.
+    OPERATOR_ONLY = {"dump-widgets", "smoke-session"}
 
     def test_perl_and_python_agree_on_the_operation_names(self) -> None:
         probe = (REPOSITORY / "data" / "atspi_probe.py").read_text(encoding="utf-8")

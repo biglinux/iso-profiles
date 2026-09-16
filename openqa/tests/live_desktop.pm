@@ -45,8 +45,19 @@ sub run {
     # session coming up, and it is the accessibility bus that answers - not a
     # picture of a wizard whose icons change between builds.
     atspi->install;
-    atspi->reset_baseline;
-    atspi->wait_widget('table', $PAGE{language}, 300);
+    # The live wizard runs under dbus-run-session. Querying the systemd user
+    # bus here starts a second AT-SPI launcher and can steal the wizard's socket.
+    # Join the existing wizard session BEFORE the first accessibility request.
+    my $session_url = data_url('wizard_session.py');
+    my $session_status = atspi->run_command(
+        'curl --fail --silent --show-error --max-time 15 ' . shell_quote($session_url)
+          . ' --output /tmp/openqa-wizard-session.py && '
+          . 'session_environment=$(python3 /tmp/openqa-wizard-session.py --timeout 90) && '
+          . 'eval "$session_environment"', 120);
+    die 'could not join the existing live wizard session'
+      unless defined $session_status && $session_status == 0;
+    my $language = atspi->assert_widget('table', $PAGE{language}, 300);
+    atspi->set_widget_scope($language->{widget}{pid});
 
     # Two things have to be true before Return is pressed, and each one cost a
     # failed run to learn. The filter has to have been typed correctly: at the
@@ -60,17 +71,19 @@ sub run {
     # is what says it worked. Not a changed frame buffer: a repaint is not a
     # navigation, and the wizard animates.
     my $chosen = 0;
+    my $page_error = '';
     for (1 .. 3) {
         # BackSpace reaches the search box from anywhere in the window.
         send_key 'backspace' for 1 .. 12;
         type_string 'Brazil', max_interval => 20;
         send_key 'ret';
         my $next = eval { atspi->wait_widget('table', $PAGE{keyboard}, 20) };
+        $page_error = ref $next eq 'HASH' ? ($next->{error} // '') : ($@ || 'no page result');
         next unless ref $next eq 'HASH' && ($next->{status} // '') eq 'passed';
         $chosen = 1;
         last;
     }
-    $chosen or die 'the wizard did not accept the language chosen by search';
+    $chosen or die 'the wizard did not accept the language chosen by search: ' . $page_error;
 
     # Every remaining page selects its first item when it appears
     # (BaseItemView._select_first_item, KeyboardView._select_first_and_announce)
@@ -84,10 +97,10 @@ sub run {
     my @remaining = (['keyboard', 'layout'], ['layout', 'theme'], ['theme', undef]);
     for my $step (@remaining) {
         my ($current, $next) = @$step;
-        atspi->wait_widget('table', $PAGE{$current}, 60);
+        atspi->assert_widget('table', $PAGE{$current}, 60);
         send_key 'ret';
         next unless defined $next;
-        atspi->wait_widget('table', $PAGE{$next}, 60);
+        atspi->assert_widget('table', $PAGE{$next}, 60);
     }
 
     # Choosing the theme ends the wizard, and the desktop session takes its
@@ -109,6 +122,24 @@ sub run {
     die 'the wizard did not close after the theme was chosen'
       unless defined wait_serial($closed, no_regex => 1, timeout => 150);
     select_console 'sut';
+    atspi->set_widget_scope(undef);
+    # A closed wizard alone is not a ready desktop. This also ensures that
+    # the live-prefix plan observes the same transition as later modules.
+    atspi->reset_baseline;
+}
+
+# Failure evidence is read-only and best effort; it never repairs a broken GUI
+# or changes the original failure into success. Download it independently of
+# the AT-SPI probe, which may be what failed to start.
+sub post_fail_hook {
+    my $url = data_url('session_diagnostics.py');
+    eval {
+        atspi->run_command('curl --fail --silent --show-error --max-time 15 '
+          . shell_quote($url) . ' --output /tmp/openqa-session-diagnostics.py && '
+          . 'python3 /tmp/openqa-session-diagnostics.py --output /tmp/openqa-session-diagnostics.json', 70);
+        atspi->upload_guest_file('/tmp/openqa-session-diagnostics.json', 'session-diagnostics.json');
+    };
+    eval { select_console 'sut' };
 }
 
 1;

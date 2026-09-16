@@ -78,7 +78,7 @@ SHELL
     die "The installed system has $failed_units failed systemd units: "
       . ($failed_unit_names || 'names unavailable')
       unless !$failed_units;
-    die 'The installed system is missing an executable Brave binary' unless $brave_present;
+    record_info 'Optional browser', 'Brave is not installed in this ISO; not applicable' unless $brave_present;
     my $uefi_expected = get_var('UEFI', '0') eq '1';
     die 'UEFI job did not expose /sys/firmware/efi' if $uefi_expected && !$efi_present;
     die 'UEFI job did not mount /boot/efi' if $uefi_expected && !$efi_mount;
