@@ -32,35 +32,34 @@ jobs:
     steps:
       - name: Fetch the reviewed published candidate
         env:
-          ARTIFACT_NAME: review-iso-${{ github.run_id }}
           GH_TOKEN: ${{ github.token }}
-          REVIEW_RELEASE_TAG: biglinux_2026-09-09_k618-r30
+          REPOSITORY: ${{ github.repository }}
+          RELEASE: biglinux_2026-09-09_k618-r30
+          ISO: biglinux_2026-09-09_k618.iso
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/review-iso"
-          gh release download "$REVIEW_RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern 'biglinux_2026-09-09_k618.iso' \
-            --pattern 'biglinux_2026-09-09_k618.iso.sha256' \
-            --dir "$RUNNER_TEMP/review-iso"
-          cd "$RUNNER_TEMP/review-iso"
-          sha256sum --check biglinux_2026-09-09_k618.iso.sha256
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/openqa-review-input
+          gh release download "$RELEASE" --repo "$REPOSITORY" --dir /mnt/openqa-review-input \
+            --pattern "$ISO.7z.*" --pattern "$ISO.sha256" --pattern "$ISO.md5"
+          cd /mnt/openqa-review-input
+          7z x -y "$ISO.7z.001"
+          sha256sum --check "$ISO.sha256"
+          md5sum --check "$ISO.md5"
+          rm -- "$ISO.7z."*
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: review-iso-${{ github.run_id }}
-          path: ${{ runner.temp }}/review-iso
+          path: /mnt/openqa-review-input/
+          compression-level: 0
           retention-days: 1
           if-no-files-found: error
 
   validation:
-    needs: [runner-image, candidate]
-    permissions:
-      contents: read
-      packages: read
+    if: ${{ always() }}
+    needs: [candidate, runner-image]
     uses: ./.github/workflows/openqa-single-instance-experiment.yml
     with:
-      iso_artifact_name: review-iso-${{ github.run_id }}
-      iso_pattern: biglinux_2026-09-09_k618.iso
-      iso_sha256: d1bd6943639391d569723723caa8bcec79c28748b9015e57a8a17452c7a09c96
-      iso_release: biglinux_2026-09-09_k618-r30
-      result_prefix: review
+      candidate_artifact: review-iso-${{ github.run_id }}
+      iso_filename: biglinux_2026-09-09_k618.iso
+      version: review
+      build_id: review-${{ github.run_id }}
