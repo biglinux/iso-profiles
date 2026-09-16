@@ -1,0 +1,88 @@
+name: Apply reviewed openQA runtime v12
+
+on:
+  push:
+    branches:
+      - fix/openqa-nonvisual-accessibility-20260914
+    paths:
+      - .github/workflows/apply-openqa-runtime-v12.yml
+      - openqa/.runtime-v12.patch.xz.b64
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openqa-runtime-v12-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconstruct and verify the reviewed implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^^)" = "39fb6f9119bfeb55eb7fe852e85c4d1525d821b2"
+          base64 --decode openqa/.runtime-v12.patch.xz.b64 > "$RUNNER_TEMP/runtime-v12.patch.xz"
+          echo 'f6240882e00de0fd984b964f3f5809cd07e738629b9434cc200f4b294a2ce6df  '"$RUNNER_TEMP/runtime-v12.patch.xz" | sha256sum --check
+          xz --decompress --stdout "$RUNNER_TEMP/runtime-v12.patch.xz" > "$RUNNER_TEMP/runtime-v12.patch"
+          echo 'f55e27320fedf33c31aa8506a58f16d9a67f58915350402b47a76a7906711f35  '"$RUNNER_TEMP/runtime-v12.patch" | sha256sum --check
+          git rm openqa/.runtime-v12.patch.xz.b64 .github/workflows/apply-openqa-runtime-v12.yml
+          test "$(git write-tree)" = "1a9d57e2cdff197fedf696fbcb693cb7f4e586fb"
+          git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v12.patch"
+          test "$(git write-tree)" = "bd9b578bafff27b35157ce39c176bccf5751fec0"
+
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check -r openqa/report/requirements.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends             python3-gi gir1.2-gtk-3.0 gir1.2-atspi-2.0 at-spi2-core             dbus-x11 xvfb openbox xdotool shellcheck
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Validate the exact implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          {
+            python3 -m unittest discover -s data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/report -p 'test_*.py'
+            python3 -m py_compile data/*.py openqa/production/*.py openqa/report/*.py openqa/integration/*.py
+            python3 openqa/production/check-nonvisual.py
+            prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
+            for script in openqa/production/*.sh data/*.sh; do bash -n "$script"; done
+            shellcheck -x openqa/production/*.sh data/*.sh
+            "$RUNNER_TEMP/bin/actionlint" -color               .github/workflows/openqa*.yml               .github/workflows/mirror-openqa-image.yml               .github/workflows/validate-iso-once.yml
+            git diff --cached --check
+            test "$(git write-tree)" = "bd9b578bafff27b35157ce39c176bccf5751fec0"
+            dbus-run-session -- xvfb-run -a /usr/bin/python3               openqa/integration/accessible_smoke.py
+          } 2>&1 | tee "$RUNNER_TEMP/runtime-v12-validation.log"
+
+      - name: Publish the validated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = "bd9b578bafff27b35157ce39c176bccf5751fec0"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(openqa): propagate supervised ownership through GUI probes'             -m 'Carry the explicit supervisor root through window, widget, focus, content and close observations. Recover reparented GUI processes only from a verified setsid group; ordinary desktop PIDs remain descendant-only.'             -m 'Handle reviewed sequential first-run surfaces without extra unobserved input. Steam remains an explicit bootstrap exclusion. Crashes, inaccessible windows, incomplete reads and unproven closure remain blocking.'
+          test "$(git rev-parse HEAD^{tree})" = "bd9b578bafff27b35157ce39c176bccf5751fec0"
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() }}
+        with:
+          name: openqa-runtime-v12-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-v12-validation.log
+          retention-days: 7
+          if-no-files-found: warn
