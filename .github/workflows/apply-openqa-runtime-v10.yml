@@ -28,9 +28,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = acaa09198f00557dcd96f88ca5030ba5ebb27e8f
-          test "$(git rev-parse HEAD^^)" = 080744fe7443dad1a8bc65c16786d28122fe893f
-          echo 'b9b68ca971cea08135091801f0989b0085e84a362e511a3db67e1c698be22baf  openqa/.runtime-v10.patch.xz.b64' | sha256sum --check
+          test "$(git rev-parse HEAD^)" = bbbd95497854330b5803e575a2f94e4291b9483e
+          test "$(git rev-parse HEAD^^)" = acaa09198f00557dcd96f88ca5030ba5ebb27e8f
+          test "$(git rev-parse HEAD^^^)" = 080744fe7443dad1a8bc65c16786d28122fe893f
+          echo '24d00b988f70444eb125ad515fb3a2a431e576615b50cc4acc300c6909cb5441  openqa/.runtime-v10.patch.xz.b64' | sha256sum --check
           base64 --decode openqa/.runtime-v10.patch.xz.b64 > "$RUNNER_TEMP/runtime-v10.patch.xz"
           echo 'e1634430bedab3256159c0d8c5b71047f8aa15471865d7f022a3f6ade33ccb5f  '"$RUNNER_TEMP/runtime-v10.patch.xz" | sha256sum --check
           xz --decompress --stdout "$RUNNER_TEMP/runtime-v10.patch.xz" > "$RUNNER_TEMP/runtime-v10.patch"
