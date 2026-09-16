@@ -1,10 +1,10 @@
 name: Verify openQA with the published ISO
 
-# Revalidate the reviewed September ISO after runtime-v12 keeps ownership when
-# wrappers exit or re-parent their GUI inside an explicitly identified
-# supervisor group. Arbitrary desktop PIDs retain descendant-only scope. PID,
-# exact window identity and AT-SPI semantics remain mandatory; no title,
-# coordinate or screenshot fallback is introduced. Steam remains excluded.
+# Revalidate the reviewed September ISO after runtime-v13 keeps one exact
+# PID-scoped AT-SPI provider from window discovery through content and close,
+# and resolves the privileged GTK-to-Qt Calamares handoff by executable, UID
+# and a unique forwarded startup token. No title, coordinate or screenshot
+# fallback is introduced. Steam remains an explicit bootstrap exclusion.
 # This review-branch workflow never publishes an ISO release.
 on:
   push:
