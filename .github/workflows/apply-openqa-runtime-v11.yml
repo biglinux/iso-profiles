@@ -25,21 +25,34 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Reconstruct and verify the reviewed patch
+      - name: Reconstruct and verify the reviewed implementation
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = 48d178c7b4361fe5f2a84739863513f19ee665aa
-          echo '0bb25057034b0fb719425fac8c68d78f0e67e7b544c71667f1f1e91710854ec9  openqa/.runtime-v11.patch.xz.b64.decoded' > "$RUNNER_TEMP/runtime-v11-xz.sha256"
-          base64 --decode openqa/.runtime-v11.patch.xz.b64 > openqa/.runtime-v11.patch.xz.b64.decoded
-          sha256sum --check "$RUNNER_TEMP/runtime-v11-xz.sha256"
-          xz --decompress --stdout openqa/.runtime-v11.patch.xz.b64.decoded > "$RUNNER_TEMP/runtime-v11.patch"
+          test "$(git rev-parse HEAD^)" = d3bf02c758f1c75d02a6eb4b3ee19a8701bc37c5
+          base64 --decode openqa/.runtime-v11.patch.xz.b64 > "$RUNNER_TEMP/runtime-v11.patch.xz"
+          echo '0bb25057034b0fb719425fac8c68d78f0e67e7b544c71667f1f1e91710854ec9  '"$RUNNER_TEMP/runtime-v11.patch.xz" | sha256sum --check
+          xz --decompress --stdout "$RUNNER_TEMP/runtime-v11.patch.xz" > "$RUNNER_TEMP/runtime-v11.patch"
           echo '22a23e2164c00e5eb48f726de7e7bbf88084abfed5ccd403fde55c7ab9b8dc07  '"$RUNNER_TEMP/runtime-v11.patch" | sha256sum --check
-          rm openqa/.runtime-v11.patch.xz.b64.decoded
-          git rm openqa/.runtime-v11.patch.xz.b64 .github/workflows/apply-openqa-runtime-v11.yml
-          test "$(git write-tree)" = bab0a676800ee951bfb0c8606a361ee24c0d3a1f
-          git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v11.patch"
-          test "$(git write-tree)" = 1a9d57e2cdff197fedf696fbcb693cb7f4e586fb
+          git apply --index --whitespace=error-all \
+            --exclude='.github/workflows/validate-iso-once.yml' \
+            "$RUNNER_TEMP/runtime-v11.patch"
+
+          mapfile -t changed < <(git diff --cached --name-only)
+          diff -u \
+            <(printf '%s\n' \
+              data/atspi_probe.py \
+              data/test_atspi_probe.py \
+              data/test_readiness_waits.py \
+              docs/openqa-runtime-validation.md \
+              openqa/integration/accessible_smoke.py) \
+            <(printf '%s\n' "${changed[@]}")
+
+          test "$(git hash-object data/atspi_probe.py)" = c9e07753101160ea48577dd8f973fb78115a837c
+          test "$(git hash-object data/test_atspi_probe.py)" = 81575bfde4ce70074b93af8d6204964c5f38ffb7
+          test "$(git hash-object data/test_readiness_waits.py)" = 9418d25f9686205b795ed320acb26ed08d4480d6
+          test "$(git hash-object docs/openqa-runtime-validation.md)" = 62fe839f0b5a974dab7544998500db549d890713
+          test "$(git hash-object openqa/integration/accessible_smoke.py)" = e0b458024b064d098d52edf18c5ffe8b24511e46
 
       - name: Install validation dependencies
         shell: bash
@@ -52,7 +65,7 @@ jobs:
             dbus-x11 xvfb openbox xdotool shellcheck
           GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-      - name: Validate the exact implementation tree
+      - name: Validate the exact implementation
         shell: bash
         run: |
           set -euo pipefail
@@ -71,28 +84,27 @@ jobs:
               .github/workflows/mirror-openqa-image.yml \
               .github/workflows/validate-iso-once.yml
             git diff --cached --check
-            test "$(git write-tree)" = 1a9d57e2cdff197fedf696fbcb693cb7f4e586fb
             dbus-run-session -- xvfb-run -a /usr/bin/python3 \
               openqa/integration/accessible_smoke.py
           } 2>&1 | tee "$RUNNER_TEMP/runtime-v11-validation.log"
 
-      - name: Publish the validated implementation
+      - name: Publish the validated implementation files
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git write-tree)" = 1a9d57e2cdff197fedf696fbcb693cb7f4e586fb
+          mapfile -t changed < <(git diff --cached --name-only)
+          test "${#changed[@]}" -eq 5
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'fix(openqa): preserve supervised GUI ownership after reparenting' \
             -m 'Track live descendants, previously proven window PIDs and members of the supervised POSIX process group. This keeps PID-scoped AT-SPI discovery bounded when a launcher exits and its GUI is reparented, without accepting names, coordinates, screenshots or process lifetime as proof.' \
-            -m 'Do not widen cleanup to unrelated groups. Steam remains an explicit bootstrap exclusion. The exact tree passed Python, Perl, nonvisual policy, ShellCheck, actionlint and real GTK/AT-SPI integration in this workflow; a new ISO matrix is still required.'
-          test "$(git rev-parse HEAD^{tree})" = 1a9d57e2cdff197fedf696fbcb693cb7f4e586fb
+            -m 'Do not widen cleanup to unrelated groups. Steam remains an explicit bootstrap exclusion. Python, Perl, nonvisual policy, ShellCheck, actionlint and real GTK/AT-SPI integration passed before publication. Workflow cleanup and the ISO trigger are published separately by the authorized connector.'
           git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: ${{ always() }}
         with:
-          name: openqa-runtime-v11-${{ github.run_id }}-${{ github.run_attempt }}
+          name: openqa-runtime-v11-implementation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/runtime-v11-validation.log
           retention-days: 7
           if-no-files-found: warn
