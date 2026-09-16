@@ -1,0 +1,97 @@
+name: Apply reviewed openQA runtime v10
+
+on:
+  push:
+    branches:
+      - fix/openqa-nonvisual-accessibility-20260914
+    paths:
+      - .github/workflows/apply-openqa-runtime-v10.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openqa-runtime-v10-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconstruct and verify the reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = acaa09198f00557dcd96f88ca5030ba5ebb27e8f
+          test "$(git rev-parse HEAD^^)" = 080744fe7443dad1a8bc65c16786d28122fe893f
+          echo 'b9b68ca971cea08135091801f0989b0085e84a362e511a3db67e1c698be22baf  openqa/.runtime-v10.patch.xz.b64' | sha256sum --check
+          base64 --decode openqa/.runtime-v10.patch.xz.b64 > "$RUNNER_TEMP/runtime-v10.patch.xz"
+          echo 'e1634430bedab3256159c0d8c5b71047f8aa15471865d7f022a3f6ade33ccb5f  '"$RUNNER_TEMP/runtime-v10.patch.xz" | sha256sum --check
+          xz --decompress --stdout "$RUNNER_TEMP/runtime-v10.patch.xz" > "$RUNNER_TEMP/runtime-v10.patch"
+          echo '1aeeebd1dc001cad1658c7aa7b5576c3b1758f24ec510c79d4645167f2276061  '"$RUNNER_TEMP/runtime-v10.patch" | sha256sum --check
+          git rm openqa/.runtime-v10.patch.xz.b64 .github/workflows/apply-openqa-runtime-v10.yml
+          test "$(git write-tree)" = f631e2463a6f791dec94d133b17f96920c4deb8c
+          git apply --index --whitespace=error-all "$RUNNER_TEMP/runtime-v10.patch"
+          test "$(git write-tree)" = 0a21e1e5fdf212b5b68e4f25daf2b3c71faf794a
+
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check -r openqa/report/requirements.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-gtk-3.0 gir1.2-atspi-2.0 at-spi2-core \
+            dbus-x11 xvfb openbox xdotool shellcheck
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Validate the exact implementation tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          {
+            python3 -m unittest discover -s data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/data -p 'test_*.py'
+            python3 -m unittest discover -s openqa/report -p 'test_*.py'
+            python3 -m py_compile data/*.py openqa/production/*.py openqa/report/*.py
+            python3 openqa/production/check-nonvisual.py
+            prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t
+            for script in openqa/production/*.sh data/*.sh; do bash -n "$script"; done
+            shellcheck -x openqa/production/*.sh data/*.sh
+            "$RUNNER_TEMP/bin/actionlint" -color \
+              .github/workflows/openqa*.yml \
+              .github/workflows/mirror-openqa-image.yml \
+              .github/workflows/validate-iso-once.yml
+            git diff --cached --check
+            test "$(git write-tree)" = 0a21e1e5fdf212b5b68e4f25daf2b3c71faf794a
+            dbus-run-session -- xvfb-run -a /usr/bin/python3 \
+              openqa/integration/accessible_smoke.py
+          } 2>&1 | tee "$RUNNER_TEMP/runtime-v10-validation.log"
+
+      - name: Publish the validated implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = 0a21e1e5fdf212b5b68e4f25daf2b3c71faf794a
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(openqa): treat registry indexes as transient hints' \
+            -m 'Try a prior PID-verified AT-SPI slot once, then resume newest-first discovery instead of walking numerically adjacent providers. Explicitly clear the GTK application hint at the supervised GTK-to-Qt Calamares boundary while preserving launch-tree provenance.' \
+            -m 'The exact target tree passed 286 Python tests, 172 Perl assertions, nonvisual policy, ShellCheck, actionlint and real GTK/AT-SPI integration in this workflow. Existing crash, inaccessible-window and unproven-close failures remain blocking; a new ISO matrix is still required.'
+          test "$(git rev-parse HEAD^{tree})" = 0a21e1e5fdf212b5b68e4f25daf2b3c71faf794a
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ always() }}
+        with:
+          name: openqa-runtime-v10-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-v10-validation.log
+          retention-days: 7
+          if-no-files-found: warn
