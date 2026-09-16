@@ -438,3 +438,64 @@ redescobre um descendente dessa mesma árvore e passa a registrar seu novo
 índice. Nenhuma busca global por título, clique por coordenada, foco forçado ou
 aumento de timeout foi acrescentado. A correção precisa ser confirmada por uma
 nova matriz da ISO.
+
+## Runtime v11: escopo do lançamento após reparenting
+
+A matriz real `35038811476`, fonte `48d178c7`, manteve a cobertura completa do
+inventário: 288 entradas, 215 lançáveis, 70 exclusões justificadas, três aliases,
+212 testes executados e três resultados não aplicáveis. Foram 121 aprovações e
+91 falhas. A Steam permaneceu excluída como instalador bootstrap e não foi
+executada.
+
+O resultado concentrou 81 das 91 falhas no mesmo diagnóstico:
+`application enumeration exceeded its deadline`. A evidência não indicava 81
+aplicativos comprovadamente defeituosos. Em um caso representativo,
+`big-driver-manager.desktop`, `wait-open` comprovou em 0,71 s o PID 5581, o
+índice AT-SPI 14 e a identidade exata
+`/org/a11y/atspi/accessible/2147483652`, todos pertencentes ao lançamento de
+PID 5573. Após os dois segundos de estabilização, a consulta de conteúdo com
+esses mesmos identificadores consumiu os 20 segundos e expirou antes de chegar
+ao provedor correto.
+
+Cada aplicação é iniciada por `gui_supervisor.sh` em uma nova sessão com
+`setsid`. Wrappers e launchers podem criar a interface em outro processo e
+terminar ou reparentar esse processo; a árvore baseada apenas em `PPid` deixa de
+representar a propriedade do lançamento, embora o filho continue no mesmo grupo
+de processos supervisionado. A posição no registro AT-SPI também continua sendo
+apenas uma dica transitória.
+
+O escopo de leitura passa a combinar, sem busca por nome ou título:
+
+- a árvore de descendentes ainda observável do PID raiz;
+- os PIDs de janela já comprovados pelas etapas anteriores;
+- os membros vivos do grupo de processos criado para o PID raiz supervisionado.
+
+O grupo é obtido por `NSpgid` em `/proc/PID/status`; para kernels ou fixtures sem
+essa linha, usa-se o campo `pgrp` de `/proc/PID/stat`. O parser localiza primeiro
+o último `)` do campo `comm`, que pode conter espaços e parênteses, antes de ler
+o quinto campo. O PID de uma janela conhecida não autoriza importar o grupo
+dele: somente o grupo do lançamento supervisionado amplia o escopo. Isso evita
+aceitar serviços do desktop que por acaso compartilhem outro grupo.
+
+O encerramento do líder do grupo também deixou de ser interpretado como fim da
+aplicação enquanto qualquer PID do escopo comprovado continuar vivo. Essa regra
+vale para abertura X11/AT-SPI, conteúdo, foco e fechamento. A rotina genérica de
+limpeza não foi ampliada para grupos encontrados a partir de janelas residuais;
+ela continua limitada às árvores desses PIDs, enquanto a limpeza do lançamento
+segue sob responsabilidade do supervisor já existente.
+
+Foram acrescentadas regressões para líder já encerrado, filho reparentado, PID
+de janela pertencente a grupo não autorizado, fallback de `/proc/PID/stat`,
+escopo vazio e espera de abertura após o reparenting. A integração GTK/AT-SPI
+agora contém ainda um launcher real que cria a janela no seu grupo, encerra e
+deixa o processo GTK reparentado; o CI deve comprovar abertura, conteúdo,
+foco, `Alt+F4` e desaparecimento da janela sem screenshots.
+
+Na árvore local desta revisão passaram 292 testes Python e 172 asserções Perl,
+além da política não visual, compilação Python, sintaxe Bash e
+`git diff --check`. PyGObject, `xdotool`, ShellCheck e actionlint não estavam
+disponíveis no executor local; a integração real e essas verificações continuam
+obrigatórias no CI antes da publicação. A correção não aprova a ISO: BIOS, UEFI
+e os quatro shards precisam ser reexecutados, e as falhas reais restantes —
+como abort do mpv, janelas X11 sem AT-SPI e encerramentos não comprovados —
+continuam bloqueantes.

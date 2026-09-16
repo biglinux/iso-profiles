@@ -8,6 +8,8 @@ from unittest import mock
 import atspi_probe
 from atspi_probe import (
     _is_transient_window,
+    _launch_process_scope,
+    _process_scope_exited,
     _label_matches,
     _name_matches,
     _normalize_label,
@@ -50,6 +52,73 @@ class AtspiProbeTest(unittest.TestCase):
             result = process_tree_pss_mib(100, proc)
 
         self.assertEqual(result, 1.8)
+
+    @staticmethod
+    def _write_process(
+        proc: Path, pid: int, parent: int, group: int, *, with_namespace_group: bool = True
+    ) -> None:
+        process = proc / str(pid)
+        process.mkdir()
+        nspgid = f"NSpgid:\t{group}\n" if with_namespace_group else ""
+        (process / "status").write_text(
+            f"Name:\ttest\nPPid:\t{parent}\n{nspgid}", encoding="utf-8"
+        )
+        # state, ppid, pgrp, session: comm deliberately contains ')' to prove
+        # that the fallback parser splits after the final closing parenthesis.
+        (process / "stat").write_text(
+            f"{pid} (test) helper) S {parent} {group} {group} 0 0 0 0\n",
+            encoding="utf-8",
+        )
+
+    def test_launch_scope_keeps_reparented_process_group_member(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            # The original group leader 100 has exited. Its GUI child was
+            # re-parented to PID 1 but remains in process group 100.
+            self._write_process(proc, 200, 1, 100)
+            self._write_process(proc, 201, 200, 201)
+            self._write_process(proc, 300, 1, 300)
+
+            scope = _launch_process_scope(100, proc_root=proc)
+
+        self.assertEqual(scope, {100, 200})
+        self.assertNotIn(300, scope)
+
+    def test_known_window_pid_does_not_import_its_unrelated_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 220, 1, 150)
+            self._write_process(proc, 221, 1, 150)
+
+            scope = _launch_process_scope(100, (220,), proc)
+
+        self.assertEqual(scope, {100, 220})
+        self.assertNotIn(221, scope)
+
+    def test_process_group_falls_back_to_proc_stat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 240, 1, 140, with_namespace_group=False)
+
+            scope = _launch_process_scope(140, proc_root=proc)
+
+        self.assertEqual(scope, {140, 240})
+
+    def test_scope_is_live_after_group_leader_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            self._write_process(proc, 260, 1, 160)
+            scope = _launch_process_scope(160, proc_root=proc)
+
+            self.assertFalse(_process_scope_exited(scope, proc))
+            for child in (proc / "260").iterdir():
+                child.unlink()
+            (proc / "260").rmdir()
+            self.assertTrue(_process_scope_exited(scope, proc))
+
+    def test_empty_scope_is_not_proof_of_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertFalse(_process_scope_exited(set(), Path(directory)))
 
     def test_keeps_rss_when_pss_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

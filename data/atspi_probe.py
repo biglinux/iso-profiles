@@ -54,19 +54,68 @@ def mem_available_mib(meminfo: Path = Path("/proc/meminfo")) -> float | None:
     return None
 
 
+def _status_fields(status: Path) -> dict[str, str]:
+    return {
+        line.split(":", 1)[0]: line.split(":", 1)[1].strip()
+        for line in status.read_text(encoding="utf-8", errors="replace").splitlines()
+        if ":" in line
+    }
+
+
+def _process_group_id(pid: int, proc_root: Path = Path("/proc")) -> int | None:
+    """Return the process-group ID visible in the guest's PID namespace."""
+    if pid <= 1:
+        return None
+    process = proc_root / str(pid)
+    try:
+        fields = _status_fields(process / "status")
+        namespace_group = fields.get("NSpgid")
+        if namespace_group:
+            group = int(namespace_group.split()[-1])
+            return group if group > 1 else None
+    except (OSError, ValueError, IndexError):
+        pass
+
+    # Older kernels or synthetic fixtures may omit NSpgid. /proc/PID/stat
+    # field 5 is pgrp; split only after the final ')' because comm may contain
+    # spaces and parentheses.
+    try:
+        raw = (process / "stat").read_text(encoding="utf-8", errors="replace")
+        close = raw.rfind(")")
+        if close < 0:
+            return None
+        fields = raw[close + 2 :].split()
+        group = int(fields[2])
+        return group if group > 1 else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _process_group_members(
+    group_ids: set[int], proc_root: Path = Path("/proc")
+) -> set[int]:
+    """Return live processes in the supervised POSIX process groups."""
+    groups = {group for group in group_ids if group > 1}
+    if not groups:
+        return set()
+    members: set[int] = set()
+    for status in proc_root.glob("[0-9]*/status"):
+        try:
+            pid = int(status.parent.name)
+        except ValueError:
+            continue
+        if _process_group_id(pid, proc_root) in groups:
+            members.add(pid)
+    return members
+
+
 def _process_tree(root_pid: int, proc_root: Path = Path("/proc")) -> set[int]:
     if root_pid <= 0:
         return set()
     parents: dict[int, int] = {}
     for status in proc_root.glob("[0-9]*/status"):
         try:
-            fields = {
-                line.split(":", 1)[0]: line.split(":", 1)[1].strip()
-                for line in status.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines()
-                if ":" in line
-            }
+            fields = _status_fields(status)
             parents[int(status.parent.name)] = int(fields["PPid"].split()[0])
         except (OSError, ValueError, KeyError, IndexError):
             continue
@@ -80,6 +129,43 @@ def _process_tree(root_pid: int, proc_root: Path = Path("/proc")) -> set[int]:
                 descendants.add(pid)
                 changed = True
     return descendants
+
+
+def _launch_process_scope(
+    root_pid: int,
+    known_pids: Iterable[int] = (),
+    proc_root: Path = Path("/proc"),
+) -> set[int]:
+    """Follow a supervised launch after helpers fork and re-parent children.
+
+    gui_supervisor starts each tested command in a new session/process group.
+    A launcher may exit after handing the GUI to a child, at which point PPid
+    traversal loses the still-owned application even though its process group
+    remains stable. Combine the ordinary descendant tree, already observed
+    window PIDs and members of those supervised groups. This never admits an
+    unrelated desktop process merely because it has a similar name or window.
+    """
+    seeds = {pid for pid in (root_pid, *known_pids) if isinstance(pid, int) and pid > 1}
+    if not seeds:
+        return set()
+    scope = _process_tree(root_pid, proc_root)
+    scope.update(seeds)
+    group_ids = {root_pid}
+    root_group = _process_group_id(root_pid, proc_root)
+    if root_group is not None:
+        group_ids.add(root_group)
+    scope.update(_process_group_members(group_ids, proc_root))
+    return scope
+
+
+def _process_scope_exited(
+    pids: Iterable[int], proc_root: Path = Path("/proc")
+) -> bool:
+    """Return true only when every process in a scoped launch has ended."""
+    candidates = {pid for pid in pids if isinstance(pid, int) and pid > 1}
+    return bool(candidates) and all(
+        launch_process_exited(pid, proc_root) for pid in candidates
+    )
 
 
 def process_memory(root_pid: int, proc_root: Path = Path("/proc")) -> dict[str, Any]:
@@ -535,7 +621,7 @@ def wait_for_x11_window(
     last_windows: list[dict[str, Any]] = []
     while time.monotonic() <= deadline:
         last_windows = _x11_window_records()
-        process_pids = _process_tree(expected_pid) if expected_pid else set()
+        process_pids = _launch_process_scope(expected_pid) if expected_pid else set()
         matches = [
             window
             for window in last_windows
@@ -556,7 +642,7 @@ def wait_for_x11_window(
                 "memory": sample_process_memory(expected_pid or pid),
                 "validation_mode": "x11-window",
             }
-        if expected_pid and launch_process_exited(expected_pid):
+        if expected_pid and _process_scope_exited(process_pids):
             break
         time.sleep(0.25)
     descriptions = (
@@ -633,7 +719,7 @@ def wait_for_window_change(
     while time.monotonic() <= deadline:
         # An application can reach its window through a wrapper or forked
         # helper, so identity is the launched process tree, recomputed per poll.
-        allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
+        allowed_pids = _launch_process_scope(expected_pid) if expected_pid is not None else None
         last_snapshot = _read_until_ready(
             lambda: accessible_snapshot(deadline, allowed_pids), deadline
         )
@@ -648,7 +734,7 @@ def wait_for_window_change(
                 return {
                     "status": "passed",
                     "accessible_window": True,
-                    "process_gone": launch_process_exited(expected_pid),
+                    "process_gone": _process_scope_exited(allowed_pids or set()),
                     "mem_available_mib": last_snapshot.get("mem_available_mib"),
                 }
         extra = [
@@ -664,7 +750,7 @@ def wait_for_window_change(
                 expected_name,
             )
         ]
-        if opening and not extra and launch_process_exited(expected_pid):
+        if opening and not extra and _process_scope_exited(allowed_pids or set()):
             return {
                 "status": "failed",
                 "accessible_window": False,
@@ -676,7 +762,7 @@ def wait_for_window_change(
         if (
             not opening
             and expected_pid is not None
-            and launch_process_exited(expected_pid)
+            and _process_scope_exited(allowed_pids or set())
         ):
             return {
                 "status": "passed",
@@ -996,7 +1082,7 @@ def _showing_widgets_in_window(
 def _visible_widgets(
     expected_pid: int | None, deadline: float | None = None
 ) -> list[tuple[Any, dict[str, Any]]]:
-    allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
+    allowed_pids = _launch_process_scope(expected_pid) if expected_pid is not None else None
     widgets: list[tuple[Any, dict[str, Any]]] = []
     for window, record in _window_records(deadline, allowed_pids):
         if allowed_pids is not None and record["pid"] not in allowed_pids:
@@ -1118,7 +1204,7 @@ def _widget_matches(
     # application at a time. Once that application exposes one unique selector,
     # unrelated desktop providers cannot make the page more correct. This keeps
     # the query bounded without accepting a title, coordinate, or stale slot.
-    allowed_pids = _process_tree(expected_pid) if expected_pid is not None else None
+    allowed_pids = _launch_process_scope(expected_pid) if expected_pid is not None else None
     observed: list[tuple[Any, dict[str, Any]]] = []
     application_matches: list[tuple[Any, dict[str, Any]]] = []
     current_application: int | None = None
@@ -1336,7 +1422,8 @@ def focused_widget(
         target_seen = False
         try:
             allowed_pids = (
-                _process_tree(expected_pid) if expected_pid is not None else None
+                _launch_process_scope(expected_pid)
+                if expected_pid is not None else None
             )
             preferred_observed = False
             for window, window_record in _window_records(
@@ -1513,11 +1600,15 @@ def smoke_window(
     Atspi, GLib = _atspi_import()
     deadline = time.monotonic() + timeout
     reason = "no accessible window/content for the launched application"
+    last_scope: set[int] = set()
+
     def observe() -> dict[str, Any] | None:
-        nonlocal reason
+        nonlocal reason, last_scope
         try:
-            allowed_pids = _process_tree(root_pid or expected_pid)
-            allowed_pids.add(expected_pid)
+            allowed_pids = _launch_process_scope(
+                root_pid or expected_pid, (expected_pid,)
+            )
+            last_scope = allowed_pids
             for window, record in _window_records(
                 deadline,
                 allowed_pids,
@@ -1568,7 +1659,7 @@ def smoke_window(
         result = _read_until_ready(observe, deadline)
         if result is not None:
             return result
-        if launch_process_exited(root_pid or expected_pid):
+        if _process_scope_exited(last_scope):
             return {"status": "failed", "error": "application exited before the smoke check"}
         if time.monotonic() >= deadline:
             return {"status": "failed", "error": reason}
@@ -1727,6 +1818,9 @@ def cleanup_new_windows(state_path: Path, timeout: float) -> dict[str, Any]:
     }
     process_pids: set[int] = set()
     for pid in candidate_pids:
+        # These PIDs come from arbitrary residual windows, not the supervised
+        # launch root. Do not widen cleanup to their process groups: a desktop
+        # service can share such a group with windows the test does not own.
         process_pids.update(_process_tree(pid))
     for pid in sorted(process_pids, reverse=True):
         try:

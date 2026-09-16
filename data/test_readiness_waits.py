@@ -198,6 +198,26 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertTrue(all(call.args[1] == {42} for call in read.call_args_list))
         self.assertEqual(read.call_count, 2)
 
+    def test_window_open_survives_a_reparented_live_group_member(self):
+        record = {"key": "new-window", "pid": 99, "application": "Editor",
+                  "application_index": 7, "name": "Document",
+                  "role": "frame", "children": 1}
+        with mock.patch.object(probe, "baseline_keys", return_value=set()), \
+             mock.patch.object(probe, "_launch_process_scope", return_value={42, 99}), \
+             mock.patch.object(
+                 probe, "launch_process_exited", side_effect=lambda pid, *_args: pid == 42
+             ), \
+             mock.patch.object(probe, "process_memory", return_value={}), \
+             mock.patch.object(probe, "accessible_snapshot", side_effect=[
+                 {"windows": []}, {"windows": [record]}]) as read:
+            result = probe.wait_for_window_change(
+                Path("unused"), 1, True, 42, sample_memory=False
+            )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["pid"], 99)
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(self.sleeps, [0.1])
+
     def test_window_close_read_failure_cannot_prove_disappearance(self):
         with mock.patch.object(probe, "baseline_keys", return_value=set()), \
              mock.patch.object(probe, "_process_tree", return_value={42}), \
@@ -319,8 +339,11 @@ class ReadinessWaitsTest(unittest.TestCase):
         with mock.patch.object(
             probe, "_atspi_import",
             return_value=(smoke_fixtures.API, smoke_fixtures.GLIB),
-        ), mock.patch.object(probe, "_process_tree", return_value={42, 43}) as tree, \
-             mock.patch.object(probe, "_window_records", return_value=[(root, record)]) as read:
+        ), mock.patch.object(
+            probe, "_launch_process_scope", return_value={42, 43}
+        ) as scope, mock.patch.object(
+            probe, "_window_records", return_value=[(root, record)]
+        ) as read:
             result = probe.smoke_window(
                 1, 42, application_index=7,
                 window_identity="/opened", root_pid=41,
@@ -328,7 +351,7 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["pid"], 43)
         self.assertEqual(result["window_identity"], "/opened")
-        tree.assert_called_once_with(41)
+        scope.assert_called_once_with(41, (42,))
         self.assertEqual(read.call_args.args[1], {42, 43})
         self.assertEqual(read.call_args.kwargs["preferred_application_index"], 7)
         self.assertEqual(read.call_args.kwargs["preferred_window_identity"], "/opened")
