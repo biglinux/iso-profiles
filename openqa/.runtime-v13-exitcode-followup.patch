@@ -1,0 +1,17 @@
+--- a/openqa/integration/accessible_smoke.py
++++ b/openqa/integration/accessible_smoke.py
+@@ -177,8 +177,13 @@
+         except subprocess.TimeoutExpired as error:
+             raise RuntimeError("persistent smoke probe did not terminate") from error
+         stderr = session.stderr.read() if session.stderr is not None else ""
+-        check(return_code == 0, f"persistent smoke probe exited {return_code}: {stderr}")
+         check(final is not None, f"persistent smoke returned no final record: {output}; {stderr}")
++        expected_code = 0 if final.get("status") in {None, "passed"} else 1
++        check(
++            return_code == expected_code,
++            f"persistent smoke probe exited {return_code}, expected {expected_code}: "
++            f"output={output}; stderr={stderr}",
++        )
+         return ready, final
+     finally:
+         selector.close()
