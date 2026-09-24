@@ -156,7 +156,7 @@ release build:
 | Variable | Default | Meaning |
 |:---|:---|:---|
 | `EDITION` (or `$1`) | — | **required.** Profile to build (`kde`, `xivastudio`, …) |
-| `KERNEL` | `lts` | `oldlts` \| `lts` \| `latest` \| `xanmod` \| `xanmod-lts` |
+| `KERNEL` | `lts` | `oldlts` \| `lts` \| `latest` \| `xanmod` \| `xanmod-lts` \| `big` |
 | `MANJARO_BRANCH` | `stable` | `stable` \| `testing` \| `unstable` |
 | `BIGLINUX_BRANCH` | `stable` | `stable` \| `testing` \| `development` (additive: testing sits *above* stable) |
 | `BIGCOMMUNITY_BRANCH` | `stable` | same, bigcommunity only |
@@ -184,6 +184,7 @@ release build:
 | `oldlts` | kernel.org's longterm feed, second entry | the previous longterm |
 | `latest` | the `linux-latest` meta package's `kernelver` | `linux71`, … |
 | `xanmod`, `xanmod-lts` | fixed names | `linux-xanmod[-lts]` |
+| `big` | fixed name, bigcommunity builds only | `linux-big` |
 
 Whatever comes out fills the `KERNEL` placeholders in the `Packages-*` files. So
 `KERNEL-nvidia-580xx` becomes `linux612-nvidia-580xx` without anyone editing a
@@ -198,7 +199,7 @@ place that decides it. The publishers move the file; none of them renames it.
   product        tier              date         kernel id
   ────────       ──────────────    ──────────   ─────────
   biglinux   _DEVELOPMENT_gnome _  2026-07-31 _ k612       .iso
-  └ distro or     └ empty for a       └ from      └ k612, xanmod71
+  └ distro or     └ empty for a       └ from      └ k612, xanmod71, big72
     xivastudio      release             RELEASE_TAG
 ```
 

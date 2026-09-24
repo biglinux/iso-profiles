@@ -11,7 +11,7 @@
 #   ./build-iso/build-local.sh -m testing -b testing kde
 #
 # Usage: build-local.sh [options] <edition> [kernel]
-#   kernel: oldlts | lts (default) | latest | xanmod | xanmod-lts
+#   kernel: oldlts | lts (default) | latest | xanmod | xanmod-lts | big (bigcommunity)
 #   -m <branch>   Manjaro branch: stable (default) | testing | unstable
 #   -b <branch>   BigLinux branch: stable (default) | testing
 #   -c <branch>   BigCommunity branch: stable (default) | testing

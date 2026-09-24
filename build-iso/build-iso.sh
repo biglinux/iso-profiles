@@ -95,7 +95,7 @@ read_inputs() {
     EDITION="${EDITION:-${1:-}}"
     [[ -n "$EDITION" ]] || die "no edition given (e.g.: bash build-iso/build-iso.sh kde)"
 
-    # A selector; resolve_kernel turns it into linux612 or linux-xanmod.
+    # A selector; resolve_kernel turns it into linux612, linux-xanmod or linux-big.
     KERNEL="${KERNEL:-lts}"
     MANJARO_BRANCH="${MANJARO_BRANCH:-stable}"
     # testing is inserted above stable, not instead of it.
@@ -228,9 +228,17 @@ resolve_kernel() {
             # only known after the build, from the .pkgs list.
             KERNEL_NAME="-${KERNEL}"
             ;;
-        *) die "unsupported kernel selector: $KERNEL (use oldlts, lts, latest, xanmod or xanmod-lts)" ;;
+        big)
+            # The BigCommunity kernel, linux-big, with its linux-big-* modules
+            # for the placeholders. It is published in the community
+            # repositories, which only a bigcommunity build has.
+            [[ "$DISTRONAME" == "bigcommunity" ]] \
+                || die "kernel selector big needs a bigcommunity build: linux-big is in the community repositories"
+            KERNEL_NAME="-big"
+            ;;
+        *) die "unsupported kernel selector: $KERNEL (use oldlts, lts, latest, xanmod, xanmod-lts or big)" ;;
     esac
-    [[ "$KERNEL_NAME" =~ ^[0-9][0-9][0-9]?$ || "$KERNEL_NAME" == -xanmod* ]] \
+    [[ "$KERNEL_NAME" =~ ^[0-9][0-9][0-9]?$ || "$KERNEL_NAME" == -xanmod* || "$KERNEL_NAME" == -big ]] \
         || die "could not resolve '$KERNEL' to a kernel version (got: '$KERNEL_NAME')"
     msg "Kernel package: linux${KERNEL_NAME}"
 }
@@ -780,8 +788,8 @@ collect_output() {
     [[ -n "$iso_path" ]] || die "buildiso finished but produced no ISO"
 
     # The kernel id is always the last _-separated token of the ISO name:
-    # k612, k71, xanmod71, xanmodlts71 (the version read from the .pkgs list).
-    if [[ "$KERNEL_NAME" == -xanmod* ]]; then
+    # k612, k71, xanmod71, xanmodlts71, big72 (the version read from the .pkgs list).
+    if [[ "$KERNEL_NAME" == -xanmod* || "$KERNEL_NAME" == -big ]]; then
         local xan_ver
         [[ -n "$pkgs_path" ]] || die "no .pkgs list to read the ${KERNEL} version from"
         xan_ver=$(awk -v pkg="linux${KERNEL_NAME}" \

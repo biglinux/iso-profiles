@@ -106,6 +106,16 @@ def test_a_xanmod_version_is_read_back_from_the_package_list(tmp_path):
     assert name == "xivastudio_2026-07-31_xanmod71.iso"
 
 
+def test_a_linux_big_version_is_read_back_from_the_package_list(tmp_path):
+    pkgs = tmp_path / "built-pkgs.txt"
+    pkgs.write_text("linux-big 7.2.7-2\nlinux-big-headers 7.2.7-2\n", encoding="utf-8")
+
+    name = published_name("cinnamon", "stable", "stable", kernel="big",
+                          kernel_name="-big", distroname="bigcommunity", pkgs=pkgs)
+
+    assert name.endswith("_2026-07-31_big72.iso")
+
+
 def test_bigcommunity_names_itself():
     assert published_name("kde", "stable", "stable", distroname="bigcommunity") == (
         "bigcommunity_2026-07-31_k618.iso"
