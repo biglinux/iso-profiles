@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      EXPECTED_TREE: 06c198bc260b29bac5dfa8a08e1f7e70ccc6f41b
+      EXPECTED_TREE: 36e42b97964014161fdbbaa32367965cad5d1ceb
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -21,15 +21,15 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/review/openqa-main-20260924
-          test "$(git rev-parse HEAD^)" = c1e227529f78f9e52c82a0c00a867267a614400d
-          test "$(git rev-parse b4be7873d3dd10f2578fbb09e555d7f3b8fd401b^{tree})" = 6fa2f11c534cd01ec37963a107dec368a9c4af71
+          test "$(git rev-parse HEAD^)" = efca5b2d671e74763f3a3f0d8fd8cdfd3f78537c
+          test "$(git rev-parse 'b4be7873d3dd10f2578fbb09e555d7f3b8fd401b^{tree}')" = 6fa2f11c534cd01ec37963a107dec368a9c4af71
           git fetch --no-tags origin 2059d4d804cca2569189e8fa8c0101df844a65fb
-          test "$(git rev-parse 2059d4d804cca2569189e8fa8c0101df844a65fb^{tree})" = 228bf888be4a501ec9aa1dec15a8e4becef94945
+          test "$(git rev-parse '2059d4d804cca2569189e8fa8c0101df844a65fb^{tree}')" = 228bf888be4a501ec9aa1dec15a8e4becef94945
           mkdir -p "$RUNNER_TEMP/review"
           # Each immutable blob is an ordinary, readable UTF-8 unified diff.
           # base64 decoding here is the standard GitHub REST blob wire format.
-          blobs=(50bface086e05ed5ab490fb32eacf9bf9da7d471 3573fb5494e178a97a77043c0733a466e6c07260 efe75f80e8ba807db673986d6b720c713ecca7b7)
-          for i in 0 1 2; do
+          blobs=(50bface086e05ed5ab490fb32eacf9bf9da7d471 3573fb5494e178a97a77043c0733a466e6c07260 efe75f80e8ba807db673986d6b720c713ecca7b7 a1979676c5ee467216376339a21f610e178fffc8)
+          for i in 0 1 2 3; do
             gh api "repos/biglinux/iso-profiles/git/blobs/${blobs[$i]}" --jq .content | base64 --decode > "$RUNNER_TEMP/review/review-$((i+1)).patch"
           done
           echo "35a2ed04a06566781dea118527481818e8e0a9dcc137ebb737d2312bcf0907e6  $RUNNER_TEMP/review/review-1.patch" | sha256sum --check --strict
@@ -39,6 +39,7 @@ jobs:
           echo "1e87ad7ab269a744b9478e9cdf6ef71949a423b815c9fbaee93156c5370516c2  $RUNNER_TEMP/review/review-1.patch" | sha256sum --check --strict
           echo "2011d99000bd3297ff1cc06f17b01fb6a7ab22efe69ba6924a16c03d0b4c2dcd  $RUNNER_TEMP/review/review-2.patch" | sha256sum --check --strict
           echo "497b6b753dd84a2d381cbda4ea157faa6341ea9cf3f5409481f8174243b73613  $RUNNER_TEMP/review/review-3.patch" | sha256sum --check --strict
+          echo "086e9cf818153b7a0b276681a3f39767dbf14b6d76664b5f31bbe469809db9d6  $RUNNER_TEMP/review/review-4.patch" | sha256sum --check --strict
           git rm .github/workflows/openqa-review-export.yml .github/workflows/openqa-review-publish.yml
           git restore --source=2059d4d804cca2569189e8fa8c0101df844a65fb --staged --worktree -- data openqa docs/openqa-empty-window-classification.md docs/openqa-nonvisual-implementation.md docs/openqa-reports-always.md docs/openqa-runtime-validation.md .github/workflows/build-iso.yml .github/workflows/mirror-openqa-image.yml .github/workflows/openqa-nonvisual-checks.yml .github/workflows/openqa-report.yml .github/workflows/openqa-single-instance-experiment.yml
           git apply --index --whitespace=error-all "$RUNNER_TEMP/review/"review-*.patch
@@ -75,9 +76,9 @@ jobs:
           test "$(git write-tree)" = "$EXPECTED_TREE"
           git diff --exit-code
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'feat(openqa): integrate reviewed nonvisual release gate on current main'
-          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
           git push origin HEAD:refs/heads/review/openqa-main-20260924
-          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/review/published-identity.txt"
+          git rev-parse HEAD 'HEAD^{tree}' > "$RUNNER_TEMP/review/published-identity.txt"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
