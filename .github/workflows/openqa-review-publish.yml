@@ -1,0 +1,87 @@
+name: Validate and publish reviewed openQA integration
+on:
+  push:
+    branches: [review/openqa-main-20260924]
+    paths: [.github/workflows/openqa-review-publish.yml]
+permissions:
+  contents: write
+jobs:
+  publish-reviewed-tree:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      EXPECTED_TREE: 06c198bc260b29bac5dfa8a08e1f7e70ccc6f41b
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Reconstruct the exact reviewed tree from readable patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/review/openqa-main-20260924
+          test "$(git rev-parse HEAD^)" = c1e227529f78f9e52c82a0c00a867267a614400d
+          test "$(git rev-parse b4be7873d3dd10f2578fbb09e555d7f3b8fd401b^{tree})" = 6fa2f11c534cd01ec37963a107dec368a9c4af71
+          git fetch --no-tags origin 2059d4d804cca2569189e8fa8c0101df844a65fb
+          test "$(git rev-parse 2059d4d804cca2569189e8fa8c0101df844a65fb^{tree})" = 228bf888be4a501ec9aa1dec15a8e4becef94945
+          mkdir -p "$RUNNER_TEMP/review"
+          # Each immutable blob is an ordinary, readable UTF-8 unified diff.
+          # base64 decoding here is the standard GitHub REST blob wire format.
+          blobs=(50bface086e05ed5ab490fb32eacf9bf9da7d471 3573fb5494e178a97a77043c0733a466e6c07260 efe75f80e8ba807db673986d6b720c713ecca7b7)
+          for i in 0 1 2; do
+            gh api "repos/biglinux/iso-profiles/git/blobs/${blobs[$i]}" --jq .content | base64 --decode > "$RUNNER_TEMP/review/review-$((i+1)).patch"
+          done
+          echo "35a2ed04a06566781dea118527481818e8e0a9dcc137ebb737d2312bcf0907e6  $RUNNER_TEMP/review/review-1.patch" | sha256sum --check --strict
+          # Correct a single transcribed patch-header space, then verify the
+          # canonical diff byte for byte before applying anything.
+          sed -i 's/^ diff --git /diff --git /' "$RUNNER_TEMP/review/review-1.patch"
+          echo "1e87ad7ab269a744b9478e9cdf6ef71949a423b815c9fbaee93156c5370516c2  $RUNNER_TEMP/review/review-1.patch" | sha256sum --check --strict
+          echo "2011d99000bd3297ff1cc06f17b01fb6a7ab22efe69ba6924a16c03d0b4c2dcd  $RUNNER_TEMP/review/review-2.patch" | sha256sum --check --strict
+          echo "497b6b753dd84a2d381cbda4ea157faa6341ea9cf3f5409481f8174243b73613  $RUNNER_TEMP/review/review-3.patch" | sha256sum --check --strict
+          git rm .github/workflows/openqa-review-export.yml .github/workflows/openqa-review-publish.yml
+          git restore --source=2059d4d804cca2569189e8fa8c0101df844a65fb --staged --worktree -- data openqa docs/openqa-empty-window-classification.md docs/openqa-nonvisual-implementation.md docs/openqa-reports-always.md docs/openqa-runtime-validation.md .github/workflows/build-iso.yml .github/workflows/mirror-openqa-image.yml .github/workflows/openqa-nonvisual-checks.yml .github/workflows/openqa-report.yml .github/workflows/openqa-single-instance-experiment.yml
+          git apply --index --whitespace=error-all "$RUNNER_TEMP/review/"review-*.patch
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --cached --check
+          git diff --cached --stat b4be7873d3dd10f2578fbb09e555d7f3b8fd401b > "$RUNNER_TEMP/review/changes.txt"
+          git archive --format=tar.gz "$EXPECTED_TREE" > "$RUNNER_TEMP/review/reviewed-source.tar.gz"
+          printf '%s\n' "$EXPECTED_TREE" > "$RUNNER_TEMP/review/tree.txt"
+      - name: Install isolated test and lint dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-gi gir1.2-gtk-3.0 gir1.2-atspi-2.0 at-spi2-core dbus-x11 xvfb openbox xdotool ruby
+          python3 -m pip install --disable-pip-version-check pytest -r openqa/report/requirements.txt
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Run regressions on the exact proposed tree
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s data -p 'test_*.py' 2>&1 | tee "$RUNNER_TEMP/review/data.log"
+          python3 -m unittest discover -s openqa/data -p 'test_*.py' 2>&1 | tee "$RUNNER_TEMP/review/openqa-data.log"
+          python3 -m unittest discover -s openqa/report -p 'test_*.py' 2>&1 | tee "$RUNNER_TEMP/review/report.log"
+          prove -Iopenqa/t/lib -Iopenqa/lib openqa/t/*.t 2>&1 | tee "$RUNNER_TEMP/review/perl.log"
+          python3 -m pytest -q -p no:cacheprovider -rs build-iso/tests 2>&1 | tee "$RUNNER_TEMP/review/build-tests.log"
+          python3 -m py_compile data/*.py openqa/data/*.py openqa/production/*.py openqa/report/*.py openqa/integration/*.py
+          python3 openqa/production/check-nonvisual.py | tee "$RUNNER_TEMP/review/nonvisual.log"
+          for script in openqa/production/*.sh data/*.sh build-iso/*.sh; do bash -n "$script"; done
+          shellcheck -x openqa/production/*.sh data/*.sh 2>&1 | tee "$RUNNER_TEMP/review/shellcheck.log"
+          "$RUNNER_TEMP/bin/actionlint" .github/workflows/*.yml 2>&1 | tee "$RUNNER_TEMP/review/actionlint.log"
+          ulimit -c 0
+          timeout --kill-after=5 180 dbus-run-session -- xvfb-run -a /usr/bin/python3 openqa/integration/accessible_smoke.py 2>&1 | tee "$RUNNER_TEMP/review/accessible-gui.log"
+      - name: Publish only the reviewed branch after successful checks
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --exit-code
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'feat(openqa): integrate reviewed nonvisual release gate on current main'
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git push origin HEAD:refs/heads/review/openqa-main-20260924
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/review/published-identity.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: openqa-main-reviewed-${{ github.run_id }}
+          path: ${{ runner.temp }}/review/
+          if-no-files-found: error
+          retention-days: 14
