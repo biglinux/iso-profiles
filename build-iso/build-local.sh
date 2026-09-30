@@ -15,6 +15,7 @@
 #   -m <branch>   Manjaro branch: stable (default) | testing | unstable
 #   -b <branch>   BigLinux branch: stable (default) | testing
 #   -c <branch>   BigCommunity branch: stable (default) | testing
+#   -t            add [community-testing] above the BigLinux repositories (biglinux)
 #   -o <dir>      output directory (default: ./output)
 #   -i <image>    container image (default depends on the distribution)
 #
@@ -33,13 +34,14 @@ usage() {
     exit "${1:-0}"
 }
 
-manjaroBranch=stable biglinuxBranch=stable communityBranch=stable
+manjaroBranch=stable biglinuxBranch=stable communityBranch=stable communityTesting=false
 outputDir="$PWD/output" image=""
-while getopts 'm:b:c:o:i:h' opt; do
+while getopts 'm:b:c:to:i:h' opt; do
     case "$opt" in
         m) manjaroBranch=$OPTARG ;;
         b) biglinuxBranch=$OPTARG ;;
         c) communityBranch=$OPTARG ;;
+        t) communityTesting=true ;;
         o) outputDir=$OPTARG ;;
         i) image=$OPTARG ;;
         h) usage ;;
@@ -109,6 +111,7 @@ echo "==> The first build downloads a lot; expect 1-2 hours in total."
     -e MANJARO_BRANCH="$manjaroBranch" \
     -e BIGLINUX_BRANCH="$biglinuxBranch" \
     -e BIGCOMMUNITY_BRANCH="$communityBranch" \
+    -e COMMUNITY_TESTING="$communityTesting" \
     -e WORK_PATH=/build/output \
     "$image" \
     bash /build/iso-profiles/build-iso/build-iso.sh

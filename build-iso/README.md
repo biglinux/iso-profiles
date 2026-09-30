@@ -160,6 +160,7 @@ release build:
 | `MANJARO_BRANCH` | `stable` | `stable` \| `testing` \| `unstable` |
 | `BIGLINUX_BRANCH` | `stable` | `stable` \| `testing` \| `development` (additive: testing sits *above* stable) |
 | `BIGCOMMUNITY_BRANCH` | `stable` | same, bigcommunity only |
+| `COMMUNITY_TESTING` | `false` | biglinux only: `true` adds `[community-testing]` — testing alone — right above the BigLinux repositories, in the build and in the installed system, plus `community-keyring` |
 | `RELEASE_TAG` | today | date stamped into `/etc/big-release` and the ISO name |
 | `WORK_PATH` | `<checkout>/output` | where the ISO ends up |
 | `DISTRONAME` | detected | `biglinux` or `bigcommunity`, from the profile dirs |

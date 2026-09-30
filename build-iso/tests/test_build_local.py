@@ -143,3 +143,16 @@ def test_the_container_runs_as_root(exec_tmp_path):
     arguments = record_file.read_text(encoding="utf-8").splitlines()
     assert "--user" in arguments
     assert arguments[arguments.index("--user") + 1] == "0:0"
+
+
+def test_community_testing_is_off_unless_asked_for(exec_tmp_path):
+    checkout = _make_checkout(exec_tmp_path)
+    bin_dir, record_file = _fake_podman(exec_tmp_path)
+
+    result = _run(checkout, bin_dir, record_file, "kde")
+    assert result.returncode == 0, result.stderr
+    assert "COMMUNITY_TESTING=false" in record_file.read_text(encoding="utf-8").splitlines()
+
+    result = _run(checkout, bin_dir, record_file, "-t", "kde")
+    assert result.returncode == 0, result.stderr
+    assert "COMMUNITY_TESTING=true" in record_file.read_text(encoding="utf-8").splitlines()

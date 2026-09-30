@@ -35,6 +35,10 @@ on:
         type: choice
         default: stable
         options: [stable, testing]
+      community_testing:
+        description: "Add community-testing above the BigLinux repositories"
+        type: boolean
+        default: false
       publish_release:
         description: "Publish the ISO as a GitHub release"
         type: boolean
@@ -68,6 +72,7 @@ jobs:
           MANJARO_BRANCH: ${{ inputs.manjaro_branch }}
           BIGLINUX_BRANCH: ${{ inputs.big_branch }}
           BIGCOMMUNITY_BRANCH: ${{ inputs.big_branch }}
+          COMMUNITY_TESTING: ${{ inputs.community_testing }}
         run: |
           export WORK_PATH="$GITHUB_WORKSPACE/output"
           bash build-iso/build-iso.sh

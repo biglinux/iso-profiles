@@ -101,6 +101,10 @@ read_inputs() {
     # testing is inserted above stable, not instead of it.
     BIGLINUX_BRANCH="${BIGLINUX_BRANCH:-stable}"
     BIGCOMMUNITY_BRANCH="${BIGCOMMUNITY_BRANCH:-stable}"
+    # biglinux only: [community-testing] above the BigLinux repositories, in the
+    # build and in the installed system. Testing alone, without community-stable
+    # or community-extra -- community-keyring is published in testing for this.
+    COMMUNITY_TESTING="${COMMUNITY_TESTING:-false}"
     RELEASE_TAG="${RELEASE_TAG:-$(date +%Y-%m-%d)}"
     WORK_PATH="${WORK_PATH:-$PROFILES_ROOT/output}"
 
@@ -193,6 +197,15 @@ validate_inputs() {
         stable | testing | development) ;;
         *) die "unknown BigCommunity branch: $BIGCOMMUNITY_BRANCH" ;;
     esac
+    case "$COMMUNITY_TESTING" in
+        true | false) ;;
+        *) die "COMMUNITY_TESTING must be true or false: $COMMUNITY_TESTING" ;;
+    esac
+    # A bigcommunity build already has the whole community set; its testing is
+    # BIGCOMMUNITY_BRANCH=testing, and a second [community-testing] would be a
+    # database pacman refuses to register.
+    [[ "$COMMUNITY_TESTING" == "false" || "$DISTRONAME" == "biglinux" ]] \
+        || die "COMMUNITY_TESTING is for biglinux builds; a bigcommunity build uses BIGCOMMUNITY_BRANCH=testing"
     [[ -d "$PROFILE_PATH_EDITION" ]] || die "profile not found: $PROFILE_PATH_EDITION"
 
     # Here rather than at move time: fail in a second, not after the build.
@@ -275,7 +288,7 @@ prepare_host() {
     install -dm755 /etc/pacman.d/gnupg/
     install -m0644 /tmp/biglinux-key/usr/share/pacman/keyrings/* /etc/pacman.d/gnupg/
     rm -rf /tmp/biglinux-key
-    if [[ "$DISTRONAME" == "bigcommunity" ]]; then
+    if [[ "$DISTRONAME" == "bigcommunity" || "$COMMUNITY_TESTING" == "true" ]]; then
         rm -rf /tmp/community-keyring
         git clone --depth 1 https://github.com/big-comm/community-keyring.git /tmp/community-keyring
         install -m0644 /tmp/community-keyring/community.gpg /usr/share/pacman/keyrings/
@@ -377,6 +390,8 @@ append_build_repos() {
         "https://$BIGLINUX_REPO_HOST/update-stable"
     if [[ "$DISTRONAME" == "bigcommunity" ]]; then
         append_community_repos "$config_file"
+    elif [[ "${COMMUNITY_TESTING:-false}" == "true" ]]; then
+        repo_section "$config_file" community-testing "https://$COMMUNITY_REPO_HOST/testing"
     fi
     append_biglinux_repos "$config_file"
 }
@@ -646,6 +661,38 @@ apply_profile_removals() {
     done
 }
 
+# COMMUNITY_TESTING's half in the installed system: [community-testing] in the
+# pacman.conf the biglinux profile ships, immediately above the first BigLinux
+# section -- [biglinux-testing] when set-biglinux-branch.sh has added it, else
+# [biglinux-stable] -- which is the same order append_build_repos uses. The
+# keyring comes with it, or the installed system could not verify the
+# repository it was just given.
+add_community_testing_to_profile() {
+    local overlay conf patched=0
+    for overlay in root live; do
+        conf="$PROFILE_PATH_EDITION/$overlay-overlay/etc/pacman.conf"
+        [[ -f "$conf" ]] || continue
+        if grep -q '^\[community-testing\]' "$conf"; then
+            msg "$overlay-overlay pacman.conf already has [community-testing]"
+            patched=$((patched + 1))
+            continue
+        fi
+        assert_present '^\[biglinux-\(testing\|stable\)\]' "$conf"
+        awk -v host="$COMMUNITY_REPO_HOST" '
+            !done && /^\[biglinux-(testing|stable)\]/ {
+                printf "[community-testing]\nSigLevel = PackageRequired\nServer = https://%s/testing/$arch\n\n", host
+                done = 1
+            }
+            { print }' "$conf" >"$conf.new"
+        mv "$conf.new" "$conf"
+        msg "$overlay-overlay pacman.conf: [community-testing] above the BigLinux repositories"
+        patched=$((patched + 1))
+    done
+    [[ $patched -gt 0 ]] || die "no pacman.conf under $PROFILE_PATH_EDITION to add [community-testing] to"
+
+    printf '\ncommunity-keyring\n' >>"$PROFILE_PATH_EDITION/Packages-Root"
+}
+
 configure_profile() {
     # The installed system of a community ISO gets its repositories from the
     # shared pacman.conf, when the profile layout ships one.
@@ -674,6 +721,10 @@ configure_profile() {
         bash "$scriptDir/set-manjaro-branch.sh"
     fi
     bash "$scriptDir/set-biglinux-branch.sh"
+    # After it, so the anchor is [biglinux-testing] on a testing build.
+    if [[ "$COMMUNITY_TESTING" == "true" ]]; then
+        add_community_testing_to_profile
+    fi
 
     # Off by default; the TKG mesa swap of the old latest/xanmod ISOs. The local
     # generator (gitrepo / Build ISO GUI) never does this, so it stays behind a
@@ -817,7 +868,7 @@ main() {
     validate_inputs
 
     local start=$SECONDS
-    msg "Building $DISTRONAME/$EDITION (kernel=$KERNEL manjaro=$MANJARO_BRANCH ${DISTRONAME}=$DISTRO_BRANCH)"
+    msg "Building $DISTRONAME/$EDITION (kernel=$KERNEL manjaro=$MANJARO_BRANCH ${DISTRONAME}=$DISTRO_BRANCH community-testing=$COMMUNITY_TESTING)"
     resolve_kernel
     prepare_host
     configure_build_repos
