@@ -14,6 +14,7 @@ from conftest import SCRIPTS
 
 ENGINE = SCRIPTS / "build-iso.sh"
 KDE_PACMAN_CONF = SCRIPTS.parent / "biglinux" / "kde" / "root-overlay" / "etc" / "pacman.conf"
+KDE_PACKAGES_LIVE = SCRIPTS.parent / "biglinux" / "kde" / "Packages-Live"
 
 BASE_ENV = {
     "PATH": "/usr/bin:/bin",
@@ -74,6 +75,7 @@ def installed_profile(tmp_path, **env):
     etc.mkdir(parents=True)
     shutil.copy(KDE_PACMAN_CONF, etc / "pacman.conf")
     (edition / "Packages-Root").write_text("base\n  biglinux-keyring\n", encoding="utf-8")
+    shutil.copy(KDE_PACKAGES_LIVE, edition / "Packages-Live")
     script = (
         f'source "{ENGINE}"\n'
         f'bash "{SCRIPTS}/set-biglinux-branch.sh"\n'
@@ -165,3 +167,26 @@ def test_bad_values_are_rejected_before_the_build(tmp_path, env, message):
     proc = validate(tmp_path, **env)
     assert proc.returncode != 0
     assert message in proc.stderr
+
+
+def live_packages(tmp_path, **env):
+    installed_profile(tmp_path, **env)
+    return (tmp_path / "biglinux" / "kde" / "Packages-Live").read_text(encoding="utf-8").split()
+
+
+def test_the_live_session_gets_a_keyring_that_trusts_the_community_key(tmp_path):
+    # biglinux-livecd-key's prebuilt keyring lacks the community key and the
+    # live session has no master key to sign it with, so every community-testing
+    # package failed its signature check there. Both packages install the same
+    # files, hence a swap.
+    packages = live_packages(tmp_path, COMMUNITY_TESTING="true")
+    assert "community-livecd-key" in packages
+    assert "biglinux-livecd-key" not in packages
+    # The live session itself stays BigLinux's.
+    assert "biglinux-livecd" in packages
+
+
+def test_the_live_keyring_is_unchanged_when_off(tmp_path):
+    packages = live_packages(tmp_path)
+    assert "biglinux-livecd-key" in packages
+    assert "community-livecd-key" not in packages

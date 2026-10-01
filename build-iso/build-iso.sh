@@ -691,6 +691,28 @@ add_community_testing_to_profile() {
     [[ $patched -gt 0 ]] || die "no pacman.conf under $PROFILE_PATH_EDITION to add [community-testing] to"
 
     printf '\ncommunity-keyring\n' >>"$PROFILE_PATH_EDITION/Packages-Root"
+
+    # The live session does not populate its keyring: biglinux-livecd-key
+    # copies a prebuilt pubring.gpg/trustdb.gpg over it, with no local master
+    # key to sign anything added later, and that prebuilt keyring does not
+    # carry the community key -- so every community-testing package failed its
+    # signature check in the live session. community-livecd-key ships the same
+    # files with the BigLinux, Manjaro, Arch and community keys all trusted.
+    # A swap, not an addition: both packages install the same files.
+    local live_list="$PROFILE_PATH_EDITION/Packages-Live"
+    if [[ -f "$live_list" ]]; then
+        if [[ -L "$live_list" ]]; then
+            cp --remove-destination "$(readlink -f "$live_list")" "$live_list"
+        fi
+        if grep -q '^biglinux-livecd-key\b' "$live_list"; then
+            sed -i 's/^biglinux-livecd-key\b/community-livecd-key/' "$live_list"
+        else
+            printf '\ncommunity-livecd-key\n' >>"$live_list"
+        fi
+        assert_absent '^biglinux-livecd-key\b' "$live_list"
+        assert_present '^community-livecd-key\b' "$live_list"
+        msg "Packages-Live: community-livecd-key in place of biglinux-livecd-key"
+    fi
 }
 
 configure_profile() {
