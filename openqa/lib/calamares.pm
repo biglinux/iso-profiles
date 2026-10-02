@@ -226,6 +226,19 @@ sub collect_launch_failure_evidence {
     eval { atspi->upload_guest_file('/tmp/openqa-gui-launch.log',
         'calamares-gui-launch.log') };
 
+    $class->upload_session_log;
+
+    my $state_command = q{umask 077; out=/tmp/openqa-calamares-state.txt; if [ -d /run/biglinux-live/calamares ] && [ ! -L /run/biglinux-live/calamares ]; then find /run/biglinux-live/calamares -maxdepth 2 -printf '%y %U:%G %m %s %p\n' | sort >"$out"; else printf '%s\n' 'runtime state directory unavailable' >"$out"; fi};
+    eval { atspi->run_command($state_command, 15) };
+    eval { atspi->upload_guest_file('/tmp/openqa-calamares-state.txt',
+        'calamares-runtime-state.txt') };
+    eval { select_console 'sut' };
+    return 1;
+}
+
+# Calamares runs as root and logs the whole session, installation included,
+# to root's session log; the live session has no other installation log.
+sub upload_session_log {
     # Only the read needs privilege. The live user's shell owns a unique
     # temporary file and the final rename; root never redirects into /tmp.
     # A subshell confines cleanup/exit to this command, not the login console.
@@ -236,19 +249,6 @@ sub collect_launch_failure_evidence {
         eval { atspi->upload_guest_file('/tmp/openqa-calamares-session.log',
             'calamares-session.log') };
     }
-
-    my $state_command = q{umask 077; out=/tmp/openqa-calamares-state.txt; if [ -d /run/biglinux-live/calamares ] && [ ! -L /run/biglinux-live/calamares ]; then find /run/biglinux-live/calamares -maxdepth 2 -printf '%y %U:%G %m %s %p\n' | sort >"$out"; else printf '%s\n' 'runtime state directory unavailable' >"$out"; fi};
-    eval { atspi->run_command($state_command, 15) };
-    eval { atspi->upload_guest_file('/tmp/openqa-calamares-state.txt',
-        'calamares-runtime-state.txt') };
-    eval { select_console 'sut' };
-    return 1;
-}
-
-sub upload_installation_log {
-    atspi->upload_guest_file('/var/log/installation.log', 'calamares-installation.log');
-    atspi->upload_guest_file('/home/biglinux/installation.log',
-        'calamares-live-installation.log');
 }
 
 1;

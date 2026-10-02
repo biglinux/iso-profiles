@@ -18,4 +18,10 @@ sub run {
     installed_system->assert_display_manager;
 }
 
+# GRUB, the kernel and the greeter publish no accessibility tree, so the screen
+# is the only evidence of where the boot stopped. Diagnosis only.
+sub post_fail_hook {
+    eval { select_console 'sut'; save_screenshot; };
+}
+
 1;

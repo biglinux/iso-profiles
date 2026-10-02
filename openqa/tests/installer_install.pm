@@ -30,13 +30,15 @@ sub run {
     die 'The installation did not finish: ' . ($restart->{error} // 'unknown reason')
       unless $restart->{status} eq 'passed';
 
-    calamares->upload_installation_log;
+    calamares->upload_session_log;
 
-    # Eject as late as possible: the live root can still be served from the
-    # medium, so every rendering step after this point is a risk. Only the
-    # final key press remains, and it reboots the machine.
+    # Focus the restart button before ejecting: the live root is served from
+    # the medium, and once it is gone any program that pages in code from it
+    # can die, the accessibility bus included. Only the key press is left.
+    atspi->focus_widget($calamares::BUTTON_ROLES, \@RESTART, 60, calamares->scope);
     eject_cd;
-    calamares->click_action(\@RESTART);
+    select_console 'sut';
+    send_key 'spc';
 
     # The installer must perform its own restart. Resetting here would hide a
     # broken user action. installed_boot waits for a new authenticated console.
@@ -44,7 +46,7 @@ sub run {
 }
 
 sub post_fail_hook {
-    eval { calamares->upload_installation_log };
+    eval { calamares->upload_session_log };
     eval { select_console 'sut' };
 }
 
