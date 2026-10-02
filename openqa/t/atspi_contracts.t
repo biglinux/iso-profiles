@@ -68,7 +68,7 @@ no warnings 'redefine';
     local *atspi::select_console = sub {};
     local *atspi::send_key = sub { push @keys, $_[0]; };
     atspi->activate_widget('button', ['Next'], 5);
-    is_deeply(\@keys, ['tab','ret'], 'activation follows observed keyboard focus, not direct action');
+    is_deeply(\@keys, ['tab','spc'], 'activation presses the focused control with Space, never a direct action');
     is_deeply([@focus_args[1..3]], [42, '/target', 7],
         'focus traversal forwards the PID-verified AT-SPI application hint');
 }

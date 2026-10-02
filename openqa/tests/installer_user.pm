@@ -42,4 +42,10 @@ sub run {
     calamares->assert_page('summary-page', 90);
 }
 
+# Observation only: the failure is already recorded.
+sub post_fail_hook {
+    eval { calamares->collect_launch_failure_evidence };
+    eval { select_console 'sut'; save_screenshot; };
+}
+
 1;

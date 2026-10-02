@@ -599,7 +599,9 @@ sub activate_widget {
     my ($class, $role, $labels, $timeout, %options) = @_;
     my $widget = $class->focus_widget($role, $labels, $timeout, %options);
     select_console 'sut';
-    send_key($role =~ /check|radio|toggle/ ? 'spc' : 'ret');
+    # Space presses the focused button in GTK, Qt and HTML alike. Return only
+    # works in GTK: a Qt button takes it only as a dialog's default button.
+    send_key 'spc';
     return {status => 'passed', widget => $widget, activation => 'keyboard'};
 }
 
