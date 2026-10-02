@@ -24,7 +24,7 @@ sub run {
     # selected before it is typed over. Calamares publishes every page at
     # once, too much to walk completely, so presence is proven by the first
     # exact match; Tab must then land on that very object.
-    atspi->focus_widget('text|entry', ['Full name', 'Nome completo'], 60,
+    atspi->focus_widget('text|entry', ['Your name', 'Seu nome'], 60,
         calamares->scope, positive_witness => 1);
     for my $value ('BigLinux openQA', calamares->test_user, calamares->test_hostname) {
         send_key 'ctrl-a';
