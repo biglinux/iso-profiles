@@ -1557,8 +1557,16 @@ def wait_for_widget(
             ), deadline,
         )
         if len(matches) > 1:
+            # Name the candidates: "two controls matched" alone does not say
+            # whether the page shows two of them or the tree publishes one twice.
+            candidates = "; ".join(
+                f"{record.get('role', '')} {str(record.get('name', ''))[:60]!r}"
+                f" in {str(record.get('window', ''))[:60]!r} at {str(record.get('identity', ''))[:120]}"
+                for _accessible, record in matches[:6]
+            )
             return {"status": "failed", "reason": "ambiguous", "complete": True,
-                    "matches": len(matches), "error": "selector matches multiple controls"}
+                    "matches": len(matches),
+                    "error": f"selector matches multiple controls: {candidates}"}
         if absent and not matches:
             return {"status": "passed", "reason": "absent", "complete": True}
         if not absent and len(matches) == 1:

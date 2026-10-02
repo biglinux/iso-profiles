@@ -76,6 +76,7 @@ class ReadinessWaitsTest(unittest.TestCase):
         with mock.patch.object(probe, "_visible_widgets", side_effect=[probe.ProbeError("starting"), pairs]):
             result = probe.wait_for_widget(1, "button", ["Install"], 42)
         self.assertEqual(result["reason"], "ambiguous")
+        self.assertIn("button 'Install' in 'Dialog'", result["error"])
         self.assertTrue(all(not node.get_action_iface().done for node, _ in pairs))
 
     def test_focus_query_is_retried_without_moving_focus(self):
