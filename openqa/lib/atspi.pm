@@ -605,16 +605,6 @@ sub activate_widget {
     return {status => 'passed', widget => $widget, activation => 'keyboard'};
 }
 
-sub activate_widget_until_gone {
-    my ($class, $role, $labels, $timeout, %options) = @_;
-    $class->activate_widget($role, $labels, $timeout, %options);
-    my $gone = $class->_widget_operation('wait-gone', $role, $labels, $timeout, %options);
-    die 'control disappearance was not confirmed: ' . ($gone->{error} // 'incomplete query')
-      unless ($gone->{status} // '') eq 'passed' && $gone->{complete}
-      && ($gone->{reason} // '') eq 'absent';
-    return 1;
-}
-
 sub _start_argv {
     my ($class, $argv, $expected_name) = @_;
     my $started = time;

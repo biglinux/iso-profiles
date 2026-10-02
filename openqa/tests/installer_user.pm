@@ -21,11 +21,8 @@ sub run {
 
     # Reach the first field by Tab and fill the form in its focus order. The
     # full name pre-fills the login and computer names, so each field is
-    # selected before it is typed over. Calamares publishes every page at
-    # once, too much to walk completely, so presence is proven by the first
-    # exact match; Tab must then land on that very object.
-    atspi->focus_widget('text|entry', ['Your name', 'Seu nome'], 60,
-        calamares->scope, positive_witness => 1);
+    # selected before it is typed over.
+    atspi->focus_widget('text|entry', ['Your name', 'Seu nome'], 60, calamares->scope);
     for my $value ('BigLinux openQA', calamares->test_user, calamares->test_hostname) {
         send_key 'ctrl-a';
         type_string $value;
@@ -37,8 +34,7 @@ sub run {
     # Calamares only enables "Next" once every field validates, so the button
     # becoming sensitive is the accessible equivalent of the green marks - and
     # unlike them it cannot be faked by a theme that draws a green icon.
-    my $ready = atspi->wait_widget($calamares::BUTTON_ROLES, \@calamares::NEXT, 60,
-        calamares->scope, positive_witness => 1);
+    my $ready = atspi->wait_widget($calamares::BUTTON_ROLES, \@calamares::NEXT, 60, calamares->scope);
     die 'Calamares did not accept the account details'
       unless ref $ready eq 'HASH' && $ready->{status} eq 'passed';
 

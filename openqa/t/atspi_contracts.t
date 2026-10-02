@@ -43,17 +43,6 @@ no warnings 'redefine';
     like($@, qr/incomplete/, 'required wait rejects incomplete evidence');
 }
 {
-    local *atspi::activate_widget = sub { return {}; };
-    for my $reply ({status=>'failed', complete=>1}, {status=>'passed',complete=>0,reason=>'absent'},
-                   {status=>'inconclusive',complete=>0}) {
-        local *atspi::_widget_operation = sub { return $reply; };
-        eval { atspi->activate_widget_until_gone('button',['Confirm'],5) };
-        like($@, qr/not confirmed/, 'failed or partial query never proves disappearance');
-    }
-    local *atspi::_widget_operation = sub { return {status=>'passed',complete=>1,reason=>'absent'}; };
-    is(atspi->activate_widget_until_gone('button',['Confirm'],5), 1, 'complete absence satisfies postcondition');
-}
-{
     my @keys;
     my @focus = ({pid=>42, identity=>'/first', role=>'text'},
                  {pid=>42, identity=>'/target', role=>'button'});

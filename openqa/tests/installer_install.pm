@@ -18,12 +18,9 @@ sub run {
     calamares->click_action(\@calamares::INSTALL);
 
     # The dialog is proven by its own button. A needle would add the dialog's
-    # position on screen as a variable, and it does move between runs.
-    #
-    # Let the dialog settle before confirming and require it to disappear: a
-    # press while the dialog is still fading in reports success, yet leaves the
-    # installer on the summary page.
-    atspi->activate_widget_until_gone($calamares::BUTTON_ROLES, \@CONFIRM, 60, calamares->scope);
+    # position on screen as a variable, and it does move between runs. The
+    # finish page below is what proves the press started the installation.
+    atspi->activate_widget($calamares::BUTTON_ROLES, \@CONFIRM, 60, calamares->scope);
 
     # The finish page shows its restart button only when the installation
     # succeeded, so waiting for it proves the installation completed. A failed

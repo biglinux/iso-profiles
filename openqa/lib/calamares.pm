@@ -81,7 +81,11 @@ sub scope {
     my $root_pid = $class->_require_launch_scope;
     my %options;
     if (defined $application_pid) {
-        %options = (pid => $application_pid, root_pid => undef);
+        # Calamares publishes every page at once, and each QML page twice, a
+        # tree too large and slow to walk completely within a page's budget. A
+        # control is proven by the first exact match in its PID; activation
+        # still requires keyboard focus to land on that very object.
+        %options = (pid => $application_pid, root_pid => undef, positive_witness => 1);
     }
     else {
         %options = (pid => $root_pid, root_pid => $root_pid);
@@ -156,14 +160,9 @@ sub assert_page {
     # Do not rediscover globally or narrow to a transient GTK child: Calamares
     # replaces that child with a Qt process, still owned by the same launch.
     my %options = $class->scope;
-    if (defined $application_pid) {
-        # The privileged Qt application is newly registered and can expose a
-        # large, slow tree. A page anchor needs one exact positive witness,
-        # not a full census of unrelated descendants. Absence and actions keep
-        # their strict complete-tree contracts.
-        $options{positive_witness} = 1;
-        $options{startup_timeout_ms} = 5000;
-    }
+    # The privileged Qt application is newly registered; give its first
+    # replies a short grace.
+    $options{startup_timeout_ms} = 5000 if defined $application_pid;
     my $found = $class->_remember_application(
         atspi->assert_widget($role, $labels, $timeout // 60, %options));
     die "the installer did not show the '$page' page: "
