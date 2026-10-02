@@ -520,14 +520,14 @@ sub assert_widget {
 }
 
 sub wait_widget_until {
-    my ($class, $role, $labels, $total_timeout, $slice) = @_;
-    $slice //= 60;
+    my ($class, $role, $labels, $total_timeout, %options) = @_;
+    my $slice = 60;
     my $deadline = time + $total_timeout;
     my $found = {status => 'inconclusive', error => 'probe did not answer'};
     while (time < $deadline) {
         my $remaining = $deadline - time;
         my $budget = $remaining < $slice ? $remaining : $slice;
-        my $result = eval { $class->wait_widget($role, $labels, $budget) };
+        my $result = eval { $class->wait_widget($role, $labels, $budget, %options) };
         $found = ref $result eq 'HASH' ? $result : {status => 'inconclusive', error => "$@"};
         return $found if ($found->{status} // '') eq 'passed' && $found->{complete};
     }
@@ -606,9 +606,9 @@ sub activate_widget {
 }
 
 sub activate_widget_until_gone {
-    my ($class, $role, $labels, $timeout) = @_;
-    $class->activate_widget($role, $labels, $timeout);
-    my $gone = $class->_widget_operation('wait-gone', $role, $labels, $timeout);
+    my ($class, $role, $labels, $timeout, %options) = @_;
+    $class->activate_widget($role, $labels, $timeout, %options);
+    my $gone = $class->_widget_operation('wait-gone', $role, $labels, $timeout, %options);
     die 'control disappearance was not confirmed: ' . ($gone->{error} // 'incomplete query')
       unless ($gone->{status} // '') eq 'passed' && $gone->{complete}
       && ($gone->{reason} // '') eq 'absent';

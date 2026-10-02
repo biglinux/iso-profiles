@@ -73,7 +73,10 @@ sub begin_application_transition {
     return $resolved;
 }
 
-sub _scope_options {
+# The selector options that keep a query on the installer: its PID and the
+# registry slot it was last seen in, so no query walks the rest of the desktop.
+# Every installer module passes them to its atspi calls.
+sub scope {
     my ($class) = @_;
     my $root_pid = $class->_require_launch_scope;
     my %options;
@@ -102,7 +105,7 @@ sub _remember_application {
 
 sub click_action {
     my ($class, $labels, $timeout) = @_;
-    my %options = $class->_scope_options;
+    my %options = $class->scope;
     return $class->_remember_application(
         atspi->activate_widget($BUTTON_ROLES, $labels, $timeout // 60, %options));
 }
@@ -152,7 +155,7 @@ sub assert_page {
     my ($role, $labels) = $class->page_anchor($page);
     # Do not rediscover globally or narrow to a transient GTK child: Calamares
     # replaces that child with a Qt process, still owned by the same launch.
-    my %options = $class->_scope_options;
+    my %options = $class->scope;
     if (defined $application_pid) {
         # The privileged Qt application is newly registered and can expose a
         # large, slow tree. A page anchor needs one exact positive witness,
@@ -193,7 +196,7 @@ sub test_hostname {
 # release gate because its log could not be collected.
 sub collect_launch_failure_evidence {
     my ($class) = @_;
-    my %scope = eval { $class->_scope_options };
+    my %scope = eval { $class->scope };
     my $scope_error = $@;
     my $scope_record = {
         launch_pid => $launch_pid,

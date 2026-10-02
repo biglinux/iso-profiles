@@ -23,12 +23,12 @@ sub run {
     # Let the dialog settle before confirming and require it to disappear: a
     # press while the dialog is still fading in reports success, yet leaves the
     # installer on the summary page.
-    atspi->activate_widget_until_gone($calamares::BUTTON_ROLES, \@CONFIRM, 60);
+    atspi->activate_widget_until_gone($calamares::BUTTON_ROLES, \@CONFIRM, 60, calamares->scope);
 
     # The finish page shows its restart button only when the installation
     # succeeded, so waiting for it proves the installation completed. A failed
     # installation shows an error instead and runs out of budget here.
-    my $restart = atspi->wait_widget_until($calamares::BUTTON_ROLES, \@RESTART, 2400);
+    my $restart = atspi->wait_widget_until($calamares::BUTTON_ROLES, \@RESTART, 2400, calamares->scope);
     die 'The installation did not finish: ' . ($restart->{error} // 'unknown reason')
       unless $restart->{status} eq 'passed';
 
