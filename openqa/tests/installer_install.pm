@@ -17,10 +17,11 @@ our @CONFIRM = ('Install Now', 'Instalar agora');
 sub run {
     calamares->click_action(\@calamares::INSTALL);
 
-    # The dialog is proven by its own button. A needle would add the dialog's
-    # position on screen as a variable, and it does move between runs. The
-    # finish page below is what proves the press started the installation.
-    atspi->activate_widget($calamares::BUTTON_ROLES, \@CONFIRM, 60, calamares->scope);
+    # Only a profile with prompt-install: true asks again before it writes the
+    # disk; BigLinux and BigCommunity start installing at once. The finish
+    # page below is what proves the installation started.
+    calamares->click_action(\@CONFIRM)
+      if atspi->run_command(q{grep -Eq '^prompt-install:[[:space:]]*true' /etc/calamares/settings.conf}) == 0;
 
     # The finish page shows its restart button only when the installation
     # succeeded, so waiting for it proves the installation completed. A failed
