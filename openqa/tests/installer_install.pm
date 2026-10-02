@@ -32,13 +32,11 @@ sub run {
 
     calamares->upload_session_log;
 
-    # Focus the restart button before ejecting: the live root is served from
-    # the medium, and once it is gone any program that pages in code from it
-    # can die, the accessibility bus included. Only the key press is left.
-    atspi->focus_widget($calamares::BUTTON_ROLES, \@RESTART, 60, calamares->scope);
-    eject_cd;
-    select_console 'sut';
-    send_key 'spc';
+    # The medium stays in: QEMU boots it only once (-boot once=d), so the
+    # restart reaches the installed disk. Ejecting it first would leave the
+    # live session, which still pages its programs in from the medium, unable
+    # to shut down.
+    calamares->click_action(\@RESTART);
 
     # The installer must perform its own restart. Resetting here would hide a
     # broken user action. installed_boot waits for a new authenticated console.
