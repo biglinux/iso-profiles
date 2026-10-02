@@ -11,12 +11,17 @@ import test_nonvisual_semantics as fixtures
 import test_application_smoke as smoke_fixtures
 
 
+# The real function, before setUp replaces it for every other test.
+ANNOUNCE = probe.announce_assistive_technology
+
+
 class ReadinessWaitsTest(unittest.TestCase):
     def setUp(self):
         self.clock = 0.0
         self.sleeps = []
         patches = [mock.patch.object(probe.time, "monotonic", side_effect=lambda: self.clock),
-                   mock.patch.object(probe.time, "sleep", side_effect=self.sleep)]
+                   mock.patch.object(probe.time, "sleep", side_effect=self.sleep),
+                   mock.patch.object(probe, "announce_assistive_technology")]
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -172,6 +177,23 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertEqual(self.sleeps, [0.1])
         payload = write.call_args.args[0]
         self.assertIn("42\\u0000/window", payload)
+
+    def test_baseline_announces_an_assistive_technology_before_reading(self):
+        with mock.patch.object(probe, "_baseline_window_records", return_value=[]), \
+             mock.patch.object(probe, "_x11_window_records", return_value=[]), \
+             mock.patch.object(Path, "write_text"):
+            probe.save_baseline(Path("baseline.json"), 1)
+        probe.announce_assistive_technology.assert_called_once_with()
+
+    def test_announcement_sets_is_enabled_and_leaves_the_screen_reader_alone(self):
+        from gi.repository import Gio
+        bus = mock.Mock()
+        with mock.patch.object(Gio, "bus_get_sync", return_value=bus):
+            ANNOUNCE()
+        name, path, interface, method, parameters = bus.call_sync.call_args.args[:5]
+        self.assertEqual((name, path, interface, method),
+                         ("org.a11y.Bus", "/org/a11y/bus", "org.freedesktop.DBus.Properties", "Set"))
+        self.assertEqual(parameters.unpack(), ("org.a11y.Status", "IsEnabled", True))
 
     def test_baseline_persistent_registry_failure_expires_without_writing(self):
         with mock.patch.object(probe, "_baseline_window_records",
