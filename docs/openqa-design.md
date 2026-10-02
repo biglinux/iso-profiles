@@ -12,7 +12,7 @@ the details; this page is the map.
 | Identity | PID, role, accessible name and state, never geometry or window title | A homonymous or hidden target is never acted on |
 | Traversal | Bounded by time, node and reference limits; a truncated tree is reported | A partial tree never confirms absence |
 | Keyboard | Tab and arrows with focus observed after every key | A trapped focus is a failure, not something `grab_focus` rescues |
-| Session | The accessibility bus, display server and toolkit are left as a screen-reader user gets them; the probe only announces itself through `org.a11y.Status.IsEnabled` | The test exercises the shipped environment |
+| Session | The accessibility bus, display server and toolkit are left as the user gets them | The test exercises the shipped environment |
 | Applications | Explicit `standard`, `shared-window` and `transient-dialog` contracts | A local exception never weakens the global default |
 | Closing | Process exit, window disappearance, exit code and cleanup are separate fields | SIGTERM or SIGKILL never turns a failure into a pass |
 | Provenance | Non-empty commit and ISO checksum, every shard present | Mismatched or incomplete results do not aggregate into a pass |
@@ -134,12 +134,9 @@ Calamares pages are found by a positive witness: the search stops at the first
 control whose role, name and PID all match. Roles are read before names, and
 names are read only for the roles the anchor asks for. A control that is hidden,
 insensitive, ambiguous or outside the PID still blocks. Absence and state checks
-keep requiring a complete tree. The welcome, users, summary and finished pages
-are QML from the BigLinux branding in
-[biglinux-livecd](https://github.com/biglinux/biglinux-livecd), and their
-anchors use the strings of its `i18n.js`: the welcome page is identified by its
-"Choose the language" selector, the finished page by its "Restart system"
-button.
+keep requiring a complete tree. The BigLinux profiles set
+`welcomeStyleCalamares: false`, so the first anchor is "Welcome to the
+*product* installer", for BigLinux, BigCommunity and XivaStudio.
 
 When launching the installer fails, `installer_launch`'s `post_fail_hook`
 attaches observations only:

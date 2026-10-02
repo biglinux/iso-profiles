@@ -124,10 +124,7 @@ to prove that something is absent, it needs a complete scan: a bus error, a
 timeout, a node limit or a partial tree is a blocking inconclusive result.
 
 The harness does not restart the accessibility bus. It does not force X11, a
-toolkit plugin or accessibility variables onto an application either. Before
-every launch the probe sets `org.a11y.Status.IsEnabled`, the property an
-assistive technology sets and applications watch; Chromium-based programs
-publish no tree without it. `ScreenReaderEnabled` is left alone. Fixtures
+toolkit plugin or accessibility variables onto an application either. Fixtures
 are prepared through the serial console, and the action under test always goes
 through the GUI.
 

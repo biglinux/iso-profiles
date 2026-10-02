@@ -592,36 +592,7 @@ def _baseline_window_records(deadline: float) -> list[dict[str, Any]]:
     return records
 
 
-def announce_assistive_technology() -> None:
-    """Tell the session's applications that an assistive technology is running.
-
-    The AT-SPI specification has applications watch org.a11y.Status.IsEnabled
-    to decide whether to publish their accessibility tree, and Chromium and
-    Electron publish nothing but their frame while it is false. This probe is
-    such a technology. ScreenReaderEnabled is left alone: it asks the session to
-    start a screen reader.
-    """
-    try:
-        import gi
-
-        gi.require_version("Gio", "2.0")
-        from gi.repository import Gio, GLib
-    except (ImportError, ValueError) as error:
-        raise ProbeError(f"Gio bindings are unavailable: {error}") from error
-    try:
-        Gio.bus_get_sync(Gio.BusType.SESSION, None).call_sync(
-            "org.a11y.Bus", "/org/a11y/bus", "org.freedesktop.DBus.Properties", "Set",
-            GLib.Variant("(ssv)", ("org.a11y.Status", "IsEnabled", GLib.Variant("b", True))),
-            None, Gio.DBusCallFlags.NONE, 2000, None,
-        )
-    except GLib.Error as error:
-        raise ProbeError(f"could not enable AT-SPI for the session: {error.message}") from error
-
-
 def save_baseline(state_path: Path, timeout: float = 10) -> dict[str, Any]:
-    # An application reads org.a11y.Status when it starts, and a baseline is
-    # taken before every launch.
-    announce_assistive_technology()
     # Session applications may be registering or disappearing while one test
     # hands the desktop to the next. Retry a complete read within one shared
     # deadline; never persist a partial baseline.
