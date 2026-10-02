@@ -79,6 +79,23 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertIn("button 'Install' in 'Dialog'", result["error"])
         self.assertTrue(all(not node.get_action_iface().done for node, _ in pairs))
 
+    def test_one_control_reached_through_two_windows_is_not_ambiguous(self):
+        offscreen = fixtures.SelectorTest().pair(identity="/accessible/7")
+        offscreen[1]["window"] = ""
+        named = fixtures.SelectorTest().pair(identity="/accessible/7")
+        named[1]["window"] = "BigLinux Installer"
+        with mock.patch.object(probe, "_visible_widgets", return_value=[offscreen, named]):
+            result = probe.wait_for_widget(1, "button", ["Install"], 42)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["widget"]["window"], "BigLinux Installer")
+
+    def test_two_controls_with_the_same_name_stay_ambiguous(self):
+        pairs = [fixtures.SelectorTest().pair(identity="/accessible/7"),
+                 fixtures.SelectorTest().pair(identity="/accessible/8")]
+        with mock.patch.object(probe, "_visible_widgets", return_value=pairs):
+            result = probe.wait_for_widget(1, "button", ["Install"], 42)
+        self.assertEqual(result["reason"], "ambiguous")
+
     def test_focus_query_is_retried_without_moving_focus(self):
         target = fixtures.SelectorTest().pair(focused=True)
         with mock.patch.object(probe, "_visible_widgets", side_effect=[probe.ProbeError("starting"), [target]]):
@@ -424,8 +441,8 @@ class ReadinessWaitsTest(unittest.TestCase):
 
     def test_focus_diagnostics_are_bounded(self):
         pairs = [fixtures.SelectorTest().pair(focused=True) for _ in range(20)]
-        for _, record in pairs:
-            record.update(identity="x" * 1000, role="y" * 1000)
+        for number, (_, record) in enumerate(pairs):
+            record.update(identity=str(number).rjust(1000, "x"), role="y" * 1000)
         with mock.patch.object(probe, "_visible_widgets", return_value=pairs):
             result = probe.focused_widget(0, 42)
         self.assertEqual(len(result["candidates"]), 8)

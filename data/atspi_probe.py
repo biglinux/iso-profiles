@@ -1406,6 +1406,29 @@ def _failure(
     }
 
 
+def _distinct_controls(
+    pairs: list[tuple[Any, dict[str, Any]]],
+) -> list[tuple[Any, dict[str, Any]]]:
+    """Count a control once, however many top-level windows reach it.
+
+    Qt publishes the content of a QQuickWidget under the widget's window and
+    again under its unnamed offscreen window, so one QML button can surface
+    twice with the same object path. Keep the copy found in a named window.
+    """
+    distinct: dict[tuple[Any, str], tuple[Any, dict[str, Any]]] = {}
+    unidentified = []
+    for pair in pairs:
+        record = pair[1]
+        identity = str(record.get("identity") or "")
+        if not identity:
+            unidentified.append(pair)
+            continue
+        key = (record.get("pid"), identity)
+        if key not in distinct or (record.get("window") and not distinct[key][1].get("window")):
+            distinct[key] = pair
+    return [*distinct.values(), *unidentified]
+
+
 def _widget_matches(
     role: str,
     labels: list[str],
@@ -1476,7 +1499,7 @@ def _widget_matches(
 
     if application_index is None:
         observed = _visible_widgets(expected_pid, deadline, supervised_root_pid)
-        return [pair for pair in observed if matches_selector(pair)], observed
+        return _distinct_controls([pair for pair in observed if matches_selector(pair)]), observed
 
     # A page transition can replace the launcher's GTK application with a Qt
     # application while both remain descendants of the same supervised launch.
@@ -1501,7 +1524,7 @@ def _widget_matches(
         record_application = record.get("application_index")
         if current_application is not None and record_application != current_application:
             if stop_after_matching_application and application_matches:
-                return application_matches, observed
+                return _distinct_controls(application_matches), observed
             application_matches = []
         current_application = record_application
         pairs = list(
@@ -1520,10 +1543,10 @@ def _widget_matches(
             >= record.get("application_candidate_window_count", 1)
         )
         if stop_after_matching_application and last_window and application_matches:
-            return application_matches, observed
-    return application_matches if stop_after_matching_application else [
+            return _distinct_controls(application_matches), observed
+    return _distinct_controls(application_matches if stop_after_matching_application else [
         pair for pair in observed if matches_selector(pair)
-    ], observed
+    ]), observed
 
 
 def wait_for_widget(
@@ -1658,7 +1681,7 @@ def focused_widget(
             )
             focused = [
                 record
-                for _node, record in pairs
+                for _node, record in _distinct_controls(pairs)
                 if record.get("focused")
                 and record.get("showing")
                 and not record.get("defunct")
