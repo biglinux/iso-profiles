@@ -19,7 +19,6 @@ our @NEXT = ('Next', 'Próximo', 'Continue', 'Continuar', 'Avançar');
 our @INSTALL = ('Install', 'Instalar', 'Install now', 'Instalar agora');
 # "Concluído" is what this build actually names the button; the probe folds
 # accents and case, but it cannot guess a different word.
-our @DONE = ('Done', 'Concluir', 'Concluído', 'Finish', 'Finalizar');
 
 # Qt Widgets publishes a "push button" while Qt Quick publishes a "button";
 # accept both so the toolkit Calamares happens to use is not a variable.
@@ -127,29 +126,15 @@ our %PAGE_ANCHORS = (
     'launcher-home' => [$BUTTON_ROLES, ['Install', 'Instalar']],
     'launcher-tips' => ['label|heading|static',
         ['Manual Partitioning Recommendations', 'Recomendações de Particionamento Manual']],
-    # BigLinux branding sets welcomeStyleCalamares=false and productName=BigLinux,
-    # so Calamares renders the traditional branded heading, not the generic
-    # "Welcome to the Calamares installer" text. Keep the generic forms for
-    # profiles that deliberately select the alternative style, and include the
-    # other product names shipped by this repository.
-    'installer-welcome' => ['label|heading|static', [
-        'Welcome to the BigLinux installer',
-        'Welcome to the BigCommunity installer',
-        'Welcome to the XivaStudio installer',
-        'Welcome to the Calamares installer for BigLinux',
-        'Welcome to the Calamares installer for BigCommunity',
-        'Welcome to the Calamares installer for XivaStudio',
-        'Bem-vindo ao instalador BigLinux',
-        'Bem-vindo ao instalador do BigLinux',
-        'Bem-vindo ao instalador BigCommunity',
-        'Bem-vindo ao instalador do BigCommunity',
-        'Bem-vindo ao instalador XivaStudio',
-        'Bem-vindo ao instalador do XivaStudio',
-    ]],
+    # The welcome, users, summary and finished pages are QML from the BigLinux
+    # branding (biglinux-livecd, branding/*/welcomeq.qml and friends), and their
+    # strings are translated by its i18n.js. The welcome page publishes no
+    # heading, only its language selector.
+    'installer-welcome' => ['combo box', ['Choose the language', 'Escolha o idioma']],
     'installer-location' => ['label|combo box', ['Region', 'Região']],
     'installer-keyboard' => ['label|combo box', ['Keyboard Model', 'Modelo de teclado']],
     'partitions-page' => ['radio button', ['Erase disk', 'Apagar disco']],
-    'users-page' => ['label|entry', ['What is your name', 'Qual é o seu nome']],
+    'users-page' => ['label', ['Login name', 'Nome de usuário']],
     'summary-page' => [$BUTTON_ROLES, ['Install', 'Instalar']],
 );
 

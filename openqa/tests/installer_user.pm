@@ -19,15 +19,15 @@ sub run {
     calamares->click_action(\@calamares::NEXT);
     calamares->assert_page('users-page', 90);
 
-    # Calamares focuses the first field when the users page opens. Keeping the
-    # path keyboard-only avoids brittle per-field coordinates and exercises the
-    # same focus order used by the graphical test backend.
-    type_string 'BigLinux openQA';
-    send_key 'tab';
-    type_string(calamares->test_user);
-    send_key 'tab';
-    type_string(calamares->test_hostname);
-    send_key 'tab';
+    # Reach the first field by Tab and fill the form in its focus order. The
+    # full name pre-fills the login and computer names, so each field is
+    # selected before it is typed over.
+    atspi->focus_widget('text|entry', ['Full name', 'Nome completo'], 30);
+    for my $value ('BigLinux openQA', calamares->test_user, calamares->test_hostname) {
+        send_key 'ctrl-a';
+        type_string $value;
+        send_key 'tab';
+    }
     type_password(calamares->test_password);
     send_key 'tab';
     type_password(calamares->test_password);
