@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Execute the real workflow commit step in an isolated Git repository."""
 
 import os

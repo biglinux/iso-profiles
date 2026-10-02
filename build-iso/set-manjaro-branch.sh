@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # set-manjaro-branch.sh - point the shipped CDN mirrors at the branch the ISO
 #                         was actually built from

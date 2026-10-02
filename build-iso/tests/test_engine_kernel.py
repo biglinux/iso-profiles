@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The kernel selector.
 #
 # resolve_kernel turns a selector into the package the KERNEL placeholders are

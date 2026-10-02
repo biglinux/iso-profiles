@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # patch-live-setup.sh - run manjaro-live-setup, then verify it produced a
 #                       usable live home

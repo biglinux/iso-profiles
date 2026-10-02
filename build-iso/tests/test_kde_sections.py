@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Upstream section changes must fail before modifying the generated profile."""
 
 import subprocess

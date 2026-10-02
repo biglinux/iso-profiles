@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """An empty opt-out file must never empty an edition's package list."""
 
 import subprocess

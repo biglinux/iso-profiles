@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Edition-specific package removals.
 #
 # A profile drops a package by shipping <List>-remove next to its package list,

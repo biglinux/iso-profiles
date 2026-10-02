@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The repository list the build installs from.
 #
 # append_build_repos is its single owner. It used to share the job with the

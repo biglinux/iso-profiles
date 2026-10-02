@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The container and the ISO chroots install from one mirror.
 #
 # prepare_host used to rank five mirrors with `pacman-mirrors --fasttrack 5`

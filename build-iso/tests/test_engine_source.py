@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Structural guarantees of build-iso.sh that earlier generators enforced with
 # patches. Each one shipped broken ISOs when violated, so they are pinned here.
 

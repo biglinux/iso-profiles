@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The published ISO name.
 #
 # collect_output is the single owner of this scheme: the GitLab pipeline, the

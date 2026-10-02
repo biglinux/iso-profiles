@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Runs from the repository root. The workflow invokes this with bash, so it
 # does not inherit the step's -e: without this line a failed sed is invisible

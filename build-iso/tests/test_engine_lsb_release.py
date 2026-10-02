@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # The distribution's release and codename must survive the build.
 #
 # manjaro-tools' configure_lsb_release rewrites DISTRIB_RELEASE and

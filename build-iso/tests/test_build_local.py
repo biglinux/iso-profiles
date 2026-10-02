@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # build-local.sh drives the engine inside a container. These tests replace the
 # container engine with a stub, so they exercise the wrapper's own logic (where
 # the working copy goes, what it passes to the engine) without a 4-hour build.

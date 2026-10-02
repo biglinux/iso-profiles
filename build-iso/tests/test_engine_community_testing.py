@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # COMMUNITY_TESTING: [community-testing] in a biglinux build.
 #
 # Off by default. When on, the community testing repository -- testing alone,

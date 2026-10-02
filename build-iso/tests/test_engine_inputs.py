@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Behaviour of the engine's input and validation stages.
 #
 # These run the real functions. `build-iso.sh` only calls main() when executed,

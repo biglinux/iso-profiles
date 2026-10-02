@@ -328,3 +328,22 @@ concatenated onto the config the engine just wrote, which registered
 removes any it finds. An unread config file is bad; a half-read one is worse.
 
 </details>
+
+---
+
+## License
+
+This repository is licensed under the [GNU General Public License v3.0 or
+later](LICENSE). Every source file states its license in an
+`SPDX-License-Identifier` line.
+
+The profiles started as an import of Manjaro's
+[iso-profiles](https://gitlab.manjaro.org/profiles-and-settings/iso-profiles),
+and the live overlays carry files that belong to other projects:
+
+| File | Origin | License |
+|:---|:---|:---|
+| `boot/memtest86+/memtest.bin` | [Memtest86+](https://www.memtest.org/) 5.31b | GPL-2.0 |
+| `usr/share/grub/themes/*/terminus-*.pf2` | [Terminus Font](https://terminus-font.sourceforge.net/) | OFL-1.1 |
+| `usr/share/grub/themes/*/dejavu_10.pf2` | [DejaVu Fonts](https://dejavu-fonts.github.io/) | Bitstream Vera license |
+| `usr/share/grub/themes/*/icons/` | logos of the operating systems GRUB can list | trademarks of their owners |

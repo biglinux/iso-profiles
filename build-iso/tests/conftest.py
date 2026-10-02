@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Test fixtures for the build-iso shell scripts. Development-only: run with
 # `pytest build-iso/tests/` from the repository root; nothing here ships in
 # the ISO or runs during a build.

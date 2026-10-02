@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # set-biglinux-branch.sh - ship the BigLinux testing repository in the ISO when
 #                          the ISO was built from it
