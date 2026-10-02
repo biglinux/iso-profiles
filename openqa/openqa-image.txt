@@ -1,0 +1,1 @@
+ghcr.io/biglinux/iso-profiles/openqa-single-instance@sha256:d30661a2cf685211b09a0c818656ed0a7e1816c1244534570f3559c104b803fd

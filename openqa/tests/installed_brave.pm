@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+use Mojo::Base 'basetest';
+use testapi;
+use atspi;
+use installed_system;
+
+sub test_flags {
+    return {fatal => 1};
+}
+
+sub run {
+    my $available = atspi->run_command('command -v brave >/dev/null 2>&1', 5);
+    die 'could not check optional Brave availability' unless defined $available;
+    if ($available != 0) {
+        record_info 'Brave / skipped', 'Not installed in this ISO; not applicable';
+        return;
+    }
+    installed_system->assert_brave_cli;
+    my $kernel = atspi->kernel_version;
+    # No expected window title: Brave renames its window across releases and
+    # the browser being the right program is already proven by the CLI check
+    # above plus the launched process tree.
+    my ($baseline, $opened, $launch_method, $open_seconds, $status_path, $launch_pid) = atspi->launch_command(
+        'brave --no-first-run --no-default-browser-check about:blank',
+        '',
+        120, 'process-tree'
+    );
+    unless ($opened->{status} eq 'passed') {
+        atspi->abort_launch($status_path);
+        die 'Installed Brave did not expose an accessible window';
+    }
+
+    my $termination = atspi->terminate_window($opened->{pid}, $status_path, $launch_pid);
+    die "Installed Brave process $opened->{pid} did not exit after the close request"
+      unless $termination->{graceful_exit};
+    die "Installed Brave crashed on exit (wait status $termination->{raw_application_exit_code})"
+      if $termination->{application_crashed};
+
+    atspi->record_guest_info('Installed Brave', sprintf(
+        'CLI exit 0; window "%s" opened in %.2f s via %s and exited with status %s; kernel %s',
+        $opened->{window} // 'untitled', $open_seconds, $launch_method,
+        $termination->{raw_application_exit_code} // 'unknown', $kernel
+    ));
+}
+
+1;

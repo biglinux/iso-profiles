@@ -1,9 +1,11 @@
-# Build an ISO on GitHub and publish it as a release.
+# Build an ISO on GitHub, validate it with openQA, and publish it only after the
+# release gate passes.
 #
 # Works on any fork: enable Actions, open the Actions tab, pick "Build ISO",
 # choose the edition/kernel/branches and run. The ISO is attached to a GitHub
 # release — as one file when it fits the 2 GiB asset limit, otherwise as 7z
-# parts (extract with `7z x file.7z.001`, Ark or 7-Zip).
+# parts (extract with `7z x file.7z.001`, Ark or 7-Zip). The candidate is kept
+# as an unpublished workflow artifact while openQA tests it.
 #
 # The build itself is build-iso/build-iso.sh, the same engine the official
 # GitLab pipeline and the Build ISO GUI run. Only GITHUB_TOKEN is used; no
@@ -45,15 +47,22 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: ${{ inputs.edition }} ${{ inputs.kernel }} (${{ inputs.manjaro_branch }}/${{ inputs.big_branch }})
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      iso: ${{ steps.prepare.outputs.iso }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      candidate_artifact: iso-candidate-${{ github.run_id }}
     container:
-      image: xivastudio/biglinux_build_package:latest
+      image: xivastudio/biglinux_build_package@sha256:317d3f13ea00967f325fc12dd9926a6a8035802def37c99e5dedcebbf647c9c2
       options: --privileged
       volumes:
         # The runner's large scratch disk is mounted at /mnt; the chroots and
@@ -63,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Build the ISO
         env:
@@ -77,35 +86,90 @@ jobs:
           export WORK_PATH="$GITHUB_WORKSPACE/output"
           bash build-iso/build-iso.sh
 
-      - name: Checksums and release notes
+      - name: Checksums and candidate metadata
         id: prepare
         run: |
+          set -euo pipefail
           cd output
-          iso=$(ls -- *.iso)
+          mapfile -t iso_files < <(find . -maxdepth 1 -type f -name '*.iso' -printf '%f\n')
+          ((${#iso_files[@]} == 1)) || {
+            echo "Expected exactly one ISO, found ${#iso_files[@]}" >&2
+            exit 1
+          }
+          iso=${iso_files[0]}
           # Concurrently: both hashers stream the same multi-GB file, and the
           # second one reads it from the page cache the first is filling.
           md5sum "$iso" > "$iso.md5" &
+          md5_pid=$!
           sha256sum "$iso" > "$iso.sha256"
-          wait
+          wait "$md5_pid"
           echo "iso=$iso" >> "$GITHUB_OUTPUT"
           echo "tag=${iso%.iso}-r${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unpublished ISO candidate for openQA
+        id: candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: iso-candidate-${{ github.run_id }}
+          path: output/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+  openqa:
+    name: openQA release gate
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/openqa.yml
+    with:
+      candidate_artifact: ${{ needs.build.outputs.candidate_artifact }}
+      iso_filename: ${{ needs.build.outputs.iso }}
+      build_id: github-${{ github.run_id }}
+
+  publish:
+    name: Publish validated ISO
+    needs: [build, openqa]
+    if: ${{ inputs.publish_release && needs.openqa.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated candidate
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ needs.build.outputs.candidate_artifact }}
+          path: output
+
+      - name: Verify downloaded candidate before publication
+        env:
+          ISO: ${{ needs.build.outputs.iso }}
+        run: |
+          set -euo pipefail
+          cd output
+          sha256sum --check --strict -- "$ISO.sha256"
+          md5sum --check --strict -- "$ISO.md5"
 
       - name: Split the ISO when it exceeds the 2 GiB asset limit
         id: split
         env:
-          ISO: ${{ steps.prepare.outputs.iso }}
+          ISO: ${{ needs.build.outputs.iso }}
         run: |
-          pacman -S --needed --noconfirm p7zip
+          set -euo pipefail
+          if ! command -v 7z >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes p7zip-full
+          fi
           cd output
-          # -mx=0 stores instead of compressing: the ISO payload is already
-          # zstd-squashfs, so LZMA2 would spend runner minutes for a ratio of
-          # about 1.00. The split into parts is the only thing wanted here.
           if [ -n "$(du --threshold=2000M "$ISO" 2>/dev/null)" ]; then
             7z a -mx=0 -v2000m "$ISO.7z" "$ISO"
-            rm "$ISO"
+            rm -- "$ISO"
             {
               echo "body<<EOF"
-              echo "The ISO is split into 7z parts to fit GitHub's 2 GiB asset limit."
+              echo "The ISO passed the mandatory openQA release gate."
+              echo "It is split into 7z parts to fit GitHub's 2 GiB asset limit."
               echo "Download every \`.7z.*\` part and extract with 7-Zip, Ark or:"
               echo
               echo '```'
@@ -114,15 +178,14 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
-            echo "body=Download the ISO directly." >> "$GITHUB_OUTPUT"
+            echo "body=The ISO passed the mandatory openQA release gate. Download the ISO directly." >> "$GITHUB_OUTPUT"
           fi
 
       - name: Publish release
-        if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
-          tag_name: ${{ steps.prepare.outputs.tag }}
-          name: ${{ steps.prepare.outputs.iso }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.iso }}
           body: ${{ steps.split.outputs.body }}
           files: |
             output/*.iso
@@ -130,10 +193,3 @@ jobs:
             output/*.md5
             output/*.sha256
             output/*.pkgs
-
-      - name: Keep the ISO as a workflow artifact when not publishing
-        if: ${{ !inputs.publish_release }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.prepare.outputs.iso }}
-          path: output/

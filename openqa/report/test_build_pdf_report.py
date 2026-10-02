@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Tests for build_pdf_report.py."""
+
+from __future__ import annotations
+
+import gzip
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+try:
+    from build_pdf_report import encoded_screenshot, read_suite
+except ImportError as error:  # fpdf2 and pillow are installed by the report job
+    MISSING = str(error)
+    encoded_screenshot = read_suite = None
+else:
+    MISSING = ""
+
+
+def write_suite(root: Path, name: str, uefi: bool) -> Path:
+    """An isotovideo working directory: vars.json at the root, results below."""
+    workdir = root / f"openqa-{name}-abc-1" / "work"
+    results = workdir / "testresults"
+    results.mkdir(parents=True)
+    variables = {"ISO": "big.iso", "BUILD": "b1", "TEST": name}
+    if uefi:
+        variables["UEFI"] = "1"
+    (workdir / "vars.json").write_text(json.dumps(variables), encoding="utf-8")
+    return results
+
+
+@unittest.skipIf(MISSING, f"report dependencies unavailable: {MISSING}")
+class ReadSuiteTest(unittest.TestCase):
+    def test_takes_the_last_screenshot_that_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = write_suite(root, "bios", uefi=False)
+            (results / "live_desktop-2.png").write_bytes(b"png")
+            (results / "result-live_desktop.json").write_text(
+                json.dumps(
+                    {
+                        "details": [
+                            {"result": "ok", "screenshot": "live_desktop-1.png"},
+                            {"result": "ok", "screenshot": "live_desktop-2.png"},
+                            # Named by the details but never fetched: the report
+                            # must fall back rather than point at nothing.
+                            {"result": "ok", "screenshot": "live_desktop-3.png"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            suite = read_suite(root / "openqa-bios-abc-1")
+
+        assert suite is not None
+        self.assertEqual(suite.firmware, "BIOS")
+        self.assertEqual(suite.modules, {"live_desktop": "ok"})
+        self.assertEqual(suite.shots["live_desktop"].name, "live_desktop-2.png")
+
+    def test_a_failed_step_fails_the_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = write_suite(root, "uefi", uefi=True)
+            (results / "result-installer_install.json").write_text(
+                json.dumps({"details": [{"result": "ok"}, {"result": "fail"}]}),
+                encoding="utf-8",
+            )
+
+            suite = read_suite(root / "openqa-uefi-abc-1")
+
+        assert suite is not None
+        self.assertEqual(suite.firmware, "UEFI")
+        self.assertEqual(suite.modules["installer_install"], "fail")
+        self.assertFalse(suite.ok)
+
+    def test_collects_application_outcomes_by_desktop_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = write_suite(root, "applications-0", uefi=False)
+            payload = {
+                "applications": [
+                    {"desktop_id": "a.desktop", "status": "passed"},
+                    {
+                        "desktop_id": "b.desktop",
+                        "status": "failed",
+                        "error": "no window: child_pid=7 raw_exit_code=127",
+                    },
+                ]
+            }
+            with gzip.open(results / "application-metrics.json.gz", "wt") as stream:
+                json.dump(payload, stream)
+
+            suite = read_suite(root / "openqa-applications-0-abc-1")
+
+        assert suite is not None
+        self.assertEqual(len(suite.applications), 2)
+        # The noisy launcher dump is cut off, keeping the part that explains it.
+        self.assertEqual(suite.failures, {"b.desktop": "no window"})
+
+
+@unittest.skipIf(MISSING, f"report dependencies unavailable: {MISSING}")
+class ScreenshotEncodingTest(unittest.TestCase):
+    def test_keeps_whichever_encoding_is_smaller(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            flat = root / "flat.png"
+            Image.new("RGB", (1024, 768), "white").save(flat)
+            noisy = root / "noisy.png"
+            noise = Image.effect_noise((1024, 768), 96).convert("RGB")
+            noise.save(noisy)
+
+            flat_bytes = encoded_screenshot(flat)
+            noisy_bytes = encoded_screenshot(noisy)
+
+        assert flat_bytes is not None and noisy_bytes is not None
+        # A blank screen compresses far better losslessly than as JPEG.
+        self.assertTrue(flat_bytes.getvalue().startswith(b"\x89PNG"))
+        # Noise is the opposite case, which is why neither format is hardcoded.
+        self.assertTrue(noisy_bytes.getvalue().startswith(b"\xff\xd8"))
+
+    def test_returns_nothing_for_a_file_that_is_not_an_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            broken = Path(directory, "broken.png")
+            broken.write_bytes(b"not an image")
+
+            self.assertIsNone(encoded_screenshot(broken))
+
+
+@unittest.skipIf(MISSING, f"report dependencies unavailable: {MISSING}")
+class CoverScopeTest(unittest.TestCase):
+    def rendered_text(self, suites):
+        from unittest.mock import patch
+        from build_pdf_report import Report, cover
+        pdf = Report()
+        with patch.object(pdf, "cell", wraps=pdf.cell) as cell:
+            cover(pdf, suites, {"result": "ok", "context": {}})
+        return "\n".join(str(call.args[2]) for call in cell.call_args_list if len(call.args) > 2)
+
+    def test_live_is_identified_as_a_plan_not_only_firmware(self):
+        from build_pdf_report import Suite
+        text = self.rendered_text([Suite(name="live", firmware="BIOS", modules={"live_desktop": "ok"})])
+        self.assertIn("live (BIOS)", text)
+
+    def test_shard_name_is_not_replaced_by_bios(self):
+        from build_pdf_report import Suite
+        text = self.rendered_text([Suite(name="applications-2", firmware="BIOS", modules={"applications": "ok"})])
+        self.assertIn("applications-2 (BIOS)", text)
+
+    def test_cover_states_when_more_plans_follow(self):
+        from build_pdf_report import Suite
+        text = self.rendered_text([Suite(name=f"plan-{i}", firmware="BIOS", modules={"live_desktop": "ok"}) for i in range(6)])
+        self.assertIn("3/6 planos", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

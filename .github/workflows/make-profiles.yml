@@ -46,9 +46,9 @@ jobs:
         run: |
           # clone or Update git
           if [ ! -d "$manjaroProfiles" ]; then
-              git clone https://gitlab.manjaro.org/profiles-and-settings/iso-profiles.git $manjaroProfiles
+              git clone https://gitlab.manjaro.org/profiles-and-settings/iso-profiles.git "$manjaroProfiles"
           else
-              pushd $manjaroProfiles
+              pushd "$manjaroProfiles"
               git pull
               popd
           fi

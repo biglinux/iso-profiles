@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>BigLinux nonvisual browser test</title>
+<h1>Nonvisual browser test</h1>
+<p>Activate the confirmation button with the keyboard.</p>
+<button id="confirm" type="button">Confirm test</button>
+<p role="status" aria-live="polite" aria-atomic="true" id="status">Waiting for confirmation</p>
+<script>
+"use strict";
+const token = location.hash.slice(1);
+if (!/^[a-f0-9]{16}$/.test(token)) throw new Error("Invalid fixture token");
+document.getElementById("confirm").addEventListener("click", () => {
+  document.getElementById("status").textContent = "Operation completed " + token;
+});
+</script>
+</html>

@@ -1,0 +1,571 @@
+---
+name: BigLinux openQA release gate
+
+# One isotovideo run per plan, and nothing else.
+#
+# There is no openQA server in this workflow: isotovideo is the backend openQA
+# drives, so running it directly removes the database, the scheduler, the asset
+# store and the HTTP hop between a test and its own results.
+#
+# openqa/release-gate.yaml says which plans exist and how long each may take;
+# openqa/production/run-plan.sh lists and runs them. This file only prepares a
+# runner and collects what the run produced.
+
+on:
+  workflow_call:
+    inputs:
+      candidate_artifact:
+        description: Unpublished workflow artifact containing the ISO candidate
+        required: true
+        type: string
+      iso_filename:
+        description: Exact ISO filename inside the candidate artifact
+        required: true
+        type: string
+      build_id:
+        description: Immutable build identifier for this candidate
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      iso_release_tag:
+        description: Existing release tag used only for manual validation
+        required: true
+        type: string
+      iso_filename:
+        description: ISO filename before release splitting
+        required: true
+        type: string
+      build_id:
+        description: Immutable build identifier for this candidate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: Static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      plans: ${{ steps.plans.outputs.plans }}
+      shards: ${{ steps.plans.outputs.shards }}
+    steps:
+      - name: Check out the tested sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install report test dependencies
+        run: python3 -m pip install --disable-pip-version-check -r openqa/report/requirements.txt
+
+      - name: Check the harness
+        run: openqa/production/check-harness.sh
+
+      - name: Read the gate's plans
+        id: plans
+        run: openqa/production/run-plan.sh --list | tee -a "$GITHUB_OUTPUT"
+
+  plan:
+    name: openQA ${{ matrix.plan.name }}
+    needs: static
+    # Test the dependency before expanding its possibly empty JSON matrix.
+    if: ${{ success() && needs.static.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        plan: ${{ fromJSON(needs.static.outputs.plans) }}
+    runs-on: ubuntu-24.04
+    # The plan's own bound, not one ceiling for all of them: a wedged live
+    # wizard should not hold a runner for as long as a full installation.
+    timeout-minutes: ${{ matrix.plan.timeout_minutes }}
+    permissions:
+      contents: read
+      # Only to pull the pinned image when it is mirrored into this
+      # repository's own registry - see mirror-openqa-image.yml.
+      packages: read
+    env:
+      PLAN: ${{ matrix.plan.name }}
+      ISO_FILENAME: ${{ inputs.iso_filename }}
+      OPENQA_BUILD: ${{ inputs.build_id }}
+      OPENQA_ASSET_DIR: /mnt/openqa/assets
+      OPENQA_RUN_DIR: /mnt/openqa/run/${{ matrix.plan.name }}
+
+    steps:
+      - name: Initialize emergency report and deadline
+        if: ${{ always() }}
+        env:
+          OPENQA_DIAGNOSTICS_DIR: ${{ runner.temp }}/openqa-diagnostics/${{ matrix.plan.name }}
+          OPENQA_PLAN_REPORT_DIR: ${{ runner.temp }}/openqa-plan-report/${{ matrix.plan.name }}
+          OPENQA_PASSWORD_FILE: ${{ runner.temp }}/openqa-test-password
+          OPENQA_OVMF_RUNTIME: ${{ runner.temp }}/openqa-ovmf
+        run: |
+          # Resolve runner paths in the first step, before checkout/preparation.
+          for variable in OPENQA_DIAGNOSTICS_DIR OPENQA_PLAN_REPORT_DIR OPENQA_PASSWORD_FILE OPENQA_OVMF_RUNTIME; do
+            printf '%s=%s\n' "$variable" "${!variable}" >> "$GITHUB_ENV"
+          done
+          mkdir -p -- "$OPENQA_PLAN_REPORT_DIR"
+          printf '# openQA %s — Inconclusivo\n\nA execução não chegou a finalizar o relatório detalhado. Consulte as etapas do workflow.\n' "$PLAN" > "$OPENQA_PLAN_REPORT_DIR/RESULTADO.md"
+          printf 'OPENQA_PLAN_STARTED_EPOCH=%s\n' "$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Check out the tested sources
+        id: checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Prepare the runner's layout
+        id: prepare
+        run: |
+          set -euo pipefail
+          # The guest disk needs HDDSIZEGB plus a fifth - 48 GiB for the
+          # default 40 - and isotovideo refuses to start without it. The
+          # runner's root filesystem has about 20 GiB free; /mnt has 65.
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+            /mnt/openqa /mnt/openqa/assets /mnt/openqa/run
+          diagnostics="$OPENQA_DIAGNOSTICS_DIR"
+          install -d -m 0755 -- "$diagnostics"
+          install -d -m 0755 -- "$RUNNER_TEMP/openqa-ovmf"
+          [[ "$ISO_FILENAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ ]] || {
+            echo 'Invalid ISO filename' >&2
+            exit 2
+          }
+          [[ "$OPENQA_BUILD" =~ ^[A-Za-z0-9_.:-]+$ ]] || {
+            echo 'Invalid build identifier' >&2
+            exit 2
+          }
+          df -h / /mnt | tee "$diagnostics/disk-before.txt"
+          free -h | tee "$diagnostics/resources-before.txt"
+          nproc | tee "$diagnostics/cpu-count.txt"
+
+      - name: Download the private ISO candidate
+        id: download_candidate
+        if: ${{ inputs.candidate_artifact != '' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.candidate_artifact }}
+          path: /mnt/openqa/assets
+
+      - name: Download existing release ISO for manual validation
+        id: download_release
+        if: ${{ inputs.candidate_artifact == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISO_RELEASE_TAG: ${{ inputs.iso_release_tag }}
+        run: |
+          set -euo pipefail
+          openqa_asset_dir="$OPENQA_ASSET_DIR"
+          mapfile -t release_assets < <(gh release view "$ISO_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          has_asset() {
+            local expected=$1 asset
+            for asset in "${release_assets[@]}"; do
+              [[ "$asset" == "$expected" ]] && return 0
+            done
+            return 1
+          }
+          if has_asset "$ISO_FILENAME"; then
+            has_asset "$ISO_FILENAME.sha256" || { echo 'Release ISO SHA-256 asset is missing' >&2; exit 1; }
+            has_asset "$ISO_FILENAME.md5" || { echo 'Release ISO MD5 asset is missing' >&2; exit 1; }
+            gh release download "$ISO_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$openqa_asset_dir" \
+              --pattern "$ISO_FILENAME" --pattern "$ISO_FILENAME.md5" --pattern "$ISO_FILENAME.sha256"
+          else
+            mapfile -t split_assets < <(printf '%s\n' "${release_assets[@]}" \
+              | awk -v prefix="$ISO_FILENAME.7z." 'index($0, prefix) == 1 {print}' \
+              | sort -V)
+            ((${#split_assets[@]} > 0)) || { echo 'Neither a direct ISO nor split ISO parts are published' >&2; exit 1; }
+            for asset in "${split_assets[@]}"; do
+              [[ "$asset" =~ ^[A-Za-z0-9._-]+\.7z\.[0-9]{3}$ ]] || {
+                echo "Invalid split ISO asset name: $asset" >&2
+                exit 2
+              }
+              gh release download "$ISO_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$openqa_asset_dir" \
+                --pattern "$asset"
+            done
+            has_asset "$ISO_FILENAME.sha256" || { echo 'Release ISO SHA-256 asset is missing' >&2; exit 1; }
+            has_asset "$ISO_FILENAME.md5" || { echo 'Release ISO MD5 asset is missing' >&2; exit 1; }
+            gh release download "$ISO_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$openqa_asset_dir" \
+              --pattern "$ISO_FILENAME.md5" --pattern "$ISO_FILENAME.sha256"
+          fi
+          if [[ ! -s "$openqa_asset_dir/$ISO_FILENAME" ]]; then
+            declare -A iso_parts=()
+            for iso_part in "$openqa_asset_dir/$ISO_FILENAME.7z."*; do
+              [[ -f "$iso_part" ]] || continue
+              suffix=${iso_part##*.7z.}
+              [[ "$suffix" =~ ^[0-9]{3}$ ]] || {
+                echo "Invalid ISO part name: ${iso_part##*/}" >&2
+                exit 2
+              }
+              iso_parts[$((10#$suffix))]="$iso_part"
+            done
+            ((${#iso_parts[@]} > 0)) || {
+              echo 'Neither a direct ISO nor split ISO parts were downloaded' >&2
+              exit 1
+            }
+            max_part=0
+            for part_number in "${!iso_parts[@]}"; do
+              ((part_number > max_part)) && max_part=$part_number
+            done
+            for ((part_number = 1; part_number <= max_part; part_number++)); do
+              [[ -n "${iso_parts[$part_number]:-}" ]] || {
+                echo "Missing ISO part number $part_number" >&2
+                exit 1
+              }
+            done
+            7z t "${iso_parts[1]}"
+            7z x "${iso_parts[1]}" -o"$openqa_asset_dir"
+            for iso_part in "${iso_parts[@]}"; do
+              unlink -- "$iso_part"
+            done
+          fi
+
+      - name: Verify candidate checksums
+        id: checksums
+        run: |
+          set -euo pipefail
+          openqa_asset_dir="$OPENQA_ASSET_DIR"
+          test -s "$openqa_asset_dir/$ISO_FILENAME"
+          (
+            cd "$openqa_asset_dir"
+            sha256sum --check "$ISO_FILENAME.sha256"
+            md5sum --check "$ISO_FILENAME.md5"
+          ) | tee "$OPENQA_DIAGNOSTICS_DIR/checksums.txt"
+          sha256sum "$openqa_asset_dir/$ISO_FILENAME" | awk '{print $1}' \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/iso-sha256.txt"
+          printf '%s\n' "$ISO_FILENAME" >"$OPENQA_DIAGNOSTICS_DIR/iso-name.txt"
+          stat --printf='iso_bytes=%s\n' "$openqa_asset_dir/$ISO_FILENAME" \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/iso-size.txt"
+
+      - name: Sign in to the registry holding the pinned image
+        id: image
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # An image mirrored into this repository's registry is private to it
+          # by default. The upstream registry needs no credentials, so this is
+          # decided by the pin rather than by a workflow input.
+          openqa_image=$(tr -d '[:space:]' < openqa/openqa-image.txt)
+          case "$openqa_image" in
+            ghcr.io/*)
+              printf '%s' "$REGISTRY_TOKEN" \
+                | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+              ;;
+          esac
+          docker pull --quiet "$openqa_image"
+          docker image inspect "$openqa_image" \
+            --format 'image={{index .RepoDigests 0}} id={{.Id}}' \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/openqa-image.txt"
+
+      - name: Prepare deterministic non-Secure-Boot UEFI firmware
+        id: firmware
+        run: |
+          set -euo pipefail
+          # Prepared for every plan: only a UEFI plan mounts it, and a
+          # conditional here would be one more thing that can disagree with
+          # the machine definition in release-gate.yaml.
+          if ! dpkg-query -W -f='${Status}' ovmf 2>/dev/null | grep -q 'install ok installed'; then
+            sudo apt-get update
+            sudo apt-get install --yes ovmf
+          fi
+          ovmf_code=
+          ovmf_vars=
+          for pair in \
+            /usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd \
+            /usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd; do
+            candidate_code=${pair%%:*}
+            candidate_vars=${pair#*:}
+            if [[ -s "$candidate_code" && -s "$candidate_vars" ]]; then
+              ovmf_code=$candidate_code
+              ovmf_vars=$candidate_vars
+              break
+            fi
+          done
+          [[ -n "$ovmf_code" && -n "$ovmf_vars" ]] || {
+            echo 'A matching non-Secure-Boot OVMF code/vars pair was not found' >&2
+            find /usr/share/OVMF -maxdepth 1 -type f -printf '%f\n' >&2 || true
+            exit 1
+          }
+          # The variable store is written by the firmware, so it is installed
+          # rather than copied: a second run must not inherit the boot entries
+          # of the first, and a read-only copy makes QEMU refuse to start.
+          install -m 0444 -- "$ovmf_code" "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd"
+          install -m 0666 -- "$ovmf_vars" "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd"
+          dpkg-query -W -f='${Package} ${Version}\n' ovmf \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/ovmf-package.txt"
+
+      - name: Validate KVM access
+        id: kvm
+        run: |
+          set -euo pipefail
+          if [[ ! -c /dev/kvm ]]; then
+            echo '::error::/dev/kvm is not available on this GitHub-hosted runner'
+            exit 1
+          fi
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm -a -w /dev/kvm
+          stat --printf='path=%n mode=%a uid=%u gid=%g\n' /dev/kvm \
+            | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-device.txt"
+          # Nested virtualisation is not a given on a hosted runner, and TCG
+          # would make every measured time in the results a fiction. run-plan.sh
+          # proves KVM again from the archived QEMU command line; this proves it
+          # before spending an hour.
+          if ! command -v kvm-ok >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes cpu-checker
+          fi
+          kvm-ok | tee "$OPENQA_DIAGNOSTICS_DIR/kvm-ok.txt"
+
+      - name: Prepare the test password
+        id: password
+        run: |
+          set -euo pipefail
+          umask 077
+          openssl rand -hex 18 | tr -d '\n' >"$OPENQA_PASSWORD_FILE"
+          # Masked in the log, and never a job setting: the tests read the file
+          # through a read-only mount, because isotovideo writes vars.json
+          # unredacted and that directory is uploaded.
+          echo "::add-mask::$(<"$OPENQA_PASSWORD_FILE")"
+
+      - name: Run the plan
+        id: execute
+        run: |
+          set -euo pipefail
+          # Ten minutes short of the job's own limit, so a plan that overruns is
+          # still collected and reported instead of being killed by Actions.
+          # Include setup/download time when reserving ten minutes for reports.
+          elapsed=$(( $(date +%s) - OPENQA_PLAN_STARTED_EPOCH ))
+          plan_timeout=$(( ${{ matrix.plan.timeout_minutes }} * 60 - elapsed - 600 ))
+          ((plan_timeout > 0)) || { echo 'Preparation exhausted the test budget'; exit 1; }
+          openqa/production/run-plan.sh \
+            --plan "$PLAN" \
+            --iso "$OPENQA_ASSET_DIR/$ISO_FILENAME" \
+            --results "$OPENQA_RUN_DIR" \
+            --password-file "$OPENQA_PASSWORD_FILE" \
+            --build "$OPENQA_BUILD" \
+            --commit "$GITHUB_SHA" \
+            --iso-sha256 "$(<"$OPENQA_DIAGNOSTICS_DIR/iso-sha256.txt")" \
+            --uefi-code "$OPENQA_OVMF_RUNTIME/OVMF_CODE.fd" \
+            --uefi-vars "$OPENQA_OVMF_RUNTIME/OVMF_VARS.fd" \
+            --timeout "$plan_timeout"
+
+      - name: Collect what the run produced
+        id: collect
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          collected="$OPENQA_DIAGNOSTICS_DIR/results/$PLAN"
+          install -d -m 0755 -- "$collected"
+          # The run directory also holds the guest disk - forty sparse
+          # gigabytes - so what is kept is named rather than filtered: the
+          # module results, the logs the tests uploaded, and the two logs that
+          # explain a failure outside a module.
+          for evidence in testresults ulogs autoinst-log.txt vars.json virtio_console.log test_order.json report; do
+            if [[ -e "$OPENQA_RUN_DIR/$evidence" ]]; then
+              cp -a -- "$OPENQA_RUN_DIR/$evidence" "$collected/"
+            fi
+          done
+          # The video is the only evidence for what happens before the first
+          # module can talk to the guest - GRUB and Plymouth publish no
+          # accessibility tree - and it is worth its size only when something
+          # went wrong.
+          if [[ '${{ job.status }}' != success && -s "$OPENQA_RUN_DIR/video.ogv" ]]; then
+            cp -a -- "$OPENQA_RUN_DIR/video.ogv" "$collected/"
+          fi
+          du -sh "$collected" | tee "$OPENQA_DIAGNOSTICS_DIR/collected-size.txt"
+          df -h / /mnt | tee "$OPENQA_DIAGNOSTICS_DIR/disk-after.txt"
+          free -h | tee "$OPENQA_DIAGNOSTICS_DIR/resources-after.txt"
+
+      - name: Redact the generated test password
+        id: redact
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [[ ! -r "$OPENQA_PASSWORD_FILE" ]]; then
+            echo 'The password was never created; an earlier step failed.'
+            exit 0
+          fi
+          test_password=$(<"$OPENQA_PASSWORD_FILE")
+          [[ -n "$test_password" ]] || exit 0
+          while IFS= read -r diagnostic; do
+            SECRET_TO_REDACT="$test_password" perl -0pi -e \
+              's/\Q$ENV{SECRET_TO_REDACT}\E/[REDACTED]/g' "$diagnostic"
+          done < <(find "$OPENQA_DIAGNOSTICS_DIR" -type f \( \
+            -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.html' -o -name '*.md' \
+          \) -print)
+
+      - name: Generate the human-readable report
+        id: report
+        if: ${{ always() }}
+        env:
+          REPORT_NAME: ${{ matrix.plan.name }}
+          REPORT_STATUS: ${{ job.status }}
+          REPORT_STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          set -euo pipefail
+          source="$OPENQA_DIAGNOSTICS_DIR"
+          # Never include potentially unredacted evidence when redaction failed.
+          if [[ '${{ steps.redact.outcome }}' != success ]]; then
+            source="$RUNNER_TEMP/openqa-empty-safe-results/$PLAN"
+            mkdir -p -- "$source"
+          fi
+          python3 openqa/report/finalize_report.py \
+            --results-root "$source" --output-dir "$OPENQA_PLAN_REPORT_DIR"
+
+      - name: Publish the verdict in the Actions summary
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          # The verdict belongs on the run page. A report inside a zip is only
+          # opened by someone who already suspects something is wrong.
+          {
+            echo "## openQA $PLAN"
+            echo
+            echo "ISO: \`$ISO_FILENAME\` — commit \`${GITHUB_SHA:0:7}\`"
+            if [[ -s "$OPENQA_PLAN_REPORT_DIR/RESULTADO.md" ]]; then
+              echo
+              sed 's/^## Resultado$//' "$OPENQA_PLAN_REPORT_DIR/RESULTADO.md"
+            else
+              echo
+              echo 'O plano não produziu resultado; ver os diagnósticos no artefato.'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Arrange the artifact around what a person opens first
+        if: ${{ always() && steps.redact.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          mkdir -p -- "$OPENQA_DIAGNOSTICS_DIR"
+          cp -a -- "$OPENQA_PLAN_REPORT_DIR/." "$OPENQA_DIAGNOSTICS_DIR/"
+          cd "$OPENQA_DIAGNOSTICS_DIR"
+          # The runner's own paperwork one level down, so the report and the
+          # results are what the artifact opens on.
+          install -d -m 0755 diagnostics
+          for entry in *; do
+            case "$entry" in
+              results | diagnostics | RESULTADO.md | RESULTADO.json | run-status.json | biglinux-validation-report.html)
+                continue
+                ;;
+            esac
+            mv -- "$entry" diagnostics/
+          done
+
+      - name: Upload the plan's results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openqa-${{ matrix.plan.name }}-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.redact.outcome == 'success' && env.OPENQA_DIAGNOSTICS_DIR || env.OPENQA_PLAN_REPORT_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+  applications-aggregate:
+    name: Aggregate application coverage
+    if: ${{ always() }}
+    needs: [static, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the tested sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download the application shards
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          # Every attempt of this run, not only the current one. "Re-run failed
+          # jobs" re-runs the failed shard alone, so the shards that passed keep
+          # the artifacts of the attempt they ran in. Pinning the attempt would
+          # find only the re-run shard.
+          pattern: openqa-applications-*-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/openqa-application-attempts
+          merge-multiple: false
+
+      - name: Keep the newest attempt of each shard
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          attempts=$RUNNER_TEMP/openqa-application-attempts
+          selected=$RUNNER_TEMP/openqa-application-artifacts
+          install -d -m 0755 -- "$selected"
+          # Artifact names end in -<run_id>-<attempt> and the shard index is the
+          # third field. Sorting by attempt numerically and taking the last one
+          # per shard is what makes a partial re-run add up to a complete set.
+          find "$attempts" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
+              awk -F- '{ attempt = $NF; shard = $3; print attempt "\t" shard "\t" $0 }' |
+              sort -k2,2 -k1,1n |
+              awk -F'\t' '{ newest[$2] = $3 } END { for (shard in newest) print shard, newest[shard] }' |
+              while read -r shard directory; do
+                  printf 'shard %s from %s\n' "$shard" "$directory"
+                  cp -a -- "$attempts/$directory" "$selected/$directory"
+              done
+
+      - name: Prepare the application policy
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          # The aggregator is stdlib Python, which has no YAML reader.
+          ruby -rjson -ryaml -e '
+            puts JSON.generate(YAML.safe_load_file("openqa/application-policy.yaml", permitted_classes: [], aliases: false))
+          ' >"$RUNNER_TEMP/application-policy.json"
+
+      - name: Aggregate and validate every shard
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          python3 openqa/production/aggregate-application-results.py \
+            --artifacts-root "$RUNNER_TEMP/openqa-application-artifacts" \
+            --policy-json "$RUNNER_TEMP/application-policy.json" \
+            --output-dir "$RUNNER_TEMP/application-summary" \
+            --expected-shards '${{ needs.static.outputs.shards }}' \
+            --expected-commit "$GITHUB_SHA"
+
+      - name: Upload the application coverage summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openqa-applications-summary-${{ inputs.build_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/application-summary/
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: Validation report (always)
+    if: ${{ always() }}
+    needs: [static, plan, applications-aggregate]
+    uses: ./.github/workflows/openqa-report.yml
+    with:
+      iso_filename: ${{ inputs.iso_filename }}
+      build_id: ${{ inputs.build_id }}
+      execution_context: ${{ toJSON(needs) }}
+      expected_plans: ${{ needs.static.outputs.plans || '[]' }}
+      artifact_pattern: openqa-*-${{ github.run_id }}-*
+
+  openqa-release-gate:
+    name: openQA release gate
+    if: ${{ always() }}
+    needs: [static, plan, applications-aggregate, report]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every plan and the application coverage
+        run: |
+          set -euo pipefail
+          static_result='${{ needs.static.result }}'
+          plan_result='${{ needs.plan.result }}'
+          aggregate_result='${{ needs.applications-aggregate.result }}'
+          report_result='${{ needs.report.result }}'
+          report_verdict='${{ needs.report.outputs.verdict }}'
+          printf 'static=%s\nplan=%s\napplications-aggregate=%s\n' \
+            "$static_result" "$plan_result" "$aggregate_result"
+          [[ "$static_result" == success ]] || {
+            echo 'The static checks did not pass.' >&2
+            exit 1
+          }
+          [[ "$report_result" == success && "$report_verdict" =~ ^(ok|softfail)$ ]] || {
+            echo 'The report was not fully generated and published; inspect its fallback artifact.' >&2
+            exit 1
+          }
+          # One matrix result covers every plan: it is success only when all of
+          # them were.
+          [[ "$plan_result" == success && "$aggregate_result" == success ]] || {
+            echo 'A release-gate plan or the application coverage did not pass.' >&2
+            exit 1
+          }

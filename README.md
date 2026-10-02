@@ -20,6 +20,14 @@ tells you it was doomed from the start.
 
 ---
 
+## Automated ISO validation
+
+The GitHub **Build ISO** workflow keeps each new ISO unpublished until an
+openQA release gate has booted it in BIOS and UEFI, installed it, and launched
+every graphical application it ships. The tests read the accessibility tree
+instead of comparing screenshots, so a new theme never needs new reference
+images. See [openqa/README.md](openqa/README.md).
+
 ## Yes, you can build your own
 
 Let us get the intimidating part out of the way: **building a custom Linux
@@ -334,8 +342,10 @@ removes any it finds. An unread config file is bad; a half-read one is worse.
 ## License
 
 This repository is licensed under the [GNU General Public License v3.0 or
-later](LICENSE). Every source file states its license in an
-`SPDX-License-Identifier` line.
+later](LICENSE). The openQA tests in `openqa/` and their guest-side helpers in
+`data/` are GPL-2.0-or-later, the license of the os-autoinst API they build on,
+which also allows them to be distributed under the GPL-3.0. Every source file
+states its license in an `SPDX-License-Identifier` line.
 
 The profiles started as an import of Manjaro's
 [iso-profiles](https://gitlab.manjaro.org/profiles-and-settings/iso-profiles),
