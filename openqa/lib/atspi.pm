@@ -624,9 +624,13 @@ sub _start_argv {
       shell_quote($status_path),
       (map { shell_quote($_) } @$argv);
     select_console 'user-virtio-terminal';
+    # Backgrounded inside a subshell, so the interactive shell never owns the
+    # job. Otherwise bash prints "[1]+ Done ..." between the commands of a later
+    # list once the application exits, splitting a probe's result from the
+    # marker that follows it.
     my $launch_command = join ' ',
-      $user_launcher_arguments,
-      '< /dev/null > /tmp/openqa-gui-launch.log 2>&1 &',
+      '(', $user_launcher_arguments,
+      '< /dev/null > /tmp/openqa-gui-launch.log 2>&1 & );',
       'printf', shell_quote(marker_format('__OA_GUI_LAUNCH_DONE__') . '\\n');
     type_string $launch_command;
     send_key 'ret';

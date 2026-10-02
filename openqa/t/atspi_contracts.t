@@ -108,8 +108,9 @@ no warnings 'redefine';
                 application_index=>3,window_identity=>'/window'} if $operation eq 'wait-open';
         die "unexpected probe operation $operation";
     };
+    my @typed;
     local *atspi::select_console = sub {};
-    local *atspi::type_string = sub {};
+    local *atspi::type_string = sub { push @typed, $_[0]; };
     local *atspi::send_key = sub {};
     local *atspi::wait_serial = sub { return 1; };
     local *atspi::_read_child_pid = sub { return 73; };
@@ -120,6 +121,8 @@ no warnings 'redefine';
         'process-tree launch explicitly forwards the supervisor root to wait-open');
     is_deeply(\@scope, [84,73],
         'successful process-tree launch persists target PID and supervisor provenance');
+    like($typed[0], qr{\A\( \S*openqa-gui-user-launch\.sh\S* .* & \); printf },
+        'the supervisor is backgrounded in a subshell, so bash reports no job');
 }
 {
     local *atspi::assert_widget = sub { return {widget=>{pid=>42,identity=>'/target',name=>'Next'}}; };
