@@ -16,7 +16,7 @@ from typing import Any
 
 CLASSIFICATIONS = {"launchable", "excluded", "duplicate-alias", "invalid"}
 CONTRACT_KINDS = {"standard", "shared-window", "transient-dialog"}
-CONTRACT_REQUIREMENTS = {"alsa-card", "native-x11", "uefi-variables", "video-device"}
+CONTRACT_REQUIREMENTS = {"native-x11", "uefi-variables", "video-device"}
 
 
 def normalized_contract(item: dict[str, Any] | None = None) -> dict[str, Any]:

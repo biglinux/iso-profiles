@@ -16,7 +16,7 @@ sub not_applicable_reason {
     return 'terminal command is outside the graphical smoke test' if $entry->{terminal};
     my $binary = $entry->{launch_binary} // '';
     return 'session service has no standalone application window'
-      if $binary eq 'orca' || $binary eq 'fcitx5';
+      if $binary eq 'orca';
     return;
 }
 
@@ -53,7 +53,7 @@ sub _contract {
     my $requirements = ref $coverage->{contract_requirements} eq 'ARRAY'
       ? [@{$coverage->{contract_requirements}}] : [];
     my %allowed_requirement = map { $_ => 1 }
-      qw(alsa-card native-x11 uefi-variables video-device);
+      qw(native-x11 uefi-variables video-device);
     my %seen_requirement;
     for my $requirement (@$requirements) {
         die "invalid application contract requirement '$requirement'"
@@ -81,10 +81,6 @@ sub _requirement_not_applicable_reason {
     # A missing utility or an unreadable kernel interface must never be
     # converted into "not applicable".
     my %probe = (
-        'alsa-card' => {
-            command => q{capability_probe() { if [ ! -r /proc/asound/cards ]; then return 3; fi; grep -qE '^[[:space:]]*[0-9]+[[:space:]]+\[' /proc/asound/cards; code=$?; [ "$code" -eq 0 ] && return 0; [ "$code" -eq 1 ] && return 3; return 2; }; capability_probe},
-            reason => 'no ALSA hardware card is available in this environment',
-        },
         'native-x11' => {
             command => q{capability_probe() { [ "${XDG_SESSION_TYPE:-}" = x11 ] && return 0; return 3; }; capability_probe},
             reason => 'the current desktop session is not native X11',

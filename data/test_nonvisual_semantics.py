@@ -19,38 +19,6 @@ class SelectorTest(unittest.TestCase):
     def test_plain_prefix_is_not_identity(self):
         self.assertFalse(probe._label_matches("Install unwanted software", ["Install"]))
 
-    def test_stable_id_disambiguates(self):
-        pairs = [self.pair(identifier="other"), self.pair()]
-        with mock.patch.object(probe, "_visible_widgets", return_value=pairs) as walk:
-            result = probe.wait_for_widget(0, "button", [], 42, accessible_id="target", window_name="Dialog")
-        self.assertEqual(result["status"], "passed")
-        self.assertEqual(walk.call_args.args[0], 42)
-        self.assertEqual(result["widget"]["accessible_id"], "target")
-
-    def test_disabled_is_not_disappeared(self):
-        item = self.pair()
-        item[1]["sensitive"] = False
-        with mock.patch.object(probe, "_visible_widgets", return_value=[item]):
-            result = probe.wait_for_widget(0, "button", ["Install"], absent=True)
-        self.assertEqual(result["status"], "failed")
-
-    def test_incomplete_is_never_absent(self):
-        with mock.patch.object(probe, "_visible_widgets", side_effect=probe.WalkTruncated("budget")):
-            with self.assertRaises(probe.WalkTruncated):
-                probe.wait_for_widget(0, "button", ["Install"], absent=True)
-
-    def test_complete_empty_query_proves_absence(self):
-        with mock.patch.object(probe, "_visible_widgets", return_value=[]):
-            result = probe.wait_for_widget(0, "button", ["Install"], absent=True)
-        self.assertEqual(result["reason"], "absent")
-        self.assertTrue(result["complete"])
-
-    def test_checked_is_required_when_requested(self):
-        item = self.pair(checked=False)
-        with mock.patch.object(probe, "_visible_widgets", return_value=[item]):
-            result = probe.wait_for_widget(0, "button", ["Install"], checked=True)
-        self.assertEqual(result["status"], "failed")
-
     def test_focus_is_observed_without_calling_component(self):
         item = self.pair(focused=True)
         with mock.patch.object(probe, "_visible_widgets", return_value=[item]):

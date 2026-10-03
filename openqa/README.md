@@ -94,7 +94,7 @@ The policy adapts to the ISO instead of listing required packages:
 - `Terminal=true` commands and services without a window are out of scope;
 - an entry that is present but broken is an error;
 - `requires` makes an entry not applicable when the hardware is absent (camera,
-  ALSA card, UEFI variables, an X11 session); a failing probe is still a failure;
+  UEFI variables, an X11 session); a failing probe is still a failure;
 - `exclude` lists helpers, handlers and bootstrap installers, each with its
   reason. `steam.desktop` is there because it installs the Steam client instead
   of opening it.
@@ -136,7 +136,7 @@ one under `contracts` when it does something else, and say why in `reason`:
 | `close_key` | quits with `ctrl-q` or `esc` rather than `alt-f4` |
 | `dismiss_auxiliary` | shows a welcome or first-run dialog before its main window |
 | `content_timeout`, `close_timeout` | needs more than 10 s to fill its window or 15 s to quit (1–120) |
-| `requires` | needs `alsa-card`, `video-device`, `uefi-variables` or `native-x11` |
+| `requires` | needs `video-device`, `uefi-variables` or `native-x11` |
 
 To test a program on the installed system as well, add it to `critical` with a
 short `functional_test` label (letters, digits, `.`, `_` or `-`).

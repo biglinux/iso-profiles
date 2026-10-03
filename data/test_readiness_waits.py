@@ -43,10 +43,10 @@ class ReadinessWaitsTest(unittest.TestCase):
         self.assertFalse(target[0].get_action_iface().done)
         self.assertEqual(len(self.sleeps), 1)
 
-    def test_persistent_error_is_not_absence_or_failure_of_selector(self):
+    def test_persistent_error_is_not_failure_of_selector(self):
         with mock.patch.object(probe, "_visible_widgets", side_effect=probe.ProbeError("provider unavailable")), \
              self.assertRaisesRegex(probe.ProbeError, "provider unavailable"):
-            probe.wait_for_widget(0.25, "button", ["Install"], 42, absent=True)
+            probe.wait_for_widget(0.25, "button", ["Install"], 42)
         self.assertAlmostEqual(self.clock, 0.25)
         self.assertEqual(len(self.sleeps), 3)
 
@@ -69,12 +69,6 @@ class ReadinessWaitsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             probe._read_until_ready(read, 30)
         read.assert_called_once()
-
-    def test_complete_fresh_absence_can_follow_a_failed_read(self):
-        with mock.patch.object(probe, "_visible_widgets", side_effect=[probe.ProbeError("starting"), []]):
-            result = probe.wait_for_widget(1, "button", ["Install"], 42, absent=True)
-        self.assertEqual(result["reason"], "absent")
-        self.assertTrue(result["complete"])
 
     def test_ambiguous_fresh_read_does_not_become_success(self):
         pairs = [fixtures.SelectorTest().pair(), fixtures.SelectorTest().pair()]

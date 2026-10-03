@@ -10,9 +10,9 @@ no warnings 'redefine';
     my @args;
     local *atspi::result = sub { @args = @_; return {status => 'passed', complete => 1}; };
     atspi->set_widget_scope(42);
-    atspi->wait_widget('button', ['Next'], 5, id => 'stable-next', checked => 1);
+    atspi->wait_widget('button', ['Next'], 5);
     is_deeply(\@args, ['atspi','wait-widget',5,'--role','button','--labels','Next',
-        '--pid',42,'--accessible-id','stable-next','--checked','true'], 'selectors retain process scope and stable ID');
+        '--pid',42], 'selectors retain process scope');
     atspi->wait_widget('button', ['Next'], 5, pid => undef);
     ok(!grep($_ eq '--pid', @args), 'explicit page discovery may be unscoped');
     atspi->wait_widget('button', ['Next'], 5, pid => 42, application_index => 7);
@@ -33,9 +33,6 @@ no warnings 'redefine';
     is_deeply(\@args, ['atspi','wait-widget',90,'--role','label','--labels','Welcome',
         '--pid',42,'--positive-witness','--startup-timeout-ms',5000],
         'positive witness and bounded startup grace are explicit opt-in arguments');
-    eval { atspi->wait_widget('button', ['Next'], 5,
-        checked => 1, positive_witness => 1) };
-    like($@, qr/cannot assert checked/, 'positive witness cannot weaken a state assertion');
 }
 {
     local *atspi::wait_widget = sub { return {status => 'passed', complete => 0}; };

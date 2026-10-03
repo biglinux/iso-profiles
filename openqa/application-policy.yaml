@@ -39,10 +39,6 @@ exclude:
       could not close a root window it does not own
   - desktop_id: bigtts.desktop
     reason: Selected-text handler requires text supplied by the desktop selection
-  - desktop_id: com.github.maliit.keyboard.desktop
-    reason: Input-method component is managed by the desktop session, not launched standalone
-  - desktop_id: fcitx5-wayland-launcher.desktop
-    reason: Fcitx Wayland session component is managed by the login session
   - desktop_id: gcr-prompter.desktop
     reason: Authentication prompter requires a request from another application
   - desktop_id: geoclue-demo-agent.desktop
@@ -72,10 +68,6 @@ exclude:
       /usr/local/bin/biglinux-snapshot-restore while the wrapper ships in
       /usr/bin, which the release gate found and which the package still needs
       to fix
-  - desktop_id: org.fcitx.fcitx5-qt5-gui-wrapper.desktop
-    reason: Fcitx Qt 5 wrapper is an input-method session component
-  - desktop_id: org.fcitx.fcitx5-qt6-gui-wrapper.desktop
-    reason: Fcitx Qt 6 wrapper is an input-method session component
   - desktop_id: org.freedesktop.Xwayland.desktop
     reason: Xwayland is a display-server component managed by the desktop session
   - desktop_id: org.freedesktop.impl.portal.desktop.kde.desktop
@@ -173,10 +165,6 @@ exclude:
     reason: BigLinux ships a Steam bootstrap installer that immediately downloads and installs Steam; it is not the installed Steam client
 
 aliases:
-  - desktop_id: bigcontrolcenter/big-driver-manager.desktop
-    canonical: big-driver-manager.desktop
-  - desktop_id: bigcontrolcenter/big-kernel-manager.desktop
-    canonical: big-kernel-manager.desktop
   - desktop_id: org.kde.plasma.settings.open.desktop
     canonical: bigcontrolcenter/systemsettings.desktop
 
@@ -321,14 +309,6 @@ contracts:
     dismiss_auxiliary: true
     close_timeout: 30
     reason: WebApps Manager presents its welcome dialog on first run before Quit
-  - desktop_id: big-driver-manager.desktop
-    kind: standard
-    content_timeout: 20
-    reason: The Qt Quick interface may publish its accessible content after the top-level window
-  - desktop_id: big-kernel-manager.desktop
-    kind: standard
-    content_timeout: 20
-    reason: The Qt Quick interface may publish its accessible content after the top-level window
   - desktop_id: bigcontrolcenter/biglinux-config.desktop
     kind: standard
     dismiss_auxiliary: true

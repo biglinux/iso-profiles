@@ -104,7 +104,7 @@ sub _application_policy {
     my %contracts;
     my %allowed_kind = map { $_ => 1 } qw(standard shared-window transient-dialog);
     my %allowed_requirement = map { $_ => 1 }
-      qw(alsa-card native-x11 uefi-variables video-device);
+      qw(native-x11 uefi-variables video-device);
     for my $item (@{$policy->{contracts} // []}) {
         die 'application policy contract is invalid'
           unless ref $item eq 'HASH'

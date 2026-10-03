@@ -134,8 +134,8 @@ helper (`data/process_handoff.py`) only reads `/proc`.
 Calamares pages are found by a positive witness: the search stops at the first
 control whose role, name and PID all match. Roles are read before names, and
 names are read only for the roles the anchor asks for. A control that is hidden,
-insensitive, ambiguous or outside the PID still blocks. Absence and state checks
-keep requiring a complete tree. The welcome, users, summary and finished pages
+insensitive, ambiguous or outside the PID still blocks. Every other widget
+query keeps requiring a complete tree. The welcome, users, summary and finished pages
 are QML from the BigLinux branding in
 [biglinux-livecd](https://github.com/biglinux/biglinux-livecd), and their
 anchors use the strings of its `i18n.js`: the welcome page is identified by its

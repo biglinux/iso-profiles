@@ -946,18 +946,6 @@ class WidgetSearchTest(unittest.TestCase):
         self.assertIn("roles seen: label=1, panel=1", reason)
         self.assertIn("requested-role names: label/Broken heading", reason)
 
-    def test_positive_witness_cannot_prove_absence_or_checked_state(self) -> None:
-        with self.assertRaisesRegex(atspi_probe.ProbeError, "cannot be used"):
-            atspi_probe.wait_for_widget(
-                0, "button", ["Install"], 42,
-                absent=True, positive_witness=True,
-            )
-        with self.assertRaisesRegex(atspi_probe.ProbeError, "cannot be used"):
-            atspi_probe.wait_for_widget(
-                0, "radio button", ["Erase disk"], 42,
-                checked=True, positive_witness=True,
-            )
-
     def test_process_transition_uses_nearby_application_hint_and_stops_on_match(self) -> None:
         old_window = object()
         target_window = object()

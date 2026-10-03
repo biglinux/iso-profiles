@@ -148,7 +148,7 @@ sub result {
     # through a serial marker, and no test needs one. It is an operator's tool,
     # run from a console inside the guest (see openqa/README.md).
     die "invalid AT-SPI operation '$operation'"
-      unless $operation =~ /\A(?:baseline|wait-open|wait-close|wait-widget|wait-gone|focused-widget|smoke-window|active-window|close|cleanup|memory|inventory|inventory-chunk)\z/;
+      unless $operation =~ /\A(?:baseline|wait-open|wait-close|wait-widget|focused-widget|smoke-window|active-window|close|cleanup|inventory|inventory-chunk)\z/;
     die 'invalid AT-SPI timeout' unless defined $timeout && $timeout =~ /\A[0-9]+(?:\.[0-9]+)?\z/;
 
     my @command = (
@@ -482,8 +482,6 @@ sub _widget_operation {
           unless $root_pid =~ /\A[0-9]+\z/ && $root_pid > 1;
         push @args, ('--root-pid', $root_pid);
     }
-    push @args, ('--accessible-id', $options{id}) if defined $options{id};
-    push @args, ('--window', encode('UTF-8', $options{window})) if defined $options{window};
     if (defined $options{application_index}) {
         die 'invalid AT-SPI application index'
           unless $options{application_index} =~ /\A[0-9]+\z/;
@@ -492,8 +490,6 @@ sub _widget_operation {
     if ($options{positive_witness}) {
         die 'positive AT-SPI witness is only valid for wait-widget'
           unless $operation eq 'wait-widget';
-        die 'positive AT-SPI witness cannot assert checked state'
-          if exists $options{checked};
         push @args, '--positive-witness';
     }
     if (defined $options{startup_timeout_ms}) {
@@ -502,7 +498,6 @@ sub _widget_operation {
           && $options{startup_timeout_ms} <= 15000;
         push @args, ('--startup-timeout-ms', $options{startup_timeout_ms});
     }
-    push @args, ('--checked', $options{checked} ? 'true' : 'false') if exists $options{checked};
     return $class->result($operation, $timeout, @args);
 }
 

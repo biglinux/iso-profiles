@@ -1218,7 +1218,6 @@ def _positive_widget_witness_in_window(
     matches_selector: Callable[[tuple[Any, dict[str, Any]]], bool],
     roles_wanted: set[str],
     labels: list[str],
-    include_accessible_id: bool = False,
     limit: int = _WIDGET_TREE_LIMIT,
     application_index: int | None = None,
 ) -> tuple[
@@ -1315,7 +1314,7 @@ def _positive_widget_witness_in_window(
                         node,
                         role,
                         name,
-                        include_accessible_id=include_accessible_id,
+                        include_accessible_id=False,
                     )
                 except ProbeError as error:
                     incomplete.append(str(error))
@@ -1485,9 +1484,6 @@ def _widget_matches(
     labels: list[str],
     expected_pid: int | None,
     budget: float | None = None,
-    accessible_id: str | None = None,
-    window_name: str | None = None,
-    require_sensitive: bool = True,
     application_index: int | None = None,
     stop_after_matching_application: bool = False,
     supervised_root_pid: int | None = None,
@@ -1499,9 +1495,7 @@ def _widget_matches(
         widget = pair[1]
         return (not roles_wanted or widget["role"].casefold() in roles_wanted) \
             and widget["showing"] \
-            and (not require_sensitive or widget["sensitive"]) \
-            and (not accessible_id or widget.get("accessible_id") == accessible_id) \
-            and (window_name is None or widget.get("window") == window_name) \
+            and widget["sensitive"] \
             and _label_matches(widget["name"], labels)
 
     deadline = time.monotonic() + budget if budget is not None else None
@@ -1533,7 +1527,6 @@ def _widget_matches(
                 matches_selector,
                 roles_wanted,
                 labels,
-                include_accessible_id=accessible_id is not None,
                 application_index=record.get("application_index"),
             )
             observed.extend(window_observed)
@@ -1602,30 +1595,18 @@ def _widget_matches(
 
 def wait_for_widget(
     timeout: float, role: str, labels: list[str], expected_pid: int | None = None,
-    *, accessible_id: str | None = None, window_name: str | None = None,
-    absent: bool = False, checked: bool | None = None,
-    application_index: int | None = None,
+    *, application_index: int | None = None,
     supervised_root_pid: int | None = None,
     positive_witness: bool = False,
 ) -> dict[str, Any]:
-    """A unique match, a positive witness, or confirmed absence.
-
-    Positive-witness mode is opt-in and only proves existence. It cannot be
-    combined with absence or checked-state assertions, both of which require a
-    complete tree.
-    """
-    if positive_witness and (absent or checked is not None):
-        raise ProbeError(
-            "positive witness cannot be used for absence or checked-state assertions"
-        )
+    """A unique match, or with positive_witness one match without a full tree."""
     deadline = time.monotonic() + timeout
     while True:
         matches, observed = _read_until_ready(
             lambda: _widget_matches(
                 role, labels, expected_pid, max(0.01, deadline - time.monotonic()),
-                accessible_id, window_name, require_sensitive=not absent,
                 application_index=application_index,
-                stop_after_matching_application=(application_index is not None and not absent),
+                stop_after_matching_application=application_index is not None,
                 supervised_root_pid=supervised_root_pid,
                 positive_witness=positive_witness,
             ), deadline,
@@ -1641,15 +1622,11 @@ def wait_for_widget(
             return {"status": "failed", "reason": "ambiguous", "complete": True,
                     "matches": len(matches),
                     "error": f"selector matches multiple controls: {candidates}"}
-        if absent and not matches:
-            return {"status": "passed", "reason": "absent", "complete": True}
-        if not absent and len(matches) == 1:
-            record = matches[0][1]
-            if checked is None or record.get("checked") is checked:
-                result = {"status": "passed", "widget": record, "matches": 1, "complete": True}
-                if positive_witness:
-                    result.update(proof="positive-witness", tree_complete=False)
-                return result
+        if len(matches) == 1:
+            result = {"status": "passed", "widget": matches[0][1], "matches": 1, "complete": True}
+            if positive_witness:
+                result.update(proof="positive-witness", tree_complete=False)
+            return result
         if time.monotonic() >= deadline:
             result = _failure(role, labels, observed, "required control state not reached")
             result.update(reason="state-not-reached" if matches else "not-found", complete=True)
@@ -2587,7 +2564,6 @@ def main() -> int:
             "wait-open",
             "wait-close",
             "wait-widget",
-            "wait-gone",
             "focused-widget",
             "smoke-window",
             "smoke-session",
@@ -2595,7 +2571,6 @@ def main() -> int:
             "dump-widgets",
             "close",
             "cleanup",
-            "memory",
             "inventory",
             "inventory-chunk",
         ),
@@ -2608,12 +2583,9 @@ def main() -> int:
     parser.add_argument("--index", type=int)
     parser.add_argument("--role")
     parser.add_argument("--labels", default="")
-    parser.add_argument("--accessible-id")
-    parser.add_argument("--window")
     parser.add_argument("--window-identity")
     parser.add_argument("--target-identity")
     parser.add_argument("--application-index", type=int)
-    parser.add_argument("--checked", choices=("true", "false"))
     parser.add_argument("--positive-witness", action="store_true")
     parser.add_argument("--startup-timeout-ms", type=int, default=-1)
     parser.add_argument("--no-memory-sample", action="store_true")
@@ -2642,8 +2614,6 @@ def main() -> int:
             )
         if args.positive_witness and args.operation != "wait-widget":
             raise ProbeError("positive witness is only valid for wait-widget")
-        if args.positive_witness and args.checked is not None:
-            raise ProbeError("positive witness cannot assert checked state")
         configure_atspi_timeout(args.startup_timeout_ms)
         for field, value, maximum in (("settle", args.settle, 10), ("content timeout", args.content_timeout, 120), ("close timeout", args.close_timeout, 120)):
             if not math.isfinite(value) or value < 0 or value > maximum:
@@ -2721,7 +2691,7 @@ def main() -> int:
                 args.window_identity,
                 args.root_pid,
             )
-        elif args.operation in {"wait-widget", "wait-gone"}:
+        elif args.operation == "wait-widget":
             if not args.role:
                 raise ProbeError("--role is required to locate a widget")
             result = wait_for_widget(
@@ -2729,9 +2699,6 @@ def main() -> int:
                 args.role,
                 [label for label in args.labels.split("|") if label],
                 args.pid,
-                accessible_id=args.accessible_id, window_name=args.window,
-                absent=args.operation == "wait-gone",
-                checked=None if args.checked is None else args.checked == "true",
                 application_index=args.application_index,
                 supervised_root_pid=args.root_pid,
                 positive_witness=args.positive_witness,
@@ -2742,13 +2709,6 @@ def main() -> int:
             )
         elif args.operation == "cleanup":
             result = cleanup_new_windows(args.state, args.timeout)
-        elif args.operation == "memory":
-            if not args.pid or args.pid <= 1:
-                raise ProbeError("--pid is required for memory sampling")
-            result = {
-                "status": "passed",
-                "memory": sample_process_memory(args.pid, args.timeout),
-            }
         else:
             if not args.pid or args.pid <= 1:
                 raise ProbeError("--pid is required for close")
