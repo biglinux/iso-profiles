@@ -42,8 +42,13 @@ class DesktopSessionTests(unittest.TestCase):
             self.assertFalse(injected.exists())
 
     def test_missing_display_does_not_pass_on_user_bus_alone(self):
-        with self.assertRaisesRegex(session.SessionPending, "display"):
+        with self.assertRaisesRegex(session.SessionPending, "Wayland"):
             session.display_ready({"XDG_CURRENT_DESKTOP": "KDE"}, Path("/tmp"), time.monotonic() + 1)
+
+    def test_x11_session_is_not_the_tested_session(self):
+        with self.assertRaisesRegex(session.SessionPending, "not a Wayland session"):
+            session.display_ready({"XDG_CURRENT_DESKTOP": "KDE", "XDG_SESSION_TYPE": "x11",
+                                   "DISPLAY": ":0"}, Path("/tmp"), time.monotonic() + 1)
 
     def test_reachable_local_wayland_socket(self):
         with tempfile.TemporaryDirectory() as tmp, socket.socket(socket.AF_UNIX) as server:

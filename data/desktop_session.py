@@ -11,7 +11,6 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import shlex
 import socket
 import subprocess
@@ -67,16 +66,14 @@ def manager_environment(raw: str) -> dict[str, str]:
 def display_ready(environment: dict[str, str], runtime: Path, deadline: float) -> None:
     if not environment.get("XDG_CURRENT_DESKTOP"):
         raise SessionPending("desktop identity has not been published")
+    # The gate tests the Wayland session: BigLinux is dropping X11 sessions,
+    # while X11 programs keep running through Xwayland inside this one.
     wayland = environment.get("WAYLAND_DISPLAY")
-    if wayland:
-        endpoint = Path(wayland)
-        if not endpoint.is_absolute():
-            endpoint = runtime / endpoint
-    else:
-        match = re.fullmatch(r":([0-9]+)(?:\.[0-9]+)?", environment.get("DISPLAY", ""))
-        if not match:
-            raise SessionPending("desktop display has not been published")
-        endpoint = Path("/tmp/.X11-unix") / ("X" + match[1])
+    if not wayland or environment.get("XDG_SESSION_TYPE", "wayland") != "wayland":
+        raise SessionPending("the desktop session is not a Wayland session")
+    endpoint = Path(wayland)
+    if not endpoint.is_absolute():
+        endpoint = runtime / endpoint
     authority = environment.get("XAUTHORITY")
     if authority and not os.access(authority, os.R_OK):
         raise SessionPending("desktop authentication is not ready")

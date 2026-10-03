@@ -27,6 +27,10 @@ The installed-system modules check SDDM login, system health, security posture
 `critical` in the policy. GRUB is not tested on its own: if it is broken,
 nothing boots and the first module times out.
 
+Both the live desktop and the installed system have to be Wayland sessions; an
+X11 session fails the gate. Programs that only speak X11 still run, through
+Xwayland inside that session.
+
 ## Where each setting lives
 
 | File | Defines |
