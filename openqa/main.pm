@@ -15,7 +15,7 @@ testapi::set_distribution(biglinux->new);
 # Install, first boot and the installed system, shared by both firmware plans.
 my @install = map { "openqa/tests/$_.pm" } qw(
     installer_launch installer_partitions installer_user installer_install
-    installed_boot installed_login nonvisual_tasks installed_health
+    installed_boot installed_login installed_reader nonvisual_tasks installed_health
     installed_security installed_critical_apps installed_brave
 );
 my $live = 'openqa/tests/live_desktop.pm';
