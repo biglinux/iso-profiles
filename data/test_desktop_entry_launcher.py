@@ -17,6 +17,22 @@ from desktop_entry_launcher import (
 
 
 class DesktopEntryLauncherTest(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch("desktop_entry_launcher._session_environment", return_value={})
+        self.session_environment = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_session_environment_replaces_the_console_login(self) -> None:
+        self.session_environment.return_value = {"LANG": "pt_BR.UTF-8", "XDG_CONFIG_DIRS": "/etc/xdg"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "app.desktop")
+            path.write_text("[Desktop Entry]\nType=Application\nName=App\nExec=app\n",
+                            encoding="utf-8")
+            entry = parse_desktop_entry(path)
+            with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8", "TERM": "dumb"}, clear=True):
+                environment = _prepare_environment(entry, command_for_entry(entry))
+        self.assertEqual(environment, {"LANG": "pt_BR.UTF-8", "TERM": "dumb", "XDG_CONFIG_DIRS": "/etc/xdg"})
+
     def test_discovers_nested_application_entries_and_expands_exec(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

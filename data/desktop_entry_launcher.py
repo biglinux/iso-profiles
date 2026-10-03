@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -215,8 +217,23 @@ def resolve_entry_path(
     return path.resolve()
 
 
+def _session_environment() -> dict[str, str]:
+    """The environment the desktop session gave the user manager.
+
+    Plasma starts its shell, and through it every application, with this
+    environment: the chosen locale, the XDG directories with the look-and-feel
+    defaults, the toolkit settings. The serial console's login has none of it.
+    """
+    reply = subprocess.run(
+        ["busctl", "--user", "--json=short", "get-property", "org.freedesktop.systemd1",
+         "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "Environment"],
+        capture_output=True, check=True, text=True, timeout=5,
+    ).stdout
+    return dict(field.split("=", 1) for field in json.loads(reply)["data"])
+
+
 def _prepare_environment(entry: DesktopEntry, command: list[str]) -> dict[str, str]:
-    environment = os.environ.copy()
+    environment = {**os.environ, **_session_environment()}
     # Test the session and packaged command users actually receive. Do not force
     # an alternate toolkit, display server, renderer or accessibility bridge.
     if entry.terminal:
