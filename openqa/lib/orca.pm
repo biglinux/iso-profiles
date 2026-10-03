@@ -22,7 +22,7 @@ sub _probe {
 # After atspi->install, in the session the tests use. Replaces any Orca already
 # running, so the one observed is the one speaking.
 sub start {
-    my $started = _probe('start', 30);
+    my $started = _probe('start', 60);
     die 'Orca could not be started for the session: ' . ($started->{error} // 'no answer')
       unless ($started->{status} // '') eq 'passed';
     $active = 1;

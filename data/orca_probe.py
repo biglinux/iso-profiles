@@ -198,10 +198,12 @@ def start(timeout: float) -> dict:
         errors = [record["reply"] for record in records if record["kind"] == "error"]
         if errors:
             raise ObservationError(f"speech-dispatcher refused Orca: {errors[0]}")
-        if any(record["kind"] == "client" for record in records):
+        # Orca announces itself once its initialization is done; before that
+        # it may not yet follow the desktop's focus.
+        if any(record["kind"] == "speech" for record in records):
             return {"status": "passed", "offset": SPEECH_LOG.stat().st_size}
         time.sleep(0.2)
-    raise ObservationError("Orca did not connect to speech-dispatcher")
+    raise ObservationError("Orca did not announce that it started")
 
 
 # Orca announces in bursts. A mark taken while it still speaks about the
