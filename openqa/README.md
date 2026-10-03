@@ -22,9 +22,9 @@ a real regression and fails the gate.
 | `applications-0` … `applications-3` | BIOS | every graphical desktop entry of the live ISO, split in four shards |
 | `live` | BIOS | live session only; local use, not part of the gate |
 
-The installed-system modules check SDDM login, system health, security posture
-(reported, not blocking) and the installed applications listed under
-`critical` in the policy. GRUB is not tested on its own: if it is broken,
+The installed-system modules check SDDM login, the lock screen and an
+authorization prompt with Orca, system health, security posture (reported, not
+blocking) and the installed applications listed under `critical` in the policy. GRUB is not tested on its own: if it is broken,
 nothing boots and the first module times out.
 
 Both the live desktop and the installed system have to be Wayland sessions; an
@@ -76,8 +76,9 @@ The same smoke test runs on the live ISO and on the installed system
 2. wait for a window owned by the launched process tree;
 3. find at least one useful accessible object: a named control, text, an action
    or a value;
-4. send one normal shortcut, `Alt+F4` by default;
-5. confirm the outcome the entry's contract declares.
+4. wait for Orca to have spoken since the launch (see [Orca](#orca));
+5. send one normal shortcut, `Alt+F4` by default;
+6. confirm the outcome the entry's contract declares.
 
 The default contract requires the window and the process to end, with exit
 status zero. A resident service (`shared-window`) only has to close the window
@@ -186,7 +187,30 @@ python3 /tmp/openqa-atspi-probe.py dump-widgets \
   --state /tmp/openqa-atspi-baseline.json --timeout 30
 ```
 
-## Task tests and Orca (opt-in)
+## Orca
+
+Orca runs through every desktop part of a plan: it is started after the live
+wizard and again after the installed system's login. Each tested program, each
+installer page, the lock screen and the authorization prompt has to make it
+speak. What it says is not judged; only that it spoke and speech-dispatcher
+accepted the speech.
+
+Orca 50 has no test hook, so `data/orca_probe.py` listens where Orca speaks: a
+proxy between Orca and speech-dispatcher records every utterance (`SPEAK`,
+`CHAR`, `KEY`) and every error speech-dispatcher answers. A check looks only at
+what was said after a mark taken once Orca had fallen silent, so the previous
+window's announcement never counts for the next one. Audible output and braille
+are not observed.
+
+On the installed system `tests/installed_reader.pm` locks the session and
+unlocks it with the password typed at the lock screen, then asks polkit for an
+administrator authorization on behalf of the graphical session and dismisses
+the agent's dialog with Escape. Orca has to speak on both screens.
+
+The SDDM greeter is not covered: its QML greeter publishes no accessibility
+tree, so there is nothing for Orca to read there.
+
+## Task tests (opt-in)
 
 With `BIGLINUX_DEEP_APPLICATION_TESTS=1` the installed system also runs
 `tests/nonvisual_tasks.pm` and the extended Brave check:
@@ -196,13 +220,8 @@ With `BIGLINUX_DEEP_APPLICATION_TESTS=1` the installed system also runs
 - **Dolphin:** renames a file.
 - **Brave:** operates a local fixture by keyboard.
 
-Each task also checks what Orca said about it. `data/orca_probe.py` starts an
-instrumented Orca with `--replace`. Its speech log comes through the upstream
-`SetLogFileForTesting(s,s)->b` D-Bus method, which exists only when Orca is
-started with `ORCA_TEST_RPC_SECRET`. The secret stays in that process's
-environment. If the method is missing, the task is blocked and the report says
-why. This proves what Orca's speech presenter produced, not audible speech or
-braille output.
+Each task also requires Orca to have said its result, such as the new file
+name.
 
 These tests close their windows with `atspi->terminate_window`, which escalates
 from the AT-SPI close action through shortcuts to a signal. That cleanup is
@@ -235,10 +254,10 @@ integration test (`integration/accessible_smoke.py`), which CI runs under Xvfb.
 
 ## Known limits
 
-The gate does not certify the system for screen-reader users. It does not test
-Orca in the live installer, the SDDM greeter, unlocking, authorization prompts,
-error recovery or audible output. The login module only proves that
-authentication and the session work. The boot, login and installer modules
+The gate does not certify the system for screen-reader users. It proves that
+Orca speaks in every tested program and system screen, not that what it says is
+right or enough to work with. It does not test Orca on the SDDM greeter, error
+recovery, audible output or braille. The boot, login and installer modules
 target the KDE Plasma and SDDM profiles; the application smoke test reads only
 the desktop entries and is not tied to KDE. Testing with blind users is still
 needed.
