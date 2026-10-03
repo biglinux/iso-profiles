@@ -232,8 +232,12 @@ contracts:
   - desktop_id: libreoffice-base.desktop
     kind: shared-window
     close_key: alt-f4
-    content_timeout: 20
-    reason: LibreOffice Base opens a Database Wizard; close that exact window while allowing the shared soffice service to outlive it
+    content_timeout: 45
+    reason: >-
+      LibreOffice Base opens a Database Wizard; close that exact window while
+      allowing the shared soffice service to outlive it. It runs right after
+      GIMP quits, and on CI runners the compositor then freezes for about 25 s
+      before the wizard shows
   - desktop_id: libreoffice-calc.desktop
     kind: shared-window
     close_key: ctrl-q
