@@ -366,7 +366,7 @@ sub launch_smoke_desktop_entry {
     if (defined $speech_since) {
         die 'invalid speech offset' unless $speech_since =~ /\A[0-9]+\z/;
         push @command, ('--speech-since', $speech_since);
-        $speech_budget = 15;
+        $speech_budget = 25;
     }
     my $probe_command = join ' ', map { shell_quote($_) } @command;
     my $total_timeout = $open_timeout + $settle + $content_timeout

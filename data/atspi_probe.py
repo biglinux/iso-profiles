@@ -2112,9 +2112,9 @@ def _observe_exact_window_close(
     }
 
 
-# Orca speaks within a second or two of a window becoming active; a busy
-# guest needs the rest.
-SPEECH_TIMEOUT = 10
+# Orca speaks within a second or two of a window becoming active; a busy CI
+# runner once needed more than ten.
+SPEECH_TIMEOUT = 20
 
 
 def orca_spoke(since: int, timeout: float) -> dict[str, Any]:
