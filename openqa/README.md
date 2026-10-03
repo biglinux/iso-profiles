@@ -111,6 +111,48 @@ Optional job variables, for a plan's `settings`:
 | `BIGLINUX_APPLICATION_CLOSE_KEY` | `alt-f4` | `alt-f4`, `ctrl-q`, `esc` |
 | `BIGLINUX_DEEP_APPLICATION_TESTS` | 0 | 1 enables the task tests below |
 
+## Adding or removing a program
+
+Every graphical desktop entry the ISO ships is tested; there is no list of
+programs to include. Adding a package to a profile adds its entries to the
+next run. `application-policy.yaml` only records the exceptions, keyed by the
+desktop ID: the path under `/usr/share/applications`, such as
+`bigcontrolcenter/hplip.desktop`.
+
+A program that opens and closes like an ordinary window needs no entry. Give it
+one under `contracts` when it does something else, and say why in `reason`:
+
+```yaml
+  - desktop_id: bigcontrolcenter/hplip.desktop
+    kind: shared-window          # standard (default), shared-window or transient-dialog
+    dismiss_auxiliary: true      # a dialog opens over the main window first
+    reason: With no printer configured, HP Device Manager raises a dialog over its window
+```
+
+| Field | Use it when the program |
+|---|---|
+| `kind: shared-window` | keeps a service running after its window closes |
+| `kind: transient-dialog` | is a dialog that exits on cancel; list its codes in `allowed_exit_codes` |
+| `close_key` | quits with `ctrl-q` or `esc` rather than `alt-f4` |
+| `dismiss_auxiliary` | shows a welcome or first-run dialog before its main window |
+| `content_timeout`, `close_timeout` | needs more than 10 s to fill its window or 15 s to quit (1–120) |
+| `requires` | needs `alsa-card`, `video-device`, `uefi-variables` or `native-x11` |
+
+To test a program on the installed system as well, add it to `critical` with a
+short `functional_test` label (letters, digits, `.`, `_` or `-`).
+
+To stop testing a program, add it to `exclude` with a `reason` that says why it
+cannot be tested or what has to be fixed first, and keep the list in
+alphabetical order. An excluded entry must not also appear under `contracts` or
+`critical`; remove it from there. The program stays in the ISO and the report
+lists it as excluded with its reason.
+
+Before pushing, `openqa/production/check-harness.sh` validates the policy and
+rejects duplicates and overlaps. To watch one program without running a whole
+shard, add a plan with the `applications` schedule to a local copy of
+`release-gate.yaml`, set `BIGLINUX_APPLICATION_FILTER` to part of its desktop
+ID, and run it as shown in [Running a plan](#running-a-plan).
+
 ## Selectors and keyboard
 
 Selectors combine PID, role and the localized accessible name. An ambiguous
