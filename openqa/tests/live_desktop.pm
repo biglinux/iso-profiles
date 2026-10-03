@@ -6,6 +6,7 @@ use Mojo::Base 'basetest';
 use utf8;
 use testapi;
 use atspi;
+use orca;
 use guest_shell qw(marker_format shell_quote);
 
 sub test_flags {
@@ -123,6 +124,7 @@ sub run {
     # A closed wizard alone is not a ready desktop. This also ensures that
     # the live-prefix plan observes the same transition as later modules.
     atspi->reset_baseline;
+    orca->start;
 }
 
 # Failure evidence is read-only and best effort; it never repairs a broken GUI

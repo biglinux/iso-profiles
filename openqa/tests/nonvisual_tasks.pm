@@ -2,6 +2,7 @@
 use Mojo::Base 'basetest';
 use testapi;
 use atspi;
+use orca;
 use Digest::SHA qw(sha256_hex);
 use JSON::PP qw(encode_json);
 use guest_shell qw(shell_quote);
@@ -28,19 +29,17 @@ sub condition_ok {
     die 'functional postcondition was not reached' unless defined $status && $status == 0;
 }
 
-sub reader {
-    my ($operation, $phrase) = @_;
-    my @args = ('python3', '/tmp/openqa-orca-probe.py', $operation,
-        '--state', "$root/reader.json", '--timeout', '10');
-    push @args, ('--phrase', $phrase) if defined $phrase;
-    my $status = atspi->run_command(join(' ', map { shell_quote($_) } @args)
-      . ' > ' . shell_quote("$root/reader-result.json"), 40);
-    unless (defined $status && $status == 0) {
-        # This is the small structured result, not the private transcript/token.
-        eval { atspi->upload_guest_file("$root/reader-result.json", 'orca-probe-error.json') };
-        die "Orca observation '$operation' failed or is unsupported";
-    }
-    $current->{screen_reader} = 'presenter-passed' if $current && $operation eq 'check';
+my $speech;
+
+sub mark_speech {
+    $speech = orca->mark;
+}
+
+# The task's result has to be among what Orca said after the mark.
+sub orca_said {
+    my ($phrase) = @_;
+    orca->check($speech, 'the task', phrase => $phrase);
+    $current->{screen_reader} = 'spoke' if $current;
 }
 
 sub focus_role {
@@ -87,7 +86,7 @@ sub kate {
     send_key 'ctrl-o';
     atspi->focus_widget('text|entry', ['Name', 'Nome', 'File name', 'Nome do arquivo'], 30);
     replace_focused_text("$root/proof.txt");
-    reader('mark');
+    mark_speech();
     select_console 'sut';
     send_key 'ret';
     focus_role('text|entry|document text');
@@ -95,7 +94,7 @@ sub kate {
     send_key 'ctrl-home';
     send_key 'shift-end';
     $current->{functional} = 'passed';
-    reader('check', "BigLinux nonvisual proof $nonce");
+    orca_said("BigLinux nonvisual proof $nonce");
 }
 
 sub konsole {
@@ -105,13 +104,13 @@ sub konsole {
     select_console 'sut';
     type_string 'printf ' . shell_quote('terminal-result-' . $nonce . '\n')
       . ' | tee ' . shell_quote("$root/terminal.txt");
-    reader('mark');
+    mark_speech();
     select_console 'sut';
     send_key 'ret';
     condition_ok('grep -Fxq -- ' . shell_quote("terminal-result-$nonce")
       . ' ' . shell_quote("$root/terminal.txt"));
     $current->{functional} = 'passed';
-    reader('check', "terminal-result-$nonce");
+    orca_said("terminal-result-$nonce");
 }
 
 sub dolphin {
@@ -123,23 +122,23 @@ sub dolphin {
     type_string "source-$nonce";
     send_key 'f2';
     replace_focused_text("renamed-$nonce.txt");
-    reader('mark');
+    mark_speech();
     select_console 'sut';
     send_key 'ret';
     condition_ok('test -f ' . shell_quote("$root/renamed-$nonce.txt")
       . ' && test ! -e ' . shell_quote("$root/source-$nonce.txt"));
     $current->{functional} = 'passed';
-    reader('check', "renamed-$nonce");
+    orca_said("renamed-$nonce");
 }
 
 sub brave {
-    reader('mark');
+    mark_speech();
     atspi->activate_widget('push button|button', ['Confirm test'], 60);
     my $expected = "Operation completed $nonce";
     # A changed accessible live region is the page's functional postcondition.
     atspi->assert_widget('label|text|paragraph|static|status bar', [$expected], 20);
     $current->{functional} = 'passed';
-    reader('check', $expected);
+    orca_said($expected);
 }
 
 sub save_results {
@@ -147,7 +146,7 @@ sub save_results {
         schema_version => 1,
         scope => 'four installed application tasks; not whole-desktop certification',
         input => 'keyboard', screenshots => 'diagnostic-only',
-        screen_reader => 'Orca upstream speech presenter (instrumented)',
+        screen_reader => 'Orca speech, observed at speech-dispatcher',
         audible_output => 'not-tested', native_reader_activation => 'not-tested',
         greeter_reader => 'not-tested', braille_device => 'not-tested',
         cases => \@results,
@@ -163,8 +162,6 @@ sub run {
     $root = "/tmp/openqa-nonvisual-$nonce";
     command_ok('umask 077; mkdir -- ' . shell_quote($root));
     command_ok('curl --fail --silent --show-error --max-time 30 '
-      . shell_quote(data_url('orca_probe.py')) . ' -o /tmp/openqa-orca-probe.py');
-    command_ok('curl --fail --silent --show-error --max-time 30 '
       . shell_quote(data_url('nonvisual-fixture.html')) . ' -o ' . shell_quote("$root/fixture.html"));
     # Fixture preparation is not the action under test.
     command_ok('touch -- ' . shell_quote("$root/source-$nonce.txt"));
@@ -177,7 +174,6 @@ sub run {
           . '--user-data-dir=' . shell_quote("$root/browser") . ' '
           . shell_quote("file://$root/fixture.html#$nonce"), \&brave],
     );
-    my $reader_started = 0;
     for my $case (@cases) {
         my ($name, $command, $exercise) = @$case;
         my $record = {name => $name, status => 'failed', functional => 'not-confirmed',
@@ -193,7 +189,6 @@ sub run {
             save_results();
             next;
         }
-        unless ($reader_started) { reader('start'); $reader_started = 1; }
         $current = $record;
         my $ok = eval {
             my (undef, $opened, undef, undef, $path, $launch_pid) =
@@ -220,13 +215,11 @@ sub run {
         record_info $name, encode_json($record);
     }
     $current = undef;
-    reader('stop') if $reader_started;
     die 'one or more nonvisual tasks failed; see nonvisual-contracts.json'
       if grep { $_->{status} eq 'failed' } @results;
 }
 
 sub post_fail_hook {
-    eval { reader('stop') } if defined $root;
     eval { save_results() };
     eval { select_console 'sut'; save_screenshot; };
 }

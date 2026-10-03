@@ -4,6 +4,7 @@ package application_smoke;
 use Mojo::Base -strict;
 use testapi;
 use atspi;
+use orca;
 use JSON::PP ();
 use Time::HiRes qw(time sleep);
 
@@ -195,6 +196,7 @@ sub check {
           ? 'window-close' : 'process-exit';
         my ($baseline, $opened, $method, $seconds, $path, $launch_pid);
         my $closed;
+        my $speech_since = orca->active ? orca->mark : undef;
 
         if (!$contract->{dismiss_auxiliary}) {
             # Keep one AT-SPI client alive through discovery, stabilization and
@@ -207,7 +209,7 @@ sub check {
             ($baseline, $opened, $method, $seconds, $path, $launch_pid) =
               atspi->launch_smoke_desktop_entry(
                   $entry, $timeout, $settle, $content_timeout,
-                  $close_timeout, $close_key, $close_mode,
+                  $close_timeout, $close_key, $close_mode, $speech_since,
               );
             $closed = $opened;
         }
@@ -244,11 +246,14 @@ sub check {
         $metric->{memory_snapshot} = $opened->{memory};
 
         if (!$contract->{dismiss_auxiliary}) {
+            die $opened->{error} if ($opened->{phase} // '') eq 'speech';
             die 'window did not expose accessible content: ' . ($opened->{error} // '')
               unless ($opened->{coverage} // '') eq 'accessible-content-present'
               && ref $opened->{evidence} eq 'HASH';
             $metric->{accessibility_status} = 'available';
             $metric->{accessible_content} = $opened->{evidence};
+            $metric->{screen_reader_status} = 'spoke'
+              if ($opened->{screen_reader} // '') eq 'spoke';
             die 'application close observation failed: ' . ($opened->{error} // '')
               unless ($opened->{status} // '') eq 'passed';
         }
@@ -267,6 +272,10 @@ sub check {
               && ($content->{coverage} // '') eq 'accessible-content-present';
             $metric->{accessibility_status} = 'available';
             $metric->{accessible_content} = $content->{evidence};
+            if (defined $speech_since) {
+                orca->check($speech_since, 'the window');
+                $metric->{screen_reader_status} = 'spoke';
+            }
             if (defined $content->{pid} && $content->{pid} =~ /\A[0-9]+\z/ && $content->{pid} > 1) {
                 $pid = 0 + $content->{pid};
                 $metric->{window_pid} = $pid;

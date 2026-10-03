@@ -377,6 +377,32 @@ class PersistentSmokeSessionTest(unittest.TestCase):
         ready.assert_not_called()
 
 
+    def smoke_with_speech(self, spoken):
+        window, record = self.target()
+        with mock.patch.object(probe, "_window_records", return_value=[(window, record)]), \
+             mock.patch.object(probe, "_owned_process_scope", return_value={42}), \
+             mock.patch.object(probe, "_process_scope_exited", return_value=False), \
+             mock.patch.object(probe, "_emit_ready") as ready, \
+             mock.patch.object(probe, "orca_spoke", return_value=spoken) as asked, \
+             mock.patch.object(probe, "mem_available_mib", return_value=100.0), \
+             mock.patch.object(probe, "process_memory", return_value={}):
+            result = probe.application_smoke_session(
+                self.state, 0.2, 42, 42, 0, 0.2, 0.1, "process-exit", speech_since=120
+            )
+        asked.assert_called_once_with(120, probe.SPEECH_TIMEOUT)
+        return result, ready
+
+    def test_orca_has_to_speak_before_the_close_shortcut(self):
+        result, ready = self.smoke_with_speech({"status": "failed", "error": "Orca said nothing"})
+        self.assertEqual(result["phase"], "speech")
+        self.assertIn("Orca said nothing", result["error"])
+        ready.assert_not_called()
+
+    def test_ready_records_that_orca_spoke(self):
+        _result, ready = self.smoke_with_speech({"status": "passed"})
+        self.assertEqual(ready.call_args.args[0]["screen_reader"], "spoke")
+
+
 class IsolatedCloseObserverTest(unittest.TestCase):
     def setUp(self):
         self.state = Path("/tmp/state.json")

@@ -539,6 +539,9 @@ def validate_shards(
         if item["status"] == "skipped"
     )
     passed_total = sum(item["status"] == "passed" for item in seen_launchables.values())
+    spoke_total = sum(
+        item.get("screen_reader_status") == "spoke" for item in seen_launchables.values()
+    )
     tested_total = sum(item["status"] != "skipped" for item in seen_launchables.values())
     critical_tested = sorted(
         set(critical_ids)
@@ -592,6 +595,7 @@ def validate_shards(
             ),
             "tested_total": tested_total,
             "passed_total": passed_total,
+            "orca_spoke_total": spoke_total,
             "failed_total": len(failed_ids),
             "not_applicable_total": len(runtime_not_applicable),
             "contract_counts": contract_counts,
@@ -643,6 +647,7 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
         f"- Invalid: {coverage.get('invalid_total', 0)}",
         f"- Tested: {coverage.get('tested_total', 0)}",
         f"- Passed: {coverage.get('passed_total', 0)}",
+        f"- Orca spoke: {coverage.get('orca_spoke_total', 0)}",
         f"- Failed: {coverage.get('failed_total', 0)}",
         f"- Runtime not applicable: {coverage.get('not_applicable_total', 0)}",
         f"- Not installed (not applicable): {len(summary.get('not_installed_desktop_ids', []))}",
@@ -738,6 +743,7 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
         f"launchable: {coverage.get('launchable_total', 0)}; "
         f"tested: {coverage.get('tested_total', 0)}; "
         f"passed: {coverage.get('passed_total', 0)}; "
+        f"Orca spoke: {coverage.get('orca_spoke_total', 0)}; "
         f"failed: {coverage.get('failed_total', 0)}; "
         f"not applicable: {coverage.get('not_applicable_total', 0)}</p>"
         f"<p>Contracts: standard={coverage.get('contract_counts', {}).get('standard', 0)}; "

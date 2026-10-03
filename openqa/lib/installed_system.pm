@@ -6,6 +6,7 @@ use Mojo::Base -strict;
 use testapi;
 use atspi;
 use biglinux;
+use orca;
 use guest_shell qw(marker_format);
 
 sub test_password {
@@ -152,6 +153,7 @@ sub assert_desktop {
 
     record_info 'Installed desktop',
       'AT-SPI is active, plasmashell is running and the user owns an active Wayland session';
+    orca->start;
 }
 
 

@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Observe Orca's real speech presenter; never manufacture expected speech.
+"""Observe what Orca says, through the speech-dispatcher protocol.
 
-Uses the upstream token-gated SetLogFileForTesting API after introspection.
-An unsupported Orca is an inconclusive, blocking result, not an AT-SPI-only pass.
-This adapter measures presenter output, NOT audible output or native activation.
+Orca speaks through speech-dispatcher over SSIP, a line-based text protocol,
+and has no test hook of its own. A proxy between the two records every SPEAK,
+CHAR and KEY Orca sends and every error speech-dispatcher answers. That proves
+Orca produced speech and speech-dispatcher accepted it; audible output and
+braille are not observed.
+
+Operations: start (proxy, then Orca pointed at it), offset (mark before an
+action), check (speech since a mark), stop.
 """
 from __future__ import annotations
 
@@ -13,17 +18,25 @@ import json
 import os
 from pathlib import Path
 import re
-import secrets
-import signal
+import socket
 import subprocess
-import tempfile
+import threading
 import time
 import unicodedata
-import xml.etree.ElementTree as ET
 
-SERVICE = "org.gnome.Orca1.Service"
-ROOT = "/org/gnome/Orca1"
-MAX_LOG_BYTES = 262144
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+DIRECTORY = RUNTIME / "openqa-orca"
+PROXY_SOCKET = DIRECTORY / "proxy.sock"
+SPEECH_LOG = DIRECTORY / "speech.jsonl"
+SPEECHD_SOCKET = RUNTIME / "speech-dispatcher" / "speechd.sock"
+UNITS = ("openqa-orca", "openqa-speech-proxy")
+MAX_LOG_BYTES = 1 << 20
+# The marker openqa/lib/atspi.pm reads a probe's JSON answer from.
+RESULT_MARKER = "__OPENQA_ATSPI__"
+# Orca sends SSML; only the words matter here.
+SSML_TAG = re.compile(r"<[^>]*>")
+# SSIP replies: 2xx success, 3xx server error, 4xx client error, 5xx syntax.
+ERROR_REPLY = re.compile(rb"^([345][0-9][0-9])[ -](.*)$")
 
 
 class ObservationError(RuntimeError):
@@ -41,197 +54,216 @@ def contains_phrase(text: str, phrase: str) -> bool:
     return bool(wanted) and f" {wanted} " in f" {normalized(text)} "
 
 
-def presented_text(lines: bytes) -> str:
-    """An interrupt invalidates earlier queued speech in this observation."""
-    texts = []
-    # A writer may still be appending the final record. Only consume full lines.
-    for line in lines.split(b"\n")[:-1]:
-        item = json.loads(line)
-        if not isinstance(item, dict):
-            raise ObservationError("Orca emitted a non-object record")
-        if item.get("kind") == "interrupt":
-            texts.clear()
-        elif item.get("kind") == "speech":
-            text = item.get("text")
-            if not isinstance(text, str):
-                raise ObservationError("Orca speech record has no string text")
-            texts.append(text)
-    return " ".join(texts)
+class ClientStream:
+    """Turn the client side of an SSIP connection into speech records."""
 
+    def __init__(self) -> None:
+        self.pending = b""
+        self.text: list[str] | None = None
 
-def process_start(pid: int) -> str:
-    # comm can contain spaces and parentheses; the fields follow the last ')'.
-    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-
-
-def save_state(path: Path, value: dict) -> None:
-    # Private and atomic; never follow a pre-existing final-path symlink.
-    fd, temporary = tempfile.mkstemp(prefix=".orca-state-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(value, stream)
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-
-
-def read_state(path: Path) -> dict:
-    if path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
-        raise ObservationError("Orca state must be private and owned by the test user")
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise ObservationError("invalid Orca state")
-    return value
-
-
-def find_recorder(introspect) -> tuple[str, str]:
-    queue = [ROOT]
-    visited = set()
-    while queue and len(visited) < 80:
-        path = queue.pop(0)
-        if path in visited:
-            continue
-        visited.add(path)
-        node = ET.fromstring(introspect(path))
-        for interface in node.findall("interface"):
-            name = interface.get("name", "")
-            if name.rsplit(".", 1)[-1].replace("_", "").casefold() != "speechpresenter":
+    def feed(self, data: bytes) -> list[dict[str, str]]:
+        self.pending += data
+        records = []
+        while b"\r\n" in self.pending:
+            line, self.pending = self.pending.split(b"\r\n", 1)
+            decoded = line.decode("utf-8", "replace")
+            if self.text is not None:
+                if decoded == ".":
+                    text = SSML_TAG.sub("", "\n".join(self.text))
+                    records.append({"kind": "speech", "text": text})
+                    self.text = None
+                else:
+                    # A data line starting with a dot is sent with it doubled.
+                    self.text.append(decoded[1:] if decoded.startswith("..") else decoded)
                 continue
-            method = interface.find("method[@name='SetLogFileForTesting']")
-            if method is not None:
-                incoming = [a.get("type") for a in method.findall("arg") if a.get("direction", "in") == "in"]
-                outgoing = [a.get("type") for a in method.findall("arg") if a.get("direction") == "out"]
-                if incoming != ["s", "s"] or outgoing != ["b"]:
-                    raise ObservationError("unsupported Orca recorder signature")
-                return path, name
-        for child in node.findall("node"):
-            name = child.get("name", "")
-            if not re.fullmatch(r"[A-Za-z0-9_]+", name):
-                raise ObservationError("invalid introspection child path")
-            queue.append(path + "/" + name)
-    raise ObservationError("Orca lacks token-gated speech recording; upgrade/validate its adapter")
+            command, _, argument = decoded.partition(" ")
+            if command.upper() == "SPEAK":
+                self.text = []
+            elif command.upper() in {"CHAR", "KEY"}:
+                records.append({"kind": "speech", "text": argument})
+        return records
 
 
-def start(path: Path) -> dict:
-    import gi
-    gi.require_version("Gio", "2.0")
-    from gi.repository import Gio, GLib
+class ServerStream:
+    """Turn the server side of an SSIP connection into error records."""
 
-    if path.exists():
-        raise ObservationError("an Orca observation session already exists; stop it first")
-    runtime = Path(os.environ["XDG_RUNTIME_DIR"])
-    private = Path(tempfile.mkdtemp(prefix="openqa-orca-", dir=runtime))
-    speech = private / "speech.jsonl"
-    token = secrets.token_hex(32)
-    environment = dict(os.environ, ORCA_TEST_RPC_SECRET=token)
-    with (private / "stderr.log").open("wb") as log:
-        process = subprocess.Popen(["orca", "--replace"], env=environment,
-                                   stdout=log, stderr=log, start_new_session=True)
-    state = {"pid": process.pid, "start": process_start(process.pid),
-             "speech": str(speech), "instrumented": True}
-    save_state(path, state)  # Ensure stop can clean up even after a failed attach.
-    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    def __init__(self) -> None:
+        self.pending = b""
 
-    def call(obj, interface, method, arguments=None):
-        return bus.call_sync(SERVICE, obj, interface, method, arguments, None,
-                             Gio.DBusCallFlags.NONE, 2000, None).unpack()
+    def feed(self, data: bytes) -> list[dict[str, str]]:
+        self.pending += data
+        records = []
+        while b"\r\n" in self.pending:
+            line, self.pending = self.pending.split(b"\r\n", 1)
+            match = ERROR_REPLY.match(line)
+            if match:
+                records.append({"kind": "error", "reply": line.decode("utf-8", "replace")})
+        return records
 
-    deadline = time.monotonic() + 20
-    last_error = "Orca did not publish its recorder"
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise ObservationError("Orca exited before exposing its recorder")
+
+def records_since(offset: int) -> list[dict[str, str]]:
+    with SPEECH_LOG.open("rb") as stream:
+        stream.seek(offset)
+        raw = stream.read(MAX_LOG_BYTES)
+    # The proxy may still be writing the last line.
+    return [json.loads(line) for line in raw.split(b"\n")[:-1] if line]
+
+
+def _connect_upstream() -> socket.socket:
+    for attempt in range(2):
+        upstream = socket.socket(socket.AF_UNIX)
         try:
-            obj, interface = find_recorder(lambda p: call(p, "org.freedesktop.DBus.Introspectable", "Introspect")[0])
-            accepted = call(obj, interface, "SetLogFileForTesting", GLib.Variant("(ss)", (token, str(speech))))
-            if accepted != (True,):
-                raise ObservationError("Orca rejected presenter recording")
-            info = speech.stat()
-            state.update(inode=info.st_ino, device=info.st_dev, offset=info.st_size)
-            save_state(path, state)
-            return {"status": "passed", "coverage": "presenter-capture-ready", "instrumented": True}
-        except (GLib.Error, ObservationError, OSError) as error:
-            last_error = str(error)
-            time.sleep(0.25)
-    raise ObservationError(last_error)
+            upstream.connect(str(SPEECHD_SOCKET))
+            return upstream
+        except OSError:
+            upstream.close()
+            if attempt:
+                raise
+            # What the speech-dispatcher client library does when no server runs.
+            subprocess.run(["speech-dispatcher", "--spawn"], check=False, timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    raise AssertionError("unreachable")
 
 
-def mark(path: Path) -> dict:
-    state = read_state(path)
-    speech = Path(state["speech"])
-    info = speech.stat()
-    if process_start(state["pid"]) != state["start"]:
-        raise ObservationError("Orca process identity changed")
-    if (info.st_dev, info.st_ino) != (state["device"], state["inode"]):
-        raise ObservationError("Orca speech stream was replaced")
-    state["offset"] = info.st_size
-    with speech.open("rb") as stream:
-        if info.st_size:
-            stream.seek(info.st_size - 1)
-        state["skip_partial"] = bool(info.st_size and stream.read(1) != b"\n")
-    save_state(path, state)
-    return {"status": "passed", "offset": info.st_size}
+def proxy() -> None:
+    lock = threading.Lock()
+    log = SPEECH_LOG.open("a", encoding="utf-8")
 
+    def write(records: list[dict[str, str]]) -> None:
+        with lock:
+            for record in records:
+                log.write(json.dumps(record, ensure_ascii=False) + "\n")
+            log.flush()
 
-def check(path: Path, phrase: str, timeout: float) -> dict:
-    if not normalized(phrase):
-        raise ObservationError("a nonempty expected phrase is required")
-    state = read_state(path)
-    deadline = time.monotonic() + timeout
-    speech = Path(state["speech"])
-    last_size = -1
-    changed = time.monotonic()
+    def pump(source: socket.socket, target: socket.socket, stream: ClientStream | ServerStream) -> None:
+        try:
+            while data := source.recv(65536):
+                target.sendall(data)
+                write(stream.feed(data))
+        except OSError:
+            pass
+        finally:
+            for side in (source, target):
+                try:
+                    side.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    PROXY_SOCKET.unlink(missing_ok=True)
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(PROXY_SOCKET))
+    os.chmod(PROXY_SOCKET, 0o600)
+    listener.listen(8)
     while True:
-        if process_start(state["pid"]) != state["start"]:
-            raise ObservationError("Orca process identity changed")
-        with speech.open("rb") as stream:
-            info = os.fstat(stream.fileno())
-            if (info.st_dev, info.st_ino) != (state["device"], state["inode"]) or info.st_size < state["offset"]:
-                raise ObservationError("Orca speech stream was replaced or truncated")
-            stream.seek(state["offset"])
-            raw = stream.read(MAX_LOG_BYTES + 1)
-        if len(raw) > MAX_LOG_BYTES:
-            raise ObservationError("Orca speech observation exceeded its byte budget")
-        if len(raw) != last_size:
-            last_size, changed = len(raw), time.monotonic()
-        if state.get("skip_partial"):
-            raw = raw.partition(b"\n")[2]
-        if contains_phrase(presented_text(raw), phrase) and time.monotonic() - changed >= 0.3:
-            return {"status": "passed", "coverage": "speech-presenter", "expected": phrase,
-                    "audible_output": "not-tested", "native_activation": "not-tested"}
-        if time.monotonic() >= deadline:
-            return {"status": "failed", "error": "expected information was not presented by Orca"}
-        time.sleep(0.1)
+        client, _address = listener.accept()
+        try:
+            upstream = _connect_upstream()
+        except OSError as error:
+            write([{"kind": "error", "reply": f"speech-dispatcher unreachable: {error}"}])
+            client.close()
+            continue
+        write([{"kind": "client"}])
+        threading.Thread(target=pump, args=(client, upstream, ClientStream()), daemon=True).start()
+        threading.Thread(target=pump, args=(upstream, client, ServerStream()), daemon=True).start()
 
 
-def stop(path: Path) -> dict:
-    if not path.exists():
-        return {"status": "passed"}
-    state = read_state(path)
-    try:
-        if process_start(state["pid"]) == state["start"]:
-            os.kill(state["pid"], signal.SIGTERM)
-    except FileNotFoundError:
-        pass
-    # Keep logs inside the disposable guest, not in uploaded password artifacts.
-    path.unlink()
+def _systemd_run(unit: str, *command: str) -> None:
+    subprocess.run(["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}", *command],
+                   check=True, timeout=15)
+
+
+def stop() -> dict:
+    subprocess.run(["systemctl", "--user", "stop", *UNITS], check=False, timeout=15,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {"status": "passed"}
+
+
+def start(timeout: float) -> dict:
+    stop()
+    DIRECTORY.mkdir(mode=0o700, exist_ok=True)
+    SPEECH_LOG.unlink(missing_ok=True)
+    SPEECH_LOG.touch(mode=0o600)
+    _systemd_run(UNITS[1], "python3", str(Path(__file__).resolve()), "proxy")
+    deadline = time.monotonic() + timeout
+    while not PROXY_SOCKET.exists():
+        if time.monotonic() > deadline:
+            raise ObservationError("the speech proxy did not start")
+        time.sleep(0.1)
+    # The user manager's environment is the session's: Orca reaches the same
+    # display and accessibility bus the desktop applications use.
+    _systemd_run(UNITS[0], f"--setenv=SPEECHD_ADDRESS=unix_socket:{PROXY_SOCKET}",
+                 "orca", "--replace")
+    while time.monotonic() < deadline:
+        records = records_since(0)
+        errors = [record["reply"] for record in records if record["kind"] == "error"]
+        if errors:
+            raise ObservationError(f"speech-dispatcher refused Orca: {errors[0]}")
+        if any(record["kind"] == "client" for record in records):
+            return {"status": "passed", "offset": SPEECH_LOG.stat().st_size}
+        time.sleep(0.2)
+    raise ObservationError("Orca did not connect to speech-dispatcher")
+
+
+# Orca announces in bursts. A mark taken while it still speaks about the
+# previous window would count that speech for the next one.
+QUIET_SECONDS = 0.7
+
+
+def offset(timeout: float) -> dict:
+    deadline = time.monotonic() + timeout
+    size = SPEECH_LOG.stat().st_size
+    quiet_since = time.monotonic()
+    while time.monotonic() - quiet_since < QUIET_SECONDS:
+        if time.monotonic() > deadline:
+            raise ObservationError("Orca did not fall silent before the next action")
+        time.sleep(0.1)
+        current = SPEECH_LOG.stat().st_size
+        if current != size:
+            size, quiet_since = current, time.monotonic()
+    return {"status": "passed", "offset": size}
+
+
+def check(since: int, phrase: str, timeout: float) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        records = records_since(since)
+        errors = [record["reply"] for record in records if record["kind"] == "error"]
+        if errors:
+            return {"status": "failed", "error": f"speech-dispatcher refused Orca's speech: {errors[0]}"}
+        spoken = " ".join(record["text"] for record in records if record["kind"] == "speech")
+        if spoken.strip() and (not phrase or contains_phrase(spoken, phrase)):
+            return {"status": "passed", "coverage": "speech-dispatcher",
+                    "audible_output": "not-tested"}
+        if time.monotonic() >= deadline:
+            return {"status": "failed",
+                    "error": "Orca said nothing" if not spoken.strip()
+                    else "Orca did not say the expected information"}
+        time.sleep(0.1)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("start", "mark", "check", "stop"))
-    parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("operation", choices=("start", "offset", "check", "stop", "proxy"))
+    parser.add_argument("--since", type=int, default=0)
     parser.add_argument("--phrase", default="")
     parser.add_argument("--timeout", type=float, default=10)
     args = parser.parse_args()
+    if args.operation == "proxy":
+        proxy()
+        return 0
     try:
-        if not 0 <= args.timeout <= 120:
-            raise ObservationError("invalid timeout")
-        result = check(args.state, args.phrase, args.timeout) if args.operation == "check" else globals()[args.operation](args.state)
-    except (ObservationError, OSError, ValueError, KeyError, ImportError) as error:
+        if not 0 <= args.timeout <= 120 or args.since < 0:
+            raise ObservationError("invalid timeout or offset")
+        if args.operation == "start":
+            result = start(args.timeout)
+        elif args.operation == "check":
+            result = check(args.since, args.phrase, args.timeout)
+        else:
+            result = offset(args.timeout) if args.operation == "offset" else stop()
+    except (ObservationError, OSError, ValueError, subprocess.SubprocessError) as error:
         result = {"status": "inconclusive", "error": str(error)}
-    print(json.dumps(result, ensure_ascii=False))
+    encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode().hex()
+    print(f"{RESULT_MARKER}{encoded}", flush=True)
     return 0 if result["status"] == "passed" else 1
 
 

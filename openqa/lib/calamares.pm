@@ -11,6 +11,7 @@ use JSON::PP qw(encode_json);
 use testapi;
 use biglinux;
 use atspi;
+use orca;
 
 # Buttons are located by their accessibility label, so the lists below are the
 # only place a renamed or newly translated control has to be taught. A failure
@@ -28,6 +29,15 @@ my $launch_pid;
 my $application_pid;
 my $handoff_token;
 my $application_index;
+# Orca has to speak for every installer page: speech is checked after this
+# mark, which moves on once a page has spoken.
+my $speech_mark;
+my $spoken_page;
+
+sub mark_speech {
+    $speech_mark = orca->active ? orca->mark : undef;
+    $spoken_page = undef;
+}
 
 sub set_launch_scope {
     my ($class, $pid, $token) = @_;
@@ -168,6 +178,12 @@ sub assert_page {
     die "the installer did not show the '$page' page: "
       . ($found->{error} // 'unknown reason')
       unless ref $found eq 'HASH' && $found->{status} eq 'passed';
+    # advance() asserts the current page again; it already spoke.
+    if (defined $speech_mark && ($spoken_page // '') ne $page) {
+        orca->check($speech_mark, "the installer's $page page");
+        $spoken_page = $page;
+        $speech_mark = orca->mark;
+    }
     return $found;
 }
 

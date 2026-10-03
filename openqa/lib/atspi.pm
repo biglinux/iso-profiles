@@ -18,6 +18,8 @@ my $supervisor_path = '/tmp/openqa-gui-supervisor.sh';
 my $user_launcher_path = '/tmp/openqa-gui-user-launch.sh';
 my $desktop_launcher_path = '/tmp/desktop_entry_launcher.py';
 my $process_handoff_path = '/tmp/openqa-process-handoff.py';
+# Next to the AT-SPI probe, which runs it to wait for Orca's speech.
+our $orca_probe_path = '/tmp/openqa-orca-probe.py';
 my $state_path = '/tmp/openqa-atspi-baseline.json';
 my $session_state_path = '/tmp/openqa-atspi-session-baseline.json';
 my $kernel_version;
@@ -80,6 +82,7 @@ sub install {
     my $user_launcher_url = data_url('gui_user_launch.sh');
     my $launcher_url = data_url('desktop_entry_launcher.py');
     my $process_handoff_url = data_url('process_handoff.py');
+    my $orca_probe_url = data_url('orca_probe.py');
 
     select_console 'user-virtio-terminal';
     my $command = join ' ',
@@ -88,7 +91,8 @@ sub install {
       'curl --fail --silent --show-error', shell_quote($user_launcher_url), '--output', shell_quote($user_launcher_path), '&&',
       'curl --fail --silent --show-error', shell_quote($launcher_url), '--output', shell_quote($desktop_launcher_path), '&&',
       'curl --fail --silent --show-error', shell_quote($process_handoff_url), '--output', shell_quote($process_handoff_path), '&&',
-      'chmod 755', shell_quote($probe_path), shell_quote($supervisor_path), shell_quote($user_launcher_path), shell_quote($desktop_launcher_path), shell_quote($process_handoff_path), '&&',
+      'curl --fail --silent --show-error', shell_quote($orca_probe_url), '--output', shell_quote($orca_probe_path), '&&',
+      'chmod 755', shell_quote($probe_path), shell_quote($supervisor_path), shell_quote($user_launcher_path), shell_quote($desktop_launcher_path), shell_quote($process_handoff_path), shell_quote($orca_probe_path), '&&',
       'printf ', shell_quote(marker_format($ready_marker) . '%s\\n'), ' "$(uname -r)"';
     type_string $command;
     send_key 'ret';
@@ -157,7 +161,13 @@ sub result {
         '--timeout', $timeout,
     );
     push @command, @arguments;
-    my $probe_command = join ' ', map { shell_quote($_) } @command;
+    return $class->guest_json(\@command, $timeout, "AT-SPI operation '$operation'");
+}
+
+# Runs a guest probe that prints one __OPENQA_ATSPI__ record and returns it.
+sub guest_json {
+    my ($class, $command, $timeout, $label) = @_;
+    my $probe_command = join ' ', map { shell_quote($_) } @$command;
     # One accessibility tree walk can take many seconds on a guest busy
     # installing, and the probe only checks its own deadline between walks. Two
     # seconds of headroom got the probe killed mid-answer during the
@@ -185,7 +195,7 @@ sub result {
         wait_serial '__OPENQA_ATSPI_RECOVERED__', no_regex => 1, timeout => 3;
     }
     select_console 'sut';
-    die "AT-SPI operation '$operation' returned no result" unless defined $serial;
+    die "$label returned no result" unless defined $serial;
 
     my ($hex) = $serial =~ /__OPENQA_ATSPI__([0-9a-f]+)/;
     unless (defined $hex) {
@@ -194,10 +204,10 @@ sub result {
         my $printed = $serial // '';
         $printed =~ s/\r//g;
         $printed = substr $printed, -600;
-        die "AT-SPI operation '$operation' returned no result; the guest printed: $printed";
+        die "$label returned no result; the guest printed: $printed";
     }
     my $result = eval { decode_json(pack 'H*', $hex) };
-    die "AT-SPI operation '$operation' returned invalid JSON: $@"
+    die "$label returned invalid JSON: $@"
       unless ref $result eq 'HASH';
     return $result;
 }
@@ -310,9 +320,11 @@ sub launch_desktop_entry {
     return $class->_launch_argv(\@argv, '', $timeout, 'process-tree', $sample_memory);
 }
 
+# With a $speech_since mark, the window also has to make Orca speak before
+# the close shortcut (orca.pm).
 sub launch_smoke_desktop_entry {
     my ($class, $entry, $open_timeout, $settle, $content_timeout,
-        $close_timeout, $close_key, $close_mode) = @_;
+        $close_timeout, $close_key, $close_mode, $speech_since) = @_;
     die 'desktop entry is not a mapping' unless ref $entry eq 'HASH';
     my $path = $entry->{path};
     die 'desktop entry has no absolute path'
@@ -349,9 +361,16 @@ sub launch_smoke_desktop_entry {
         '--close-timeout', $close_timeout,
         '--close-mode', $close_mode,
     );
+    # The probe's own wait for speech (SPEECH_TIMEOUT) and the observer's start.
+    my $speech_budget = 0;
+    if (defined $speech_since) {
+        die 'invalid speech offset' unless $speech_since =~ /\A[0-9]+\z/;
+        push @command, ('--speech-since', $speech_since);
+        $speech_budget = 15;
+    }
     my $probe_command = join ' ', map { shell_quote($_) } @command;
     my $total_timeout = $open_timeout + $settle + $content_timeout
-      + $close_timeout + $WALK_HEADROOM;
+      + $speech_budget + $close_timeout + $WALK_HEADROOM;
     my $shell_command = join ' ',
       'if command -v timeout >/dev/null 2>&1; then timeout --kill-after=2',
       shell_quote($total_timeout), $probe_command,
@@ -361,7 +380,8 @@ sub launch_smoke_desktop_entry {
     select_console 'user-virtio-terminal';
     type_string $shell_command;
     send_key 'ret';
-    my $ready_budget = $open_timeout + $settle + $content_timeout + $WALK_HEADROOM + 5;
+    my $ready_budget = $open_timeout + $settle + $content_timeout + $speech_budget
+      + $WALK_HEADROOM + 5;
     my $serial = wait_serial(
         qr/(?:__OPENQA_ATSPI_READY__([0-9a-f]+)|__OPENQA_ATSPI__([0-9a-f]+)\r?\n__OPENQA_ATSPI_DONE__)/,
         $ready_budget,

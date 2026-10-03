@@ -28,7 +28,7 @@ def load_nonvisual(root: Path) -> list[dict]:
                 if result.get("status") == "passed" and not (
                     result.get("functional") == "passed"
                     and result.get("accessibility") == "keyboard-path-passed"
-                    and result.get("screen_reader") == "presenter-passed"
+                    and result.get("screen_reader") == "spoke"
                 ):
                     result.update(status="inconclusive", error="aprovação sem todas as evidências")
                 if result.get("status") == "skipped" and result.get("skip_reason") != "not-installed":

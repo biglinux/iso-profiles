@@ -2112,6 +2112,24 @@ def _observe_exact_window_close(
     }
 
 
+# Orca speaks within a second or two of a window becoming active; a busy
+# guest needs the rest.
+SPEECH_TIMEOUT = 10
+
+
+def orca_spoke(since: int, timeout: float) -> dict[str, Any]:
+    """Ask the Orca observer whether Orca spoke after a speech-log offset."""
+    command = [sys.executable, str(Path(__file__).with_name("openqa-orca-probe.py")),
+               "check", "--since", str(since), "--timeout", str(timeout)]
+    try:
+        completed = subprocess.run(command, capture_output=True, check=False, text=True,
+                                   timeout=timeout + 5)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"status": "inconclusive", "error": f"Orca observer did not answer: {error}"}
+    return _decode_result_record(completed.stdout) or {
+        "status": "inconclusive", "error": "Orca observer returned no record"}
+
+
 def application_smoke_session(
     state_path: Path,
     open_timeout: float,
@@ -2121,6 +2139,7 @@ def application_smoke_session(
     content_timeout: float,
     close_timeout: float,
     close_mode: str,
+    speech_since: int | None = None,
 ) -> dict[str, Any]:
     """Run one bounded nonvisual smoke with an exact pre-close witness.
 
@@ -2280,6 +2299,18 @@ def application_smoke_session(
             "error": "target window was not naturally active before the close shortcut",
         }
 
+    if speech_since is not None:
+        spoken = orca_spoke(speech_since, SPEECH_TIMEOUT)
+        if spoken.get("status") != "passed":
+            return {
+                "status": "failed",
+                "phase": "speech",
+                "pid": pid,
+                "window_identity": identity,
+                "error": "Orca did not speak for the window: "
+                + str(spoken.get("error", "no answer")),
+            }
+
     ready = {
         "status": "passed",
         "phase": "ready",
@@ -2294,6 +2325,7 @@ def application_smoke_session(
         "coverage": "accessible-content-present",
         "evidence": evidence,
         "active": True,
+        "screen_reader": "spoke" if speech_since is not None else "not-tested",
         "open_seconds": round(open_seconds, 2),
         "mem_available_mib": mem_available_mib(),
         "memory": process_memory(pid),
@@ -2593,6 +2625,7 @@ def main() -> int:
     parser.add_argument("--content-timeout", type=float, default=10.0)
     parser.add_argument("--close-timeout", type=float, default=15.0)
     parser.add_argument("--close-mode", choices=("process-exit", "window-close"), default="process-exit")
+    parser.add_argument("--speech-since", type=int)
     args = parser.parse_args()
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     os.environ.setdefault(
@@ -2679,6 +2712,7 @@ def main() -> int:
                 args.content_timeout,
                 args.close_timeout,
                 args.close_mode,
+                args.speech_since,
             )
         elif args.operation in {"smoke-window", "active-window"}:
             if args.pid is None:

@@ -8,7 +8,7 @@ no warnings 'redefine';
 
 my $entry = {name => 'App', path => '/usr/share/applications/app.desktop'};
 my (@calls, $exit, $graceful, $window, $semantics, $cleanup,
-    $window_closed, $process_gone, $crashed, $capability_status);
+    $window_closed, $process_gone, $crashed, $capability_status, $silent);
 local *application_smoke::get_var = sub {
     return 0 if $_[0] eq 'BIGLINUX_APPLICATION_SETTLE_SECONDS';
     return $_[1];
@@ -41,8 +41,13 @@ local *atspi::launch_smoke_desktop_entry = sub {
         application_exit_code => $exit,
         close_action => 'keyboard.' . ($_[6] // 'alt-f4'),
     };
+    $opened->{screen_reader} = 'spoke' if defined $_[8];
     if ($window ne 'passed') {
         $opened = {status => 'failed', phase => 'open', error => 'no window'};
+    }
+    elsif ($silent) {
+        $opened = {status => 'failed', phase => 'speech', pid => 42,
+            error => 'Orca did not speak for the window: Orca said nothing'};
     }
     elsif ($semantics ne 'passed') {
         $opened->{status} = 'failed';
@@ -83,6 +88,7 @@ sub reset_state {
     ($exit, $graceful, $process_gone, $window_closed, $crashed,
         $window, $semantics, $cleanup, $capability_status)
       = (0, 1, 1, 1, 0, 'passed', 'passed', 'passed', 0);
+    $silent = 0;
 }
 
 reset_state();
@@ -257,4 +263,19 @@ is(application_smoke->default_close_key({relative_path => 'org.gnome.TextEditor.
     'alt-f4', 'other applications keep the desktop close shortcut');
 is(application_smoke->default_close_key({relative_path => 'not-libreoffice-calc.desktop'}),
     'alt-f4', 'shortcut exception does not match an unrelated desktop ID');
+{
+    local *orca::active = sub { 1 };
+    local *orca::mark = sub { 77 };
+    reset_state();
+    my $spoke = application_smoke->check($entry, 30);
+    my ($call) = grep { $_->[0] eq 'smoke-launch' } @calls;
+    is($call->[9], 77, 'with Orca running the launch is marked in its speech log');
+    is($spoke->{screen_reader_status}, 'spoke', 'reports that Orca spoke for the window');
+    reset_state();
+    $silent = 1;
+    my $quiet = application_smoke->check($entry, 30);
+    is($quiet->{status}, 'failed', 'a window Orca says nothing about fails');
+    like($quiet->{error}, qr/Orca did not speak/, 'and says why');
+}
+
 done_testing;

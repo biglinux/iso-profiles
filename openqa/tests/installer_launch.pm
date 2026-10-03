@@ -34,6 +34,7 @@ sub run {
     # later used with the exact /usr/bin/calamares executable and root UID to
     # prove the Qt handoff.
     atspi->reset_baseline;
+    calamares->mark_speech;
     my $handoff_token = sprintf('openqa-calamares-%d-%d', $$, int(time * 1_000_000));
     my (undef, $opened, undef, undef, $status_path, $launch_pid) = atspi->launch_command(
         "env DESKTOP_STARTUP_ID=$handoff_token calamares-biglinux_polkit --software-render",

@@ -219,6 +219,7 @@ class AggregateApplicationResultsTest(unittest.TestCase):
             self.assertEqual(summary["coverage"]["tested_total"], 2)
             self.assertEqual(summary["coverage"]["not_applicable_total"], 0)
             self.assertEqual(summary["coverage"]["contract_counts"]["standard"], 2)
+            self.assertEqual(summary["coverage"]["orca_spoke_total"], 0)
             self.assertEqual(summary["policy_exclusions"][0]["desktop_id"], "service.desktop")
 
 

@@ -83,45 +83,107 @@ class SelectorTest(unittest.TestCase):
             self.assertEqual(len(list(probe._walk(root, limit=2))), 2)
 
 
-class OrcaEvidenceTest(unittest.TestCase):
-    def test_reader_output_not_debug_or_key_text(self):
-        raw = b'{"kind":"key","text":"success"}\n{"kind":"speech","text":"Ready"}\n'
-        self.assertEqual(orca.presented_text(raw), "Ready")
+class OrcaSpeechTest(unittest.TestCase):
+    """What Orca sends speech-dispatcher, read from the SSIP stream."""
 
-    def test_interrupted_output_is_not_evidence(self):
-        raw = b'{"kind":"speech","text":"success"}\n{"kind":"interrupt"}\n'
-        self.assertEqual(orca.presented_text(raw), "")
+    def test_speak_body_is_one_record_without_ssml_or_dot_escaping(self):
+        stream = orca.ClientStream()
+        records = stream.feed(b"SET self PRIORITY text\r\nSPEAK\r\n<speak>Sem t\xc3\xadtulo")
+        records += stream.feed(b" \xe2\x80\x94 Kate</speak>\r\n..hidden\r\n.\r\n")
+        self.assertEqual(records, [{"kind": "speech", "text": "Sem título — Kate\n.hidden"}])
 
-    def test_partial_record_is_not_evidence(self):
-        self.assertEqual(orca.presented_text(b'{"kind":"speech","text":"success"}'), "")
+    def test_characters_and_keys_are_speech(self):
+        records = orca.ClientStream().feed(b"CHAR a\r\nKEY enter\r\nSET self RATE 10\r\n")
+        self.assertEqual([r["text"] for r in records], ["a", "enter"])
+
+    def test_server_errors_are_recorded_and_success_is_not(self):
+        records = orca.ServerStream().feed(
+            b"230 OK RECEIVING DATA\r\n225-17\r\n225 OK MESSAGE QUEUED\r\n"
+            b"300 ERR MODULE NOT LOADED\r\n")
+        self.assertEqual(records, [{"kind": "error", "reply": "300 ERR MODULE NOT LOADED"}])
+
+    def write_log(self, folder, *records, partial=b""):
+        log = Path(folder, "speech.jsonl")
+        log.write_bytes(b"".join(
+            (orca.json.dumps(record) + "\n").encode() for record in records) + partial)
+        return mock.patch.object(orca, "SPEECH_LOG", log)
+
+    def test_speech_after_the_mark_passes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = (orca.json.dumps({"kind": "speech", "text": "old"}) + "\n").encode()
+            with self.write_log(folder, {"kind": "speech", "text": "old"},
+                                {"kind": "speech", "text": "Kate"}):
+                self.assertEqual(orca.check(len(first), "", 0)["status"], "passed")
+                self.assertEqual(orca.check(len(first), "kate", 0)["status"], "passed")
+                self.assertEqual(orca.check(len(first), "dolphin", 0)["status"], "failed")
+
+    def test_mark_waits_for_orca_to_fall_silent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.write_log(folder, {"kind": "speech", "text": "Área de trabalho"}):
+                log = orca.SPEECH_LOG
+                late = (orca.json.dumps({"kind": "speech", "text": "late"}) + "\n").encode()
+
+                def speak_late():
+                    orca.time.sleep(0.3)
+                    with log.open("ab") as stream:
+                        stream.write(late)
+
+                orca.threading.Thread(target=speak_late).start()
+                mark = orca.offset(5)["offset"]
+            self.assertEqual(mark, log.stat().st_size)
+
+    def test_silence_and_a_partial_line_fail(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.write_log(folder, {"kind": "client"}, partial=b'{"kind": "speech", "te'):
+                self.assertEqual(orca.check(0, "", 0),
+                                 {"status": "failed", "error": "Orca said nothing"})
+
+    def test_a_refused_utterance_fails_even_when_others_were_spoken(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.write_log(folder, {"kind": "speech", "text": "Kate"},
+                                {"kind": "error", "reply": "300 ERR"}):
+                self.assertIn("refused", orca.check(0, "", 0)["error"])
 
     def test_phrase_match_has_word_boundaries(self):
         self.assertFalse(orca.contains_phrase("unsuccessful", "successful"))
         self.assertFalse(orca.contains_phrase("success", ""))
         self.assertTrue(orca.contains_phrase("Operação concluída!", "operacao concluida"))
 
-    def test_malformed_record_is_rejected(self):
-        with self.assertRaises(orca.ObservationError):
-            orca.presented_text(b'{"kind":"speech","text":5}\n')
-
-    def test_introspects_signature_instead_of_guessing(self):
-        xml = '<node><interface name="org.gnome.Orca1.SpeechPresenter"><method name="SetLogFileForTesting"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="b" direction="out"/></method></interface></node>'
-        self.assertEqual(orca.find_recorder(lambda _: xml), (orca.ROOT, "org.gnome.Orca1.SpeechPresenter"))
-        with self.assertRaises(orca.ObservationError):
-            orca.find_recorder(lambda _: xml.replace('type="b"', 'type="s"'))
-
-    def test_missing_upstream_capability_blocks(self):
-        with self.assertRaisesRegex(orca.ObservationError, "lacks"):
-            orca.find_recorder(lambda _: "<node/>")
-
-    def test_state_is_private(self):
+    def test_proxy_forwards_both_ways_and_logs_the_utterance(self):
+        import socket
+        import threading
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder, "state.json")
-            orca.save_state(path, {"a": 1})
-            self.assertEqual(orca.read_state(path), {"a": 1})
-            path.chmod(0o644)
-            with self.assertRaises(orca.ObservationError):
-                orca.read_state(path)
+            folder = Path(folder)
+            upstream_path = folder / "speechd.sock"
+            upstream = socket.socket(socket.AF_UNIX)
+            upstream.bind(str(upstream_path))
+            upstream.listen(1)
+
+            def speechd():
+                connection, _ = upstream.accept()
+                received = b""
+                while not received.endswith(b"\r\n.\r\n"):
+                    received += connection.recv(1024)
+                connection.sendall(b"230 OK RECEIVING DATA\r\n225 OK MESSAGE QUEUED\r\n")
+                connection.close()
+
+            threading.Thread(target=speechd, daemon=True).start()
+            with mock.patch.multiple(orca, PROXY_SOCKET=folder / "proxy.sock",
+                                     SPEECH_LOG=folder / "speech.jsonl",
+                                     SPEECHD_SOCKET=upstream_path):
+                threading.Thread(target=orca.proxy, daemon=True).start()
+                for _ in range(50):
+                    if (folder / "proxy.sock").exists():
+                        break
+                    orca.time.sleep(0.02)
+                client = socket.socket(socket.AF_UNIX)
+                client.connect(str(folder / "proxy.sock"))
+                client.sendall(b"SPEAK\r\n<speak>Leitor de tela ativado.</speak>\r\n.\r\n")
+                reply = b""
+                while b"225 OK" not in reply:
+                    reply += client.recv(1024)
+                client.close()
+                self.assertEqual(orca.check(0, "leitor de tela ativado", 2)["status"], "passed")
 
 
 if __name__ == "__main__":
