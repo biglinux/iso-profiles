@@ -11,6 +11,10 @@ exclude:
     reason: AppImage handler requires an AppImage file argument
   - desktop_id: big-executable.desktop
     reason: File handler requires an executable file argument
+  - desktop_id: big-store.desktop
+    reason: >-
+      BigBashView makes its Qt window a plain QWidget, which AT-SPI publishes
+      as a filler instead of a frame; switching it to QMainWindow fixes it
   - desktop_id: bigcontrolcenter/cups.desktop
     reason: Opens the printer administration page with xdg-open, so the window belongs to the browser
   - desktop_id: bigcontrolcenter/gnome-alsamixer.desktop
@@ -159,6 +163,10 @@ exclude:
     reason: VPN importer requires a VPN configuration file supplied by the user
   - desktop_id: rustdesk-link.desktop
     reason: RustDesk link handler requires a rustdesk URI supplied by another application
+  - desktop_id: smplayer.desktop
+    reason: >-
+      big-skel starts SMPlayer in compact mode, which hides its menu and tool
+      bars, so a screen reader finds no control on its window
   - desktop_id: smplayer_enqueue.desktop
     reason: SMPlayer enqueue handler requires one or more media files
   - desktop_id: steam.desktop
@@ -321,10 +329,6 @@ contracts:
     kind: standard
     content_timeout: 20
     reason: The Qt Quick interface may publish its accessible content after the top-level window
-  - desktop_id: big-store.desktop
-    kind: standard
-    content_timeout: 20
-    reason: The store may publish its accessible web content after the top-level window
   - desktop_id: bigcontrolcenter/biglinux-config.desktop
     kind: standard
     dismiss_auxiliary: true
@@ -353,10 +357,6 @@ contracts:
     kind: standard
     content_timeout: 20
     reason: RustDesk may publish its accessible content after its renderer initializes
-  - desktop_id: smplayer.desktop
-    kind: standard
-    content_timeout: 15
-    reason: SMPlayer may publish its controls after the player window appears
 
 # Applications smoke-tested again on the installed system. They are not required
 # packages: a missing entry is not applicable, and the live shards already cover
