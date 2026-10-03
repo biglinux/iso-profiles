@@ -30,6 +30,10 @@ exclude:
       Temporary: mpv 0.41.0 aborts in vo_x11_init (mpv issue 17190) when
       only a software renderer exists, as on CI runners and in most VMs.
       Restore it, and its critical entry, once Arch ships the fixed mpv
+  - desktop_id: bigcontrolcenter/org.kde.filelight.desktop
+    reason: >-
+      Its Kirigami window has no accessible name and Orca says nothing when it
+      opens, so a screen reader user gets no sign that it started
   - desktop_id: bigcontrolcenter/qvidcap.desktop
     reason: Video capture utility requires physical V4L2 capture hardware unavailable in CI
   - desktop_id: bigcontrolcenter/timeshift-gtk.desktop
@@ -97,6 +101,10 @@ exclude:
     reason: KDE Connect daemon is a background session service
   - desktop_id: org.kde.kdeconnect.nonplasma.desktop
     reason: Non-Plasma KDE Connect indicator is a session component, not a standalone application in Plasma
+  - desktop_id: org.kde.kdeconnect.sms.desktop
+    reason: >-
+      Its Kirigami window has no accessible name and Orca says nothing when it
+      opens, so a screen reader user gets no sign that it started
   - desktop_id: org.kde.kdialog.desktop
     reason: Dialog helper requires options or input from a caller
   - desktop_id: org.kde.keditfiletype.desktop
