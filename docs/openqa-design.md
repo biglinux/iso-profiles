@@ -98,10 +98,11 @@ confirmed absence stands.
 ## First-run surfaces
 
 Some applications open a dialog over their main window on first start: GIMP,
-the LibreOffice components, Qt Designer, BigOCR, Big Video Converter and the
-WebApps Manager. Their contracts set `dismiss_auxiliary: true`. Up to three such
-surfaces may then be closed in sequence, each only after an active window of the
-same PID and launch is observed:
+the LibreOffice components, Qt Designer, BigOCR, Big Video Converter, the
+WebApps Manager, HP Device Manager and Restore Settings. Their contracts set
+`dismiss_auxiliary: true`. Up to three such surfaces may then be closed in
+sequence, each only after an active window of the same PID and launch is
+observed:
 
 - a separate dialog gets `Alt+F4`;
 - a libadwaita overlay inside the same top-level gets `Escape`.

@@ -33,8 +33,6 @@ def normalized_contract(item: dict[str, Any] | None = None) -> dict[str, Any]:
     dismiss_auxiliary = item.get("dismiss_auxiliary", False)
     if type(dismiss_auxiliary) is not bool:
         raise ValueError("application contract dismiss_auxiliary is invalid")
-    if dismiss_auxiliary and close_key != "ctrl-q":
-        raise ValueError("auxiliary dismissal requires the Ctrl+Q application contract")
     values: dict[str, int | None] = {}
     for field in ("close_timeout", "content_timeout"):
         value = item.get(field)

@@ -163,10 +163,6 @@ like($@, qr/invalid close shortcut/, 'shortcut is validated');
 eval { atspi->close_with_shortcut(42, $path, 42, 15, 'alt-f4', 'guess') };
 like($@, qr/invalid close observation mode/, 'lifecycle observation mode is validated');
 eval { atspi->close_with_shortcut(
-    42, $path, 42, 15, 'alt-f4', 'process-exit', undef, 1) };
-like($@, qr/requires Ctrl\+Q/,
-    'auxiliary dismissal cannot be inferred for another close shortcut');
-eval { atspi->close_with_shortcut(
     42, $path, 42, 15, 'ctrl-q', 'process-exit', undef, 2) };
 like($@, qr/invalid auxiliary-window dismissal/,
     'auxiliary dismissal is a boolean contract');

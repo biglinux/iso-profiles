@@ -734,8 +734,6 @@ sub close_with_shortcut {
       unless $mode =~ /\A(?:process-exit|window-close)\z/;
     die 'invalid auxiliary-window dismissal contract'
       unless $dismiss_auxiliary == 0 || $dismiss_auxiliary == 1;
-    die 'auxiliary-window dismissal requires Ctrl+Q'
-      if $dismiss_auxiliary && $key ne 'ctrl-q';
     die 'invalid application PID' unless defined $pid && $pid =~ /\A[0-9]+\z/ && $pid > 1;
     die 'invalid supervisor status file' unless defined $status_path
       && $status_path =~ m{\A/tmp/openqa-gui-status-[0-9]+-[0-9]+\z};

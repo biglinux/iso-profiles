@@ -47,7 +47,7 @@ sub _entry_timeout {
     my ($entry, $default, $heavy) = @_;
     my $path = lc(_entry_value($entry, 'path', _entry_value($entry, 'relative_path', '')));
     return $heavy
-      if $path =~ m{(?:gimp|libreoffice|soffice|lstopo|big-themes-gui|snapshotrestore|cups)[^/]*\.desktop\z};
+      if $path =~ m{(?:gimp|libreoffice|soffice|lstopo|big-themes-gui|snapshotrestore|cups|hp-uiscan)[^/]*\.desktop\z};
     return $default;
 }
 
@@ -123,8 +123,6 @@ sub _application_policy {
         die 'application policy contract dismiss_auxiliary is invalid'
           if exists $item->{dismiss_auxiliary}
           && !JSON::PP::is_bool($item->{dismiss_auxiliary});
-        die 'auxiliary dismissal requires the Ctrl+Q application contract'
-          if ($item->{dismiss_auxiliary} // 0) && ($item->{close_key} // '') ne 'ctrl-q';
         for my $field (qw(close_timeout content_timeout)) {
             die "application policy contract $field is invalid"
               if defined $item->{$field}

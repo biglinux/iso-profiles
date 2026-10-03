@@ -474,13 +474,9 @@ class AggregateApplicationResultsTest(unittest.TestCase):
         self.assertEqual(summary["status"], "passed")
 
 
-    def test_auxiliary_dismissal_is_boolean_and_requires_ctrl_q(self):
+    def test_auxiliary_dismissal_is_boolean(self):
         with self.assertRaisesRegex(ValueError, "dismiss_auxiliary"):
             AGGREGATOR.normalized_contract({"dismiss_auxiliary": 1})
-        with self.assertRaisesRegex(ValueError, r"requires.*Ctrl\+Q"):
-            AGGREGATOR.normalized_contract(
-                {"dismiss_auxiliary": True, "close_key": "alt-f4"}
-            )
         contract = AGGREGATOR.normalized_contract(
             {
                 "kind": "standard",
