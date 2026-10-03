@@ -268,6 +268,7 @@ class FakeAtspi:
         FOCUSED = "focused"
         FOCUSABLE = "focusable"
         DEFUNCT = "defunct"
+        ACTIVE = "active"
 
     set_timeout = mock.Mock()
 

@@ -22,6 +22,9 @@ from typing import Any
 RESULT_MARKER = "__OPENQA_ATSPI__"
 READY_MARKER = "__OPENQA_ATSPI_READY__"
 INVENTORY_CHUNK_SIZE = 600
+# AT-SPI roles of an application's own top-level windows. GTK publishes a
+# message dialog such as stoken's "Missing token" as an alert.
+TOP_LEVEL_ROLES = frozenset({"frame", "window", "dialog", "alert"})
 
 
 class ProbeError(RuntimeError):
@@ -438,16 +441,29 @@ def _window_records(
         ) -> dict[str, Any] | None:
             if deadline is not None and time.monotonic() > deadline:
                 raise WalkTruncated("window semantics exceeded its deadline")
+            window_type = ""
+            if allowed_pids is not None:
+                # Chromium builds its tree only for an assistive technology,
+                # which it recognises by GetAttributes, a call Orca makes and
+                # few other clients do. GTK answers with the window type,
+                # which names a splash screen in any language. Only a hint: a
+                # provider may refuse it.
+                try:
+                    window_type = str((window.get_attributes() or {}).get("window-type", ""))
+                except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
+                    pass
             try:
                 name = window.get_name() or ""
                 role = window.get_role_name() or ""
                 children = window.get_child_count()
                 showing = True
                 defunct = False
+                active = False
                 if include_window_state:
                     states = window.get_state_set()
                     showing = states.contains(Atspi.StateType.SHOWING)
                     defunct = states.contains(Atspi.StateType.DEFUNCT)
+                    active = states.contains(Atspi.StateType.ACTIVE)
             except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
                 if allowed_pids is None and launch_process_exited(app_pid):
                     return None
@@ -469,6 +485,8 @@ def _window_records(
                 "pid": app_pid,
                 "showing": showing,
                 "defunct": defunct,
+                "active": active,
+                "window_type": window_type,
             }
 
         # A positive existence query can inspect the first PID-owned window as
@@ -768,6 +786,8 @@ def launch_process_exited(
 
 
 def _is_transient_window(window: dict[str, Any]) -> bool:
+    if window.get("window_type") == "splashscreen":
+        return True
     name = window.get("name", "").casefold()
     return any(
         token in name for token in ("startup", "splash", "loading", "initializing")
@@ -1890,10 +1910,18 @@ def _smoke_content(window: Any, deadline: float, limit: int = 256) -> dict[str, 
                 defunct = state.contains(Atspi.StateType.DEFUNCT)
             except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
                 raise ProbeError(f"could not read accessible content state: {error}") from error
-            if not showing or defunct:
+            if defunct:
                 continue
             try:
                 role = node.get_role_name() or ""
+            except (GLib.Error, RuntimeError, AttributeError, TypeError, OSError) as error:
+                raise ProbeError(f"could not read accessible content semantics: {error}") from error
+            # Flutter leaves some layout containers without SHOWING while
+            # their children are on screen, so look through those. A hidden
+            # control is never content, and neither is anything inside it.
+            if not showing and role.casefold() not in {"filler", "panel"}:
+                continue
+            try:
                 name = node.get_name() or ""
                 text = node.get_text_iface()
                 action = node.get_action_iface()
@@ -1958,7 +1986,9 @@ def smoke_window(
                     continue
                 if states.contains(Atspi.StateType.DEFUNCT):
                     continue
-                if record["role"] not in {"frame", "window", "dialog"}:
+                if record["role"] not in TOP_LEVEL_ROLES:
+                    continue
+                if _is_transient_window(record):
                     continue
                 if active_only:
                     if states.contains(Atspi.StateType.ACTIVE):
@@ -2139,11 +2169,18 @@ def application_smoke_session(
     target_record: dict[str, Any] | None = None
     last_scope: set[int] = set()
 
-    def discover() -> tuple[Any, dict[str, Any]] | None:
+    def discover(deadline: float) -> tuple[Any, dict[str, Any]] | None:
+        """Return the launch's active new window, else its first new window.
+
+        An application may open its main window behind a modal dialog it
+        raised at once (KWallet Manager, HP Device Manager); the dialog is
+        what the user and the keyboard are on.
+        """
         nonlocal last_scope
         last_scope = _owned_process_scope(expected_pid, root_pid)
+        first: tuple[Any, dict[str, Any]] | None = None
         for window, record in _window_records(
-            open_deadline, last_scope, include_window_state=True
+            deadline, last_scope, include_window_state=True
         ):
             if record["pid"] not in last_scope:
                 continue
@@ -2151,15 +2188,17 @@ def application_smoke_session(
                 continue
             if not record.get("showing", True) or record.get("defunct", False):
                 continue
-            if record.get("role") not in {"frame", "window", "dialog"}:
+            if record.get("role") not in TOP_LEVEL_ROLES:
                 continue
             if _is_transient_window(record):
                 continue
-            return window, record
-        return None
+            if record.get("active"):
+                return window, record
+            first = first or (window, record)
+        return first
 
     while time.monotonic() <= open_deadline:
-        found = _read_until_ready(discover, open_deadline)
+        found = _read_until_ready(lambda: discover(open_deadline), open_deadline)
         if found is not None:
             target_window, target_record = found
             break
@@ -2199,6 +2238,7 @@ def application_smoke_session(
     content_deadline = time.monotonic() + content_timeout
     evidence: dict[str, Any] | None = None
     active = False
+    gone = False
     while time.monotonic() <= content_deadline:
         scope = _owned_process_scope(expected_pid, root_pid, (pid,))
         if _process_scope_exited(scope):
@@ -2214,15 +2254,19 @@ def application_smoke_session(
             showing = states.contains(Atspi.StateType.SHOWING)
             defunct = states.contains(Atspi.StateType.DEFUNCT)
             active = states.contains(Atspi.StateType.ACTIVE)
-            if not showing or defunct:
-                return {
-                    "status": "failed",
-                    "phase": "content",
-                    "pid": pid,
-                    "window_identity": identity,
-                    "error": "application window disappeared before the smoke check",
-                }
-            evidence = _smoke_content(target_window, content_deadline)
+            if not active or not showing or defunct:
+                # The launch may replace its first window, or raise a modal
+                # dialog over it: follow the window it made active.
+                found = discover(content_deadline)
+                if found is not None and found[1]["key"] != target_record["key"]:
+                    target_window, target_record = found
+                    pid = int(target_record["pid"])
+                    identity = str(target_record.get("identity", ""))
+                    continue
+            # A window can drop SHOWING for a moment while its toolkit maps it
+            # again (Big Driver Manager), so only the deadline makes it gone.
+            gone = not showing or defunct
+            evidence = None if gone else _smoke_content(target_window, content_deadline)
         except WalkTruncated:
             raise
         except (ProbeError, GLib.Error, RuntimeError, AttributeError, TypeError, OSError):
@@ -2234,6 +2278,14 @@ def application_smoke_session(
             break
         time.sleep(min(0.1, remaining))
 
+    if gone:
+        return {
+            "status": "failed",
+            "phase": "content",
+            "pid": pid,
+            "window_identity": identity,
+            "error": "application window disappeared before the smoke check",
+        }
     if evidence is None:
         return {
             "status": "failed",

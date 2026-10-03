@@ -135,7 +135,7 @@ class SmokeContentTest(unittest.TestCase):
         self.assertLessEqual(root.get_child_at_index.call_count, 16)
 
     def test_hidden_menu_does_not_consume_visible_content_budget(self):
-        hidden = Node(states=())
+        hidden = Node(role="menu", states=())
         hidden.get_child_count = mock.Mock(return_value=1000000)
         root = Node(children=[hidden, Node(role="terminal", text=True)])
         evidence = self.content(root, limit=3)
@@ -149,9 +149,21 @@ class SmokeContentTest(unittest.TestCase):
         self.assertTrue(self.content(root)["action_interface"])
         defunct.get_child_count.assert_not_called()
 
-    def test_child_of_hidden_ancestor_is_not_an_accessible_witness(self):
-        hidden = Node(states=(), children=[Node(role="text", text=True)])
+    def test_child_of_hidden_control_is_not_an_accessible_witness(self):
+        hidden = Node(role="menu", states=(), children=[Node(role="text", text=True)])
         self.assertIsNone(self.content(Node(children=[hidden])))
+
+    def test_showing_child_of_hidden_layout_container_is_a_witness(self):
+        # Flutter (RustDesk) leaves a layout filler without SHOWING above
+        # the controls it draws.
+        hidden = Node(role="filler", states=(), children=[Node("Connect", "button", action=True)])
+        self.assertTrue(self.content(Node(children=[hidden]))["action_interface"])
+
+    def test_splash_screen_is_transient_in_any_language(self):
+        self.assertTrue(probe._is_transient_window(
+            {"name": "Inicialização do GIMP", "window_type": "splashscreen"}))
+        self.assertFalse(probe._is_transient_window(
+            {"name": "GNU Image Manipulation Program", "window_type": "normal"}))
 
     def window_result(self, pid=42, active=False, expected=42, active_only=False):
         root = Node("Editor", "frame", [Node(role="text", text=True)],
