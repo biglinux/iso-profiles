@@ -13,8 +13,26 @@ exclude:
     reason: File handler requires an executable file argument
   - desktop_id: bigcontrolcenter/cups.desktop
     reason: Opens the printer administration page with xdg-open, so the window belongs to the browser
+  - desktop_id: bigcontrolcenter/gnome-alsamixer.desktop
+    reason: >-
+      GTK 2 mixer: the system ships no GTK 2 AT-SPI bridge, so a screen reader
+      cannot read it and neither can the smoke test
+  - desktop_id: bigcontrolcenter/lstopo.desktop
+    reason: >-
+      Draws the hardware topology with plain X11 and cairo, with no toolkit
+      accessibility, so it exposes nothing to AT-SPI
+  - desktop_id: bigcontrolcenter/mpv.desktop
+    reason: >-
+      Temporary: mpv 0.41.0 aborts in vo_x11_init (mpv issue 17190) when
+      only a software renderer exists, as on CI runners and in most VMs.
+      Restore it, and its critical entry, once Arch ships the fixed mpv
   - desktop_id: bigcontrolcenter/qvidcap.desktop
     reason: Video capture utility requires physical V4L2 capture hardware unavailable in CI
+  - desktop_id: bigcontrolcenter/timeshift-gtk.desktop
+    reason: >-
+      Runs as root through pkexec, and a root process cannot reach the user's
+      accessibility bus, so a screen reader cannot read it; the smoke test also
+      could not close a root window it does not own
   - desktop_id: bigtts.desktop
     reason: Selected-text handler requires text supplied by the desktop selection
   - desktop_id: com.github.maliit.keyboard.desktop
@@ -123,6 +141,8 @@ exclude:
     reason: Account authentication UI requires a request from another process
   - desktop_id: snap-handle-link.desktop
     reason: Snap URI handler requires a snap URI argument
+  - desktop_id: urxvt.desktop
+    reason: rxvt-unicode has no accessibility support and exposes nothing to AT-SPI
   - desktop_id: urxvtc.desktop
     reason: urxvt client requires an already-running urxvtd daemon
   - desktop_id: wheelmap-geo-handler.desktop
@@ -171,10 +191,6 @@ contracts:
     kind: transient-dialog
     allowed_exit_codes: [0, 1]
     reason: Cancelling the credential prompt is a normal result for an isolated smoke test
-  - desktop_id: bigcontrolcenter/gnome-alsamixer.desktop
-    kind: standard
-    requires: [alsa-card]
-    reason: The mixer is applicable only when the guest exposes an ALSA hardware card
   - desktop_id: guvcview.desktop
     kind: standard
     requires: [video-device]
@@ -358,8 +374,6 @@ critical:
     functional_test: gimp
   - desktop_id: bigcontrolcenter.desktop
     functional_test: control-center
-  - desktop_id: bigcontrolcenter/mpv.desktop
-    functional_test: mpv
   - desktop_id: org.kde.kate.desktop
     functional_test: kate
   - desktop_id: org.kde.okular.desktop

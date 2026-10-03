@@ -47,7 +47,7 @@ sub _entry_timeout {
     my ($entry, $default, $heavy) = @_;
     my $path = lc(_entry_value($entry, 'path', _entry_value($entry, 'relative_path', '')));
     return $heavy
-      if $path =~ m{(?:gimp|libreoffice|soffice|lstopo|big-themes-gui|snapshotrestore|cups|hp-uiscan)[^/]*\.desktop\z};
+      if $path =~ m{(?:gimp|libreoffice|soffice|big-themes-gui|snapshotrestore|cups|hp-uiscan)[^/]*\.desktop\z};
     return $default;
 }
 
