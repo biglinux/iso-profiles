@@ -366,10 +366,9 @@ duckypad-udev
 mooltipass-udev
 nintendo-udev
 onlykey-udev
-openrgb-udev-rules
+openrgb
 osc-udev-storage
 signal-hound-udev
-stadia-controller-udev
 usbtinyisp-udev
 usb-dirty-pages-udev
 game-devices-udev
