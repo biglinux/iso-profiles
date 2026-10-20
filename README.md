@@ -113,8 +113,10 @@ Two consequences that are worth tattooing somewhere visible:
 > hiding: everything you test in the live ISO looks correct. If a change must
 > survive installation, it belongs in `root-overlay/`.
 
-`Packages-Mhwd` is a fourth list but *not* a layer — it is the driver set `mhwd`
-installs for whatever GPU the machine turns out to have.
+`Packages-Mhwd` is a fourth list but *not* a layer — it is the offline driver
+repository of the live medium (`/opt/mhwd`), from which big-driver-manager-cli
+(BigLinux KDE) or mhwd (XivaStudio) installs the drivers for whatever GPU the
+machine turns out to have.
 
 **Vocabulary**, so the rest of this file makes sense:
 
