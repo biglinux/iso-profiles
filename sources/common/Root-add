@@ -87,7 +87,7 @@ espeakup
 
 ## Video and Driver Support
 # Biglinux
-  mhwd-biglinux
+  big-driver-manager-cli
   biglinux-vaapi
 libxvmc
 #lib32-mesa-vdpau

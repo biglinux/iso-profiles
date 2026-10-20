@@ -14,6 +14,12 @@ SECTIONS = {
     "## Misc": "mesa-utils\n",
 }
 BASE = "# BigLinux desktop\nplasma-desktop\n"
+PROFILE = "disable_systemd_live=('systemd-userdbd' 'mirrors-live')\n"
+MHWD = (
+    "KERNEL-bbswitch\n>multilib lib32-primus\nprimus\nbumblebee\n"
+    "xf86-video-intel\nxf86-video-sisusb\nxf86-video-voodoo\nxf86-video-dummy\n"
+    ">nonfree_x86_64 KERNEL-nvidia-open\nnvidia-prime\nxf86-video-amdgpu\n"
+)
 
 
 def run_sections(tmp_path, source):
@@ -23,6 +29,9 @@ def run_sections(tmp_path, source):
     generated = tmp_path / "biglinux/kde/Packages-Desktop"
     generated.parent.mkdir(parents=True)
     generated.write_text(BASE, encoding="utf-8")
+    # The rest of a generated edition the script also edits.
+    (generated.parent / "profile.conf").write_text(PROFILE, encoding="utf-8")
+    (generated.parent / "Packages-Mhwd").write_text(MHWD, encoding="utf-8")
     proc = subprocess.run(
         ["bash", str(SCRIPT)], cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
         capture_output=True, text=True, check=False,
@@ -93,3 +102,21 @@ def test_whitespace_only_lines_end_a_section(tmp_path):
         assert lines.count(header) == 1
         for package in packages.splitlines():
             assert lines.count(package) == (0 if package == "xf86-input-void" else 1)
+
+
+def test_kde_installs_drivers_without_mhwd(tmp_path):
+    """big-driver-manager-cli replaces mhwd on KDE: mhwd-live stays off and
+    the offline repository drops what only mhwd's old configurations used.
+    XivaStudio keeps mhwd, which is why this is not in sources/common."""
+    sections = {header: "pkg" for header in SECTIONS}
+    proc, generated = run_sections(tmp_path, upstream_text(sections))
+    assert proc.returncode == 0, proc.stderr
+    profile = (generated.parent / "profile.conf").read_text(encoding="utf-8")
+    assert profile.startswith("disable_systemd_live=('mhwd-live' 'systemd-userdbd'")
+    mhwd = (generated.parent / "Packages-Mhwd").read_text(encoding="utf-8").split("\n")
+    assert [line for line in mhwd if line] == [
+        ">nonfree_x86_64 KERNEL-nvidia-open",
+        "nvidia-prime",
+        "xf86-video-amdgpu",
+    ]
+

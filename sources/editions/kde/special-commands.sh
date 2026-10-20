@@ -48,3 +48,13 @@ printf '%s\n\n' "${sectionContents[@]}" >> "$generatedDesktop"
 # claims input devices and nothing uses it. Anchored so it cannot match a
 # longer package name.
 sed -i '/^xf86-input-void$/d' "$generatedDesktop"
+
+# BigLinux KDE installs its drivers with big-driver-manager-cli (live session
+# and installer), not mhwd. XivaStudio keeps mhwd for now, so this lives here
+# and not in sources/common: mhwd-live stays off in the live session, and the
+# offline repository drops what only mhwd's old configurations used.
+sed -i "s/^disable_systemd_live=('/disable_systemd_live=('mhwd-live' '/" biglinux/kde/profile.conf
+grep -q "^disable_systemd_live=('mhwd-live'" biglinux/kde/profile.conf
+grep -vE '(^|[[:space:]])(KERNEL-bbswitch|bumblebee|primus|lib32-primus|xf86-video-(intel|sisusb|voodoo|dummy))$' \
+    biglinux/kde/Packages-Mhwd > biglinux/kde/Packages-Mhwd.new
+mv biglinux/kde/Packages-Mhwd.new biglinux/kde/Packages-Mhwd
