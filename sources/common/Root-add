@@ -232,7 +232,7 @@ ttf-lato
   pamac-updates-menu
   pacman-cleancache
   force-upgrade
-  debtap-mod
+  big-pkg-installer
   rpmtoarch
 pamac-gtk
 pamac-cli
