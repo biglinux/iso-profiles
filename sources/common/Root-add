@@ -59,7 +59,6 @@ hdparm
 
   # tweaks
     biglinux-name
-    biglinux-l18n
     faster-mkinitcpio
     biglinux-improve-compatibility
     big-mount
