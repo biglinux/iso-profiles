@@ -59,7 +59,6 @@ hdparm
 
   # tweaks
     biglinux-name
-    biglinux-l18n
     faster-mkinitcpio
     biglinux-improve-compatibility
     big-mount
@@ -184,7 +183,6 @@ kldap
 
 ## Sound/Audio/Video
 # BigLinux
-  biglinux-meta-audio-config
   # pipewire-jack-dropin  # REMOVER ?
   biglinux-noise-reduction-pipewire
 alsa-firmware
@@ -234,7 +232,7 @@ ttf-lato
   pamac-updates-menu
   pacman-cleancache
   force-upgrade
-  debtap-mod
+  big-pkg-installer
   rpmtoarch
 pamac-gtk
 pamac-cli
@@ -368,10 +366,8 @@ duckypad-udev
 mooltipass-udev
 nintendo-udev
 onlykey-udev
-openrgb-udev-rules
-osc-udev-storage
+openrgb
 signal-hound-udev
-stadia-controller-udev
 usbtinyisp-udev
 usb-dirty-pages-udev
 game-devices-udev
