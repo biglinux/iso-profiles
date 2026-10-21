@@ -228,6 +228,7 @@ ttf-lato
 # BigLinux
   big-store
   biglinux-keyring
+  biglinux-mirrorlist
   biglinux-updates-tweaks
   pamac-updates-menu
   pacman-cleancache

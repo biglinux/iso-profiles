@@ -11,9 +11,9 @@ MANJARO_SCRIPT = SCRIPTS / "set-manjaro-branch.sh"
 
 # The tail of the profile's pacman.conf: BigLinux repositories sit around the
 # Manjaro ones, and only stable is ever shipped.
-PACMAN_CONF = """[biglinux-update-stable]
+PACMAN_CONF = """[biglinux-priority]
 SigLevel = PackageRequired
-Server = https://repo.biglinux.com.br/update-stable/$arch
+Include = /etc/pacman.d/biglinux-priority-mirrorlist
 
 [core]
 SigLevel = PackageRequired
@@ -29,7 +29,11 @@ Include = /etc/pacman.d/mirrorcdn
 
 [biglinux-stable]
 SigLevel = PackageRequired
-Server = https://repo.biglinux.com.br/stable/$arch
+Include = /etc/pacman.d/biglinux-stable-mirrorlist
+
+[biglinux-extra]
+SigLevel = PackageRequired
+Include = /etc/pacman.d/biglinux-extra-mirrorlist
 """
 
 
@@ -42,7 +46,7 @@ def _profile(tmp_path: Path) -> Path:
     return profile
 
 
-def _run(profile: Path, branch: str, host: str = "repo.biglinux.com.br") -> subprocess.CompletedProcess:
+def _run(profile: Path, branch: str, host: str = "repo.myfork.org") -> subprocess.CompletedProcess:
     # build-iso.sh exports all three; the script requires them rather than
     # keeping a second copy of the default host.
     return subprocess.run(
@@ -85,7 +89,7 @@ def test_testing_is_inserted_above_stable_and_stable_stays(tmp_path):
         assert sections.index("[biglinux-testing]") < sections.index("[biglinux-stable]")
         # And below the Manjaro repositories, as the build-time order has it.
         assert sections.index("[multilib]") < sections.index("[biglinux-testing]")
-        assert "Server = https://repo.biglinux.com.br/testing/$arch" in conf.read_text(encoding="utf-8")
+        assert "Server = https://repo.myfork.org/testing/$arch" in conf.read_text(encoding="utf-8")
 
 
 def test_running_twice_inserts_one_section(tmp_path):
@@ -158,3 +162,14 @@ def test_the_manjaro_and_biglinux_scripts_are_independent(tmp_path, branch):
     assert "/testing/$repo/$arch" in mirrorcdn
     assert ("[biglinux-testing]" in conf) is (branch == "testing")
     assert "[biglinux-stable]" in conf
+
+
+def test_the_official_host_ships_testing_through_the_mirrorlist(tmp_path):
+    # Like the other BigLinux sections of the installed system: the servers come
+    # from the biglinux-mirrorlist package, not from a URL written here.
+    profile = _profile(tmp_path)
+    proc = _run(profile, "testing", host="packages.biglinux.com.br")
+    assert proc.returncode == 0, proc.stderr
+    conf = (profile / "root-overlay/etc/pacman.conf").read_text(encoding="utf-8")
+    assert "[biglinux-testing]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/biglinux-testing-mirrorlist" in conf
+    assert "packages.biglinux.com.br" not in conf

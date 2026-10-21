@@ -65,16 +65,23 @@ for overlay in root live; do
     fi
 
     # Above [biglinux-stable], so testing takes precedence and stable remains.
+    # With the official host the section reads the biglinux-mirrorlist file, like
+    # the other BigLinux sections of the installed system; a fork gets its Server.
     #
     # Double quotes, unlike the rest of this file, because the host has to be
     # interpolated. That makes every line ending significant: `\\` reaches sed
     # as the backslash its insert command needs, and `\$arch` reaches pacman.conf
     # as the literal `$arch` pacman expands. Plain `\` would be eaten here as a
     # line continuation and sed would see a one-line insert.
+    if [[ "$BIGLINUX_REPO_HOST" == "${BIGLINUX_DEFAULT_HOST:-packages.biglinux.com.br}" ]]; then
+        source_line="Include = /etc/pacman.d/biglinux-testing-mirrorlist"
+    else
+        source_line="Server = https://$BIGLINUX_REPO_HOST/testing/\$arch"
+    fi
     sed -i "/^\[biglinux-stable\]/i\\
 [biglinux-testing]\\
 SigLevel = PackageRequired\\
-Server = https://$BIGLINUX_REPO_HOST/testing/\$arch\\
+$source_line\\
 " "$conf"
 
     testing_line=$(grep -n '^\[biglinux-testing\]' "$conf" | cut -d: -f1)
