@@ -69,6 +69,42 @@ repo_section() {
         "$name" "$url_base" >>"$config_file"
 }
 
+# The BigLinux repositories (packages.biglinux.com.br) and the mirrorlists the
+# biglinux-mirrorlist package installs, one per repository.
+BIGLINUX_DEFAULT_HOST="packages.biglinux.com.br"
+
+# A BigLinux repository in the *installed* system's pacman.conf: the mirrorlist of
+# the biglinux-mirrorlist package, so a new mirror reaches users by a package
+# upgrade instead of an edit to pacman.conf. A fork building from its own host
+# (BIGLINUX_REPO_HOST) gets its Server written instead.
+biglinux_installed_section() {
+    local config_file="$1" name="$2" path="$3"
+    if [[ "$BIGLINUX_REPO_HOST" == "$BIGLINUX_DEFAULT_HOST" ]]; then
+        printf '[%s]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/%s-mirrorlist\n\n' \
+            "$name" "$name" >>"$config_file"
+    else
+        repo_section "$config_file" "$name" "https://$BIGLINUX_REPO_HOST/$path"
+    fi
+}
+
+# [biglinux-priority] holds the BigLinux builds of packages Manjaro also has. pacman
+# takes a package from the first section that has it, so this section has to sit
+# above Manjaro's [core]; appended after it, it would never win.
+priority_section_first() {
+    local config_file="$1" section
+    section="$(mktemp)"
+    repo_section "$section" biglinux-priority "https://$BIGLINUX_REPO_HOST/priority"
+    if grep -q '^\[core\]' "$config_file"; then
+        awk -v block="$section" '
+            !done && /^\[core\]/ { while ((getline line < block) > 0) print line; done = 1 }
+            { print }' "$config_file" >"$config_file.new"
+        mv "$config_file.new" "$config_file"
+    else
+        cat "$section" >>"$config_file"
+    fi
+    rm -f "$section"
+}
+
 # The container reads this file; mkchroot replaces it in the chroots with the
 # single BUILD_MIRROR Server. Writing BUILD_MIRROR here too gives the whole
 # build one package source. `$repo` and `$arch` are pacman's variables.
@@ -124,7 +160,7 @@ read_inputs() {
     done
 
     # Overridable so a fork builds from its own repositories.
-    BIGLINUX_REPO_HOST="${BIGLINUX_REPO_HOST:-repo.biglinux.com.br}"
+    BIGLINUX_REPO_HOST="${BIGLINUX_REPO_HOST:-$BIGLINUX_DEFAULT_HOST}"
     COMMUNITY_REPO_HOST="${COMMUNITY_REPO_HOST:-repo.communitybig.org}"
 
     # Days since the epoch, not seconds, despite the name.
@@ -169,7 +205,7 @@ read_inputs() {
 
     # The helper scripts read these. BIGLINUX_REPO_HOST is among them so that the
     # repositories the ISO ships follow the repositories it was built from.
-    export MANJARO_BRANCH BIGLINUX_BRANCH BIGLINUX_REPO_HOST PROFILE_PATH_EDITION
+    export MANJARO_BRANCH BIGLINUX_BRANCH BIGLINUX_REPO_HOST BIGLINUX_DEFAULT_HOST PROFILE_PATH_EDITION
 }
 
 # Everything that can be rejected before a single package is downloaded. The
@@ -354,24 +390,32 @@ append_community_repos() {
 
 # A BigCommunity system installs BigLinux packages, so the installed system
 # needs these as much as the build does -- see configure_profile. Testing is
-# conditional; stable always answers, and comes last because everything above
-# it falls back to it.
+# conditional; stable and extra (AUR and third-party packages) always answer, in
+# that order, below everything else.
+#
+# `installed` writes the sections for the installed system (mirrorlists, see
+# biglinux_installed_section); without it, the build's own Server lines.
 append_biglinux_repos() {
-    local config_file="$1"
-    if [[ "$BIGLINUX_BRANCH" == "testing" ]]; then
-        repo_section "$config_file" biglinux-testing "https://$BIGLINUX_REPO_HOST/testing"
-    fi
-    repo_section "$config_file" biglinux-stable "https://$BIGLINUX_REPO_HOST/stable"
+    local config_file="$1" mode="${2:-build}" repo
+    local -a repos=(stable extra)
+    [[ "$BIGLINUX_BRANCH" == "testing" ]] && repos=(testing stable extra)
+    for repo in "${repos[@]}"; do
+        if [[ "$mode" == "installed" ]]; then
+            biglinux_installed_section "$config_file" "biglinux-$repo" "$repo"
+        else
+            repo_section "$config_file" "biglinux-$repo" "https://$BIGLINUX_REPO_HOST/$repo"
+        fi
+    done
 }
 
 # The repositories the *installed* system resolves packages from, in the same
 # order the build uses. Separate from append_build_repos because the build also
-# needs the development mirror and update-stable, which the profile's own
-# pacman.conf already ships.
+# needs the development mirror and [biglinux-priority], which the profile's own
+# pacman.conf already ships above Manjaro's repositories.
 append_installed_repos() {
     local config_file="$1"
     append_community_repos "$config_file"
-    append_biglinux_repos "$config_file"
+    append_biglinux_repos "$config_file" installed
 }
 
 # Appended highest priority first: pacman prefers the earliest section that has
@@ -383,12 +427,12 @@ append_build_repos() {
         repo_section "$config_file" "bigiborg-${UNSTABLE_REPO_NAME:-}" \
             "https://$UNSTABLE_REPO_MIRROR"
     fi
-    # The handful of packages held back from stable. Both distributions build
-    # with it; until it was here, biglinux got it from the profile's
+    # The BigLinux builds of packages Manjaro also has (it replaced the old
+    # update-stable). Both distributions build with it, above Manjaro's [core]
+    # so it wins; until it was here, biglinux got it from the profile's
     # user-repos.conf instead -- see configure_build_repos for why that had to
     # stop.
-    repo_section "$config_file" biglinux-update-stable \
-        "https://$BIGLINUX_REPO_HOST/update-stable"
+    priority_section_first "$config_file"
     if [[ "$DISTRONAME" == "bigcommunity" ]]; then
         append_community_repos "$config_file"
     elif [[ "${COMMUNITY_TESTING:-false}" == "true" ]]; then
@@ -404,6 +448,8 @@ configure_build_repos() {
         /usr/share/manjaro-tools/pacman-multilib.conf; do
         append_build_repos "$conf"
         assert_present '^\[biglinux-stable\]' "$conf"
+        assert_present '^\[biglinux-extra\]' "$conf"
+        assert_present '^\[biglinux-priority\]' "$conf"
         # manjaro-tools ships this commented out; a chroot pulls hundreds of packages.
         sed -i -e '/ParallelDownloads/s/#//' \
             -e '/ParallelDownloads/s/ParallelDownloads =.*/ParallelDownloads = 10/' "$conf"
@@ -737,6 +783,7 @@ configure_profile() {
         assert_present '^\[community-stable\]' "$PROFILES_ROOT/shared/pacman.conf"
         assert_present '^\[community-extra\]' "$PROFILES_ROOT/shared/pacman.conf"
         assert_present '^\[biglinux-stable\]' "$PROFILES_ROOT/shared/pacman.conf"
+        assert_present '^\[biglinux-extra\]' "$PROFILES_ROOT/shared/pacman.conf"
     fi
 
     # Ship the branch actually being built (see each script's header).

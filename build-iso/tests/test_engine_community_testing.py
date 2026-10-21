@@ -22,7 +22,7 @@ BASE_ENV = {
     "DISTRONAME": "biglinux",
     "BIGLINUX_BRANCH": "stable",
     "BIGCOMMUNITY_BRANCH": "stable",
-    "BIGLINUX_REPO_HOST": "repo.biglinux.com.br",
+    "BIGLINUX_REPO_HOST": "packages.biglinux.com.br",
     "COMMUNITY_REPO_HOST": "repo.communitybig.org",
 }
 
@@ -50,17 +50,17 @@ def build_sections(tmp_path, **env):
 
 
 @pytest.mark.parametrize("branch,expected", [
-    ("stable", ["biglinux-update-stable", "community-testing", "biglinux-stable"]),
-    ("testing", ["biglinux-update-stable", "community-testing", "biglinux-testing", "biglinux-stable"]),
+    ("stable", ["biglinux-priority", "community-testing", "biglinux-stable", "biglinux-extra"]),
+    ("testing", ["biglinux-priority", "community-testing", "biglinux-testing", "biglinux-stable", "biglinux-extra"]),
 ])
 def test_the_build_puts_community_testing_above_the_biglinux_repositories(tmp_path, branch, expected):
     assert build_sections(tmp_path, BIGLINUX_BRANCH=branch, COMMUNITY_TESTING="true") == expected
 
 
 def test_the_build_is_unchanged_when_off(tmp_path):
-    assert build_sections(tmp_path, COMMUNITY_TESTING="false") == ["biglinux-update-stable", "biglinux-stable"]
+    assert build_sections(tmp_path, COMMUNITY_TESTING="false") == ["biglinux-priority", "biglinux-stable", "biglinux-extra"]
     # Unset is off too: callers that predate the option send nothing.
-    assert build_sections(tmp_path) == ["biglinux-update-stable", "biglinux-stable"]
+    assert build_sections(tmp_path) == ["biglinux-priority", "biglinux-stable", "biglinux-extra"]
 
 
 def test_a_bigcommunity_build_is_not_affected(tmp_path):
@@ -95,14 +95,14 @@ def installed_profile(tmp_path, **env):
 
 
 @pytest.mark.parametrize("branch,expected_tail", [
-    ("stable", ["community-testing", "biglinux-stable"]),
-    ("testing", ["community-testing", "biglinux-testing", "biglinux-stable"]),
+    ("stable", ["community-testing", "biglinux-stable", "biglinux-extra"]),
+    ("testing", ["community-testing", "biglinux-testing", "biglinux-stable", "biglinux-extra"]),
 ])
 def test_the_installed_system_gets_community_testing_above_biglinux(tmp_path, branch, expected_tail):
     proc, listed, _, _ = installed_profile(tmp_path, BIGLINUX_BRANCH=branch, COMMUNITY_TESTING="true")
     assert proc.returncode == 0, proc.stderr
-    # update-stable and Manjaro's repositories keep their place at the top.
-    assert listed[0] == "biglinux-update-stable"
+    # priority and Manjaro's repositories keep their place at the top.
+    assert listed[0] == "biglinux-priority"
     assert listed[-len(expected_tail):] == expected_tail
     assert "community-stable" not in listed
     assert "community-extra" not in listed

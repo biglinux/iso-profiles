@@ -166,16 +166,25 @@ release build:
 | `DISTRONAME` | detected | `biglinux` or `bigcommunity`, from the profile dirs |
 | `PROFILES_ROOT` | the checkout | build profiles living in another checkout |
 | `BUILD_MIRROR` | `http://mirrors.manjaro.org/repo` | the one mirror the whole Manjaro package set comes from; trailing slashes are stripped |
-| `BIGLINUX_REPO_HOST` | `repo.biglinux.com.br` | host of the BigLinux repositories the **build** installs from |
+| `BIGLINUX_REPO_HOST` | `packages.biglinux.com.br` | host of the BigLinux repositories (`priority`, `testing`, `stable`, `extra`) the **build** installs from |
 | `COMMUNITY_REPO_HOST` | `repo.communitybig.org` | same for the community repositories; bigcommunity only |
 | `MESA_TKG` | `false` | swap mesa for the TKG builds, on `latest` / `xanmod*` only (see `configure_profile`) |
 
 > [!NOTE]
-> `BIGLINUX_REPO_HOST` reaches both the build and the `[biglinux-testing]` section
-> written into the ISO's own pacman configuration. It does **not** reach
-> `[biglinux-stable]`, which the profile ships as a literal file — so a fork
-> serving its own packages still has to edit the `Server` line in
-> `<edition>/root-overlay/etc/pacman.conf` and `live-overlay/etc/pacman.conf`.
+> `BIGLINUX_REPO_HOST` is where the **build** installs from. The installed system
+> reads the BigLinux repositories through the mirrorlists of the
+> `biglinux-mirrorlist` package (`Include = /etc/pacman.d/biglinux-<repo>-mirrorlist`),
+> so a new mirror reaches users by a package upgrade. Only a fork (any other host)
+> gets `Server` lines with its host, in `[biglinux-testing]` and in the community
+> profile's sections; `[biglinux-priority]`, `[biglinux-stable]` and
+> `[biglinux-extra]` of the biglinux profile are a literal file
+> (`sources/common/overlays/root/etc/pacman.conf`) a fork edits.
+>
+> Order, both in the build and in the installed system: `[biglinux-priority]`
+> above Manjaro's `[core]` (it holds BigLinux builds of packages Manjaro also has,
+> so it must win), then Manjaro, the community repositories (bigcommunity), and
+> `[biglinux-testing]` (only on a testing build), `[biglinux-stable]` and
+> `[biglinux-extra]` last.
 
 ### How a kernel selector becomes a package
 

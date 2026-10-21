@@ -35,7 +35,7 @@ def sections(tmp_path, **env):
             "DISTRONAME": "biglinux",
             "BIGLINUX_BRANCH": "stable",
             "BIGCOMMUNITY_BRANCH": "stable",
-            "BIGLINUX_REPO_HOST": "repo.biglinux.com.br",
+            "BIGLINUX_REPO_HOST": "packages.biglinux.com.br",
             "COMMUNITY_REPO_HOST": "repo.communitybig.org",
             **env,
         },
@@ -45,29 +45,45 @@ def sections(tmp_path, **env):
     return [line.strip("[]") for line in written.splitlines() if line.startswith("[")], written
 
 
-def test_biglinux_stable_builds_from_update_stable_above_stable(tmp_path):
-    # update-stable holds the packages held back from stable, so it has to
-    # outrank it. biglinux used to receive it from user-repos.conf, which landed
-    # it *below* stable and duplicated stable on the way.
+def test_biglinux_stable_builds_from_priority_stable_and_extra(tmp_path):
+    # priority holds the BigLinux builds of packages Manjaro also has, so it has
+    # to outrank everything (it replaced update-stable). extra (AUR and
+    # third-party packages) always answers, below stable.
     listed, _ = sections(tmp_path)
-    assert listed == ["biglinux-update-stable", "biglinux-stable"]
+    assert listed == ["biglinux-priority", "biglinux-stable", "biglinux-extra"]
+
+
+def test_priority_goes_above_manjaros_core(tmp_path):
+    # Appended after Manjaro's repositories it would never win: pacman takes a
+    # package from the first section that has it.
+    config = tmp_path / "pacman.conf"
+    config.write_text("[options]\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n\n"
+                      "[extra]\nInclude = /etc/pacman.d/mirrorlist\n", encoding="utf-8")
+    script = f'source "{ENGINE}"\nappend_build_repos "{config}"\n'
+    subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True,
+                   env={"PATH": "/usr/bin:/bin", "DISTRONAME": "biglinux", "BIGLINUX_BRANCH": "stable",
+                        "BIGCOMMUNITY_BRANCH": "stable", "BIGLINUX_REPO_HOST": "packages.biglinux.com.br",
+                        "COMMUNITY_REPO_HOST": "repo.communitybig.org"})
+    listed = [line.strip("[]") for line in config.read_text(encoding="utf-8").splitlines() if line.startswith("[")]
+    assert listed == ["options", "biglinux-priority", "core", "extra", "biglinux-stable", "biglinux-extra"]
 
 
 def test_biglinux_testing_is_inserted_above_stable(tmp_path):
     # BigLinux branches are additive: testing wins where it has a package and
     # stable still answers for everything else.
     listed, _ = sections(tmp_path, BIGLINUX_BRANCH="testing")
-    assert listed == ["biglinux-update-stable", "biglinux-testing", "biglinux-stable"]
+    assert listed == ["biglinux-priority", "biglinux-testing", "biglinux-stable", "biglinux-extra"]
 
 
 def test_bigcommunity_keeps_its_own_repositories_between_the_two(tmp_path):
     listed, _ = sections(tmp_path, DISTRONAME="bigcommunity", BIGCOMMUNITY_BRANCH="testing")
     assert listed == [
-        "biglinux-update-stable",
+        "biglinux-priority",
         "community-testing",
         "community-stable",
         "community-extra",
         "biglinux-stable",
+        "biglinux-extra",
     ]
 
 
@@ -98,7 +114,7 @@ def test_the_arch_variable_reaches_pacman_unexpanded(tmp_path):
     # `$arch` is pacman's own variable; expanded here every Server line would
     # point at a directory that does not exist.
     _, written = sections(tmp_path)
-    assert written.count("/$arch") == 2
+    assert written.count("/$arch") == 3
 
 
 # The repository list the *installed* system gets.
@@ -125,7 +141,7 @@ def installed_sections(tmp_path, **env):
             "DISTRONAME": "bigcommunity",
             "BIGLINUX_BRANCH": "stable",
             "BIGCOMMUNITY_BRANCH": "stable",
-            "BIGLINUX_REPO_HOST": "repo.biglinux.com.br",
+            "BIGLINUX_REPO_HOST": "packages.biglinux.com.br",
             "COMMUNITY_REPO_HOST": "repo.communitybig.org",
             **env,
         },
@@ -139,17 +155,17 @@ def test_the_installed_system_always_gets_both_stable_repositories(tmp_path):
     # Every community ISO installs BigLinux packages, so a system without
     # biglinux-stable cannot update the packages it was installed with.
     listed, _ = installed_sections(tmp_path)
-    assert listed == ["community-stable", "community-extra", "biglinux-stable"]
+    assert listed == ["community-stable", "community-extra", "biglinux-stable", "biglinux-extra"]
 
 
 def test_the_installed_system_keeps_stable_when_community_is_testing(tmp_path):
     listed, _ = installed_sections(tmp_path, BIGCOMMUNITY_BRANCH="testing")
-    assert listed == ["community-testing", "community-stable", "community-extra", "biglinux-stable"]
+    assert listed == ["community-testing", "community-stable", "community-extra", "biglinux-stable", "biglinux-extra"]
 
 
 def test_the_installed_system_keeps_stable_when_biglinux_is_testing(tmp_path):
     listed, _ = installed_sections(tmp_path, BIGLINUX_BRANCH="testing")
-    assert listed == ["community-stable", "community-extra", "biglinux-testing", "biglinux-stable"]
+    assert listed == ["community-stable", "community-extra", "biglinux-testing", "biglinux-stable", "biglinux-extra"]
 
 
 def test_the_installed_system_orders_both_testing_branches_above_stable(tmp_path):
@@ -160,6 +176,7 @@ def test_the_installed_system_orders_both_testing_branches_above_stable(tmp_path
         "community-extra",
         "biglinux-testing",
         "biglinux-stable",
+        "biglinux-extra",
     ]
 
 
@@ -168,12 +185,21 @@ def test_the_installed_system_matches_the_order_the_build_uses(tmp_path):
     # an ISO ships one version and updates to another on first boot.
     installed, _ = installed_sections(tmp_path, BIGCOMMUNITY_BRANCH="testing")
     build, _written = sections(tmp_path, DISTRONAME="bigcommunity", BIGCOMMUNITY_BRANCH="testing")
-    assert installed == [name for name in build if name != "biglinux-update-stable"]
+    assert installed == [name for name in build if name != "biglinux-priority"]
 
 
-def test_the_installed_biglinux_stable_points_at_the_stable_directory(tmp_path):
+def test_the_installed_biglinux_repositories_use_the_mirrorlists(tmp_path):
+    # The servers come from the biglinux-mirrorlist package: a new mirror reaches
+    # users by a package upgrade instead of an edit to every pacman.conf.
     _listed, written = installed_sections(tmp_path)
-    assert "[biglinux-stable]\nSigLevel = PackageRequired\nServer = https://repo.biglinux.com.br/stable/$arch" in written
+    assert "[biglinux-stable]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/biglinux-stable-mirrorlist" in written
+    assert "[biglinux-extra]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/biglinux-extra-mirrorlist" in written
+    assert "Server =" not in written.split("[biglinux-stable]")[1]
+
+
+def test_a_fork_installs_with_its_own_server(tmp_path):
+    _listed, written = installed_sections(tmp_path, BIGLINUX_REPO_HOST="repo.myfork.org")
+    assert "[biglinux-stable]\nSigLevel = PackageRequired\nServer = https://repo.myfork.org/stable/$arch" in written
 
 
 def test_the_installed_system_declares_no_repository_twice(tmp_path):
@@ -225,7 +251,7 @@ def configure_profile_repositories(tmp_path, **env):
             "DISTRONAME": "bigcommunity",
             "BIGLINUX_BRANCH": "stable",
             "BIGCOMMUNITY_BRANCH": "stable",
-            "BIGLINUX_REPO_HOST": "repo.biglinux.com.br",
+            "BIGLINUX_REPO_HOST": "packages.biglinux.com.br",
             "COMMUNITY_REPO_HOST": "repo.communitybig.org",
             "PROFILE_PATH_EDITION": str(edition),
             **env,
@@ -266,7 +292,7 @@ def test_a_stable_build_keeps_working(tmp_path):
     proc, listed, _ = configure_profile_repositories(tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert "biglinux-testing" not in listed
-    assert listed == ["community-stable", "community-extra", "biglinux-stable"]
+    assert listed == ["community-stable", "community-extra", "biglinux-stable", "biglinux-extra"]
 
 
 def test_both_testing_branches_together(tmp_path):
@@ -280,6 +306,7 @@ def test_both_testing_branches_together(tmp_path):
         "community-extra",
         "biglinux-testing",
         "biglinux-stable",
+        "biglinux-extra",
     ]
 
 
@@ -297,7 +324,7 @@ def test_the_live_overlay_sees_the_same_repositories(tmp_path):
             "DISTRONAME": "bigcommunity",
             "BIGLINUX_BRANCH": "stable",
             "BIGCOMMUNITY_BRANCH": "stable",
-            "BIGLINUX_REPO_HOST": "repo.biglinux.com.br",
+            "BIGLINUX_REPO_HOST": "packages.biglinux.com.br",
             "COMMUNITY_REPO_HOST": "repo.communitybig.org",
         },
     )
