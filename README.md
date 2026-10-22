@@ -350,7 +350,7 @@ which also allows them to be distributed under the GPL-3.0. Every source file
 states its license in an `SPDX-License-Identifier` line.
 
 The profiles started as an import of Manjaro's
-[iso-profiles](https://gitlab.manjaro.org/profiles-and-settings/iso-profiles),
+[iso-profiles](https://code.manjaro.org/profiles/iso-profiles),
 and the live overlays carry files that belong to other projects:
 
 | File | Origin | License |
