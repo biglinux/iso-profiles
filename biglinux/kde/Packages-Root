@@ -39,8 +39,6 @@ man-pages
 manjaro-release
 manjaro-system
 mdadm
-mhwd
-mhwd-db
 mkinitcpio-openswap
 nano
 networkmanager
@@ -124,7 +122,6 @@ hdparm
 
   # tweaks
     biglinux-name
-    biglinux-l18n
     faster-mkinitcpio
     biglinux-improve-compatibility
     big-mount
@@ -152,7 +149,7 @@ espeakup
 
 ## Video and Driver Support
 # Biglinux
-  mhwd-biglinux
+  big-driver-manager-cli
   biglinux-vaapi
 libxvmc
 #lib32-mesa-vdpau
@@ -173,7 +170,6 @@ vulkan-tools
 vulkan-swrast
 xf86-video-amdgpu
 xf86-video-ati
-xf86-video-intel
 xf86-video-nouveau
 nvtop
 switcheroo-control
@@ -249,7 +245,6 @@ kldap
 
 ## Sound/Audio/Video
 # BigLinux
-  biglinux-meta-audio-config
   # pipewire-jack-dropin  # REMOVER ?
   biglinux-noise-reduction-pipewire
 alsa-firmware
@@ -299,7 +294,7 @@ ttf-lato
   pamac-updates-menu
   pacman-cleancache
   force-upgrade
-  debtap-mod
+  big-pkg-installer
   rpmtoarch
 pamac-gtk
 pamac-cli
@@ -433,10 +428,8 @@ duckypad-udev
 mooltipass-udev
 nintendo-udev
 onlykey-udev
-openrgb-udev-rules
-osc-udev-storage
+openrgb
 signal-hound-udev
-stadia-controller-udev
 usbtinyisp-udev
 usb-dirty-pages-udev
 game-devices-udev
