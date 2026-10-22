@@ -99,7 +99,7 @@ class WorkflowContractsTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 expected = ([str(root / target), "pull"] if existing else
                             [str(root), "clone",
-                             "https://gitlab.manjaro.org/profiles-and-settings/iso-profiles.git", target])
+                             "https://code.manjaro.org/profiles/iso-profiles.git", target])
                 self.assertEqual(log.read_text().splitlines(), expected)
 
     def test_publish_requires_gate_and_rechecks_downloaded_candidate(self):

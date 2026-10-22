@@ -122,7 +122,6 @@ hdparm
     big-first-boot
 
   # tweaks
-    biglinux-l18n
     faster-mkinitcpio
     biglinux-improve-compatibility
     big-mount
@@ -150,7 +149,7 @@ espeakup
 
 ## Video and Driver Support
 # Biglinux
-  mhwd-biglinux
+  big-driver-manager-cli
   biglinux-vaapi
 libxvmc
 #lib32-mesa-vdpau
@@ -296,7 +295,7 @@ ttf-lato
   pamac-updates-menu
   pacman-cleancache
   force-upgrade
-  debtap-mod
+  big-pkg-installer
   rpmtoarch
 pamac-gtk
 pamac-cli
@@ -428,10 +427,8 @@ duckypad-udev
 mooltipass-udev
 nintendo-udev
 onlykey-udev
-openrgb-udev-rules
-osc-udev-storage
+openrgb
 signal-hound-udev
-stadia-controller-udev
 usbtinyisp-udev
 usb-dirty-pages-udev
 game-devices-udev
