@@ -166,18 +166,19 @@ release build:
 | `DISTRONAME` | detected | `biglinux` or `bigcommunity`, from the profile dirs |
 | `PROFILES_ROOT` | the checkout | build profiles living in another checkout |
 | `BUILD_MIRROR` | `http://mirrors.manjaro.org/repo` | the one mirror the whole Manjaro package set comes from; trailing slashes are stripped |
-| `BIGLINUX_REPO_HOST` | `packages.biglinux.com.br` | host of the BigLinux repositories (`priority`, `testing`, `stable`, `extra`) the **build** installs from |
-| `COMMUNITY_REPO_HOST` | `repo.communitybig.org` | same for the community repositories; bigcommunity only |
+| `BIGLINUX_REPO_HOST` | `packages.biglinux.com.br` | host of the BigLinux repositories (`biglinux-priority`, `-testing`, `-stable`, `-extra`) |
+| `COMMUNITY_REPO_HOST` | `repo.communitybig.org` | same for the community repositories (`community-testing`, `-stable`, `-extra`) |
 | `MESA_TKG` | `false` | swap mesa for the TKG builds, on `latest` / `xanmod*` only (see `configure_profile`) |
 
 > [!NOTE]
-> `BIGLINUX_REPO_HOST` is where the **build** installs from. The installed system
-> reads the BigLinux repositories through the mirrorlists of the
-> `biglinux-mirrorlist` package (`Include = /etc/pacman.d/biglinux-<repo>-mirrorlist`),
-> so a new mirror reaches users by a package upgrade. Only a fork (any other host)
-> gets `Server` lines with its host, in `[biglinux-testing]` and in the community
-> profile's sections; `[biglinux-priority]`, `[biglinux-stable]` and
-> `[biglinux-extra]` of the biglinux profile are a literal file
+> Every BigLinux and community section, in the build and in the installed system,
+> is written the way Arch and Manjaro write theirs:
+> `Server = https://<host>/$repo/$arch`, pacman turning `$repo` into the section
+> name. Each repository is therefore served at `https://<host>/<section>/<arch>`
+> (`packages.biglinux.com.br/biglinux-stable/x86_64`,
+> `repo.communitybig.org/community-stable/x86_64`), and a fork's host needs the
+> same layout. `[biglinux-priority]`, `[biglinux-stable]` and `[biglinux-extra]`
+> of the biglinux profile are a literal file
 > (`sources/common/overlays/root/etc/pacman.conf`) a fork edits.
 >
 > Order, both in the build and in the installed system: `[biglinux-priority]`

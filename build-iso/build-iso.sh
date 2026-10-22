@@ -63,29 +63,22 @@ assert_present() {
 
 # `$arch` is pacman's variable, not ours: the format string stays single-quoted and
 # the caller passes the URL without it.
+# A repository whose Server is the full URL given (with pacman's $arch).
+server_section() {
+    local config_file="$1" name="$2" url="$3"
+    printf '[%s]\nSigLevel = PackageRequired\nServer = %s\n\n' \
+        "$name" "$url" >>"$config_file"
+}
+
+# A BigLinux or BigCommunity repository, written the way Arch and Manjaro write
+# theirs: the same line for every section, `$repo` being the section name, so
+# each repository is served at https://<host>/<section>/<arch>.
 repo_section() {
-    local config_file="$1" name="$2" url_base="$3"
-    printf '[%s]\nSigLevel = PackageRequired\nServer = %s/$arch\n\n' \
-        "$name" "$url_base" >>"$config_file"
+    local config_file="$1" name="$2" host="$3"
+    server_section "$config_file" "$name" "https://$host/\$repo/\$arch"
 }
 
-# The BigLinux repositories (packages.biglinux.com.br) and the mirrorlists the
-# biglinux-mirrorlist package installs, one per repository.
 BIGLINUX_DEFAULT_HOST="packages.biglinux.com.br"
-
-# A BigLinux repository in the *installed* system's pacman.conf: the mirrorlist of
-# the biglinux-mirrorlist package, so a new mirror reaches users by a package
-# upgrade instead of an edit to pacman.conf. A fork building from its own host
-# (BIGLINUX_REPO_HOST) gets its Server written instead.
-biglinux_installed_section() {
-    local config_file="$1" name="$2" path="$3"
-    if [[ "$BIGLINUX_REPO_HOST" == "$BIGLINUX_DEFAULT_HOST" ]]; then
-        printf '[%s]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/%s-mirrorlist\n\n' \
-            "$name" "$name" >>"$config_file"
-    else
-        repo_section "$config_file" "$name" "https://$BIGLINUX_REPO_HOST/$path"
-    fi
-}
 
 # [biglinux-priority] holds the BigLinux builds of packages Manjaro also has. pacman
 # takes a package from the first section that has it, so this section has to sit
@@ -93,7 +86,7 @@ biglinux_installed_section() {
 priority_section_first() {
     local config_file="$1" section
     section="$(mktemp)"
-    repo_section "$section" biglinux-priority "https://$BIGLINUX_REPO_HOST/priority"
+    repo_section "$section" biglinux-priority "$BIGLINUX_REPO_HOST"
     if grep -q '^\[core\]' "$config_file"; then
         awk -v block="$section" '
             !done && /^\[core\]/ { while ((getline line < block) > 0) print line; done = 1 }
@@ -310,7 +303,7 @@ prepare_host() {
         # Community build tools live in this repository, and the container needs
         # them before the chroots exist -- hence /etc/pacman.conf, not the
         # manjaro-tools configuration the chroots use.
-        repo_section /etc/pacman.conf community-extra "https://$COMMUNITY_REPO_HOST/extra"
+        repo_section /etc/pacman.conf community-extra "$COMMUNITY_REPO_HOST"
     fi
     pacman -Syu --noconfirm
     pacman -S --quiet --needed --noconfirm \
@@ -382,29 +375,22 @@ EOF
 append_community_repos() {
     local config_file="$1"
     if [[ "$BIGCOMMUNITY_BRANCH" == "testing" ]]; then
-        repo_section "$config_file" community-testing "https://$COMMUNITY_REPO_HOST/testing"
+        repo_section "$config_file" community-testing "$COMMUNITY_REPO_HOST"
     fi
-    repo_section "$config_file" community-stable "https://$COMMUNITY_REPO_HOST/stable"
-    repo_section "$config_file" community-extra "https://$COMMUNITY_REPO_HOST/extra"
+    repo_section "$config_file" community-stable "$COMMUNITY_REPO_HOST"
+    repo_section "$config_file" community-extra "$COMMUNITY_REPO_HOST"
 }
 
 # A BigCommunity system installs BigLinux packages, so the installed system
 # needs these as much as the build does -- see configure_profile. Testing is
 # conditional; stable and extra (AUR and third-party packages) always answer, in
 # that order, below everything else.
-#
-# `installed` writes the sections for the installed system (mirrorlists, see
-# biglinux_installed_section); without it, the build's own Server lines.
 append_biglinux_repos() {
-    local config_file="$1" mode="${2:-build}" repo
+    local config_file="$1" repo
     local -a repos=(stable extra)
     [[ "$BIGLINUX_BRANCH" == "testing" ]] && repos=(testing stable extra)
     for repo in "${repos[@]}"; do
-        if [[ "$mode" == "installed" ]]; then
-            biglinux_installed_section "$config_file" "biglinux-$repo" "$repo"
-        else
-            repo_section "$config_file" "biglinux-$repo" "https://$BIGLINUX_REPO_HOST/$repo"
-        fi
+        repo_section "$config_file" "biglinux-$repo" "$BIGLINUX_REPO_HOST"
     done
 }
 
@@ -415,7 +401,7 @@ append_biglinux_repos() {
 append_installed_repos() {
     local config_file="$1"
     append_community_repos "$config_file"
-    append_biglinux_repos "$config_file" installed
+    append_biglinux_repos "$config_file"
 }
 
 # Appended highest priority first: pacman prefers the earliest section that has
@@ -424,8 +410,8 @@ append_build_repos() {
     local config_file="$1"
     # Set only by development pipelines. First, so it outranks everything below.
     if [[ -n "${UNSTABLE_REPO_MIRROR:-}" ]]; then
-        repo_section "$config_file" "bigiborg-${UNSTABLE_REPO_NAME:-}" \
-            "https://$UNSTABLE_REPO_MIRROR"
+        server_section "$config_file" "bigiborg-${UNSTABLE_REPO_NAME:-}" \
+            "https://$UNSTABLE_REPO_MIRROR/\$arch"
     fi
     # The BigLinux builds of packages Manjaro also has (it replaced the old
     # update-stable). Both distributions build with it, above Manjaro's [core]
@@ -436,7 +422,7 @@ append_build_repos() {
     if [[ "$DISTRONAME" == "bigcommunity" ]]; then
         append_community_repos "$config_file"
     elif [[ "${COMMUNITY_TESTING:-false}" == "true" ]]; then
-        repo_section "$config_file" community-testing "https://$COMMUNITY_REPO_HOST/testing"
+        repo_section "$config_file" community-testing "$COMMUNITY_REPO_HOST"
     fi
     append_biglinux_repos "$config_file"
 }
