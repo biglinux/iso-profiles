@@ -188,18 +188,19 @@ def test_the_installed_system_matches_the_order_the_build_uses(tmp_path):
     assert installed == [name for name in build if name != "biglinux-priority"]
 
 
-def test_the_installed_biglinux_repositories_use_the_mirrorlists(tmp_path):
-    # The servers come from the biglinux-mirrorlist package: a new mirror reaches
-    # users by a package upgrade instead of an edit to every pacman.conf.
+def test_the_installed_biglinux_repositories_use_the_repo_line(tmp_path):
+    # The way Arch and Manjaro write theirs: the same line for every section,
+    # pacman turning $repo into the section name.
     _listed, written = installed_sections(tmp_path)
-    assert "[biglinux-stable]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/biglinux-stable-mirrorlist" in written
-    assert "[biglinux-extra]\nSigLevel = PackageRequired\nInclude = /etc/pacman.d/biglinux-extra-mirrorlist" in written
-    assert "Server =" not in written.split("[biglinux-stable]")[1]
+    line = "Server = https://packages.biglinux.com.br/$repo/$arch"
+    assert f"[biglinux-stable]\nSigLevel = PackageRequired\n{line}" in written
+    assert f"[biglinux-extra]\nSigLevel = PackageRequired\n{line}" in written
+    assert "Include" not in written.split("[biglinux-stable]")[1]
 
 
-def test_a_fork_installs_with_its_own_server(tmp_path):
+def test_a_fork_installs_with_its_own_host(tmp_path):
     _listed, written = installed_sections(tmp_path, BIGLINUX_REPO_HOST="repo.myfork.org")
-    assert "[biglinux-stable]\nSigLevel = PackageRequired\nServer = https://repo.myfork.org/stable/$arch" in written
+    assert "[biglinux-stable]\nSigLevel = PackageRequired\nServer = https://repo.myfork.org/$repo/$arch" in written
 
 
 def test_the_installed_system_declares_no_repository_twice(tmp_path):

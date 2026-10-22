@@ -61,8 +61,6 @@ exclude:
     reason: Telnet URI handler requires a URI argument
   - desktop_id: net.lutris.Lutris1.desktop
     reason: Lutris installer handler requires an installer file argument
-  - desktop_id: open-in-lutris.desktop
-    reason: Lutris installer helper requires installer metadata
   - desktop_id: openstreetmap-geo-handler.desktop
     reason: Geographic URI handler requires a geo URI argument
   - desktop_id: org.biglinux.SnapshotRestore.desktop
