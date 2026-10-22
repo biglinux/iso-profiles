@@ -725,7 +725,8 @@ add_community_testing_to_profile() {
 
     printf '\ncommunity-keyring\n' >>"$PROFILE_PATH_EDITION/Packages-Root"
 
-    # The live session does not populate its keyring: biglinux-livecd-key
+    # The live session does not populate its keyring: big-keyring-livecd (or
+    # biglinux-livecd-key, its former name, which XivaStudio still lists)
     # copies a prebuilt pubring.gpg/trustdb.gpg over it, with no local master
     # key to sign anything added later, and that prebuilt keyring does not
     # carry the community key -- so every community-testing package failed its
@@ -737,14 +738,17 @@ add_community_testing_to_profile() {
         if [[ -L "$live_list" ]]; then
             cp --remove-destination "$(readlink -f "$live_list")" "$live_list"
         fi
-        if grep -q '^biglinux-livecd-key\b' "$live_list"; then
-            sed -i 's/^biglinux-livecd-key\b/community-livecd-key/' "$live_list"
+        local biglinux_key='^(big-keyring-livecd|biglinux-livecd-key)\b'
+        if grep -qE "$biglinux_key" "$live_list"; then
+            sed -i -E "s/$biglinux_key/community-livecd-key/" "$live_list"
         else
             printf '\ncommunity-livecd-key\n' >>"$live_list"
         fi
-        assert_absent '^biglinux-livecd-key\b' "$live_list"
+        if grep -qE "$biglinux_key" "$live_list"; then
+            die "Packages-Live still lists the BigLinux live keyring next to community-livecd-key"
+        fi
         assert_present '^community-livecd-key\b' "$live_list"
-        msg "Packages-Live: community-livecd-key in place of biglinux-livecd-key"
+        msg "Packages-Live: community-livecd-key in place of the BigLinux live keyring"
     fi
 }
 

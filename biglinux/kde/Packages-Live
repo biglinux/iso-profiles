@@ -15,5 +15,5 @@ biglinux-livecd>=26.10.19-0000
 biglinux-grub-restore
 memtest86+
 memtest86+-efi
-biglinux-livecd-key
+big-keyring-livecd
 qefientrymanager

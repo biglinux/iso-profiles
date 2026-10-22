@@ -7,6 +7,7 @@
 # [biglinux-stable] otherwise. Both the build and the installed system get it,
 # and the installed system gets community-keyring to verify it with.
 
+import re
 import shutil
 import subprocess
 
@@ -69,14 +70,14 @@ def test_a_bigcommunity_build_is_not_affected(tmp_path):
     assert listed.count("community-testing") == 1
 
 
-def installed_profile(tmp_path, **env):
+def installed_profile(tmp_path, packages_live=None, **env):
     """The kde profile's real pacman.conf, run through configure_profile's repository steps."""
     edition = tmp_path / "biglinux" / "kde"
     etc = edition / "root-overlay" / "etc"
     etc.mkdir(parents=True)
     shutil.copy(KDE_PACMAN_CONF, etc / "pacman.conf")
     (edition / "Packages-Root").write_text("base\n  biglinux-keyring\n", encoding="utf-8")
-    shutil.copy(KDE_PACKAGES_LIVE, edition / "Packages-Live")
+    shutil.copy(packages_live or KDE_PACKAGES_LIVE, edition / "Packages-Live")
     script = (
         f'source "{ENGINE}"\n'
         f'bash "{SCRIPTS}/set-biglinux-branch.sh"\n'
@@ -170,24 +171,35 @@ def test_bad_values_are_rejected_before_the_build(tmp_path, env, message):
     assert message in proc.stderr
 
 
-def live_packages(tmp_path, **env):
-    installed_profile(tmp_path, **env)
-    return (tmp_path / "biglinux" / "kde" / "Packages-Live").read_text(encoding="utf-8").split()
+def live_packages(tmp_path, packages_live=None, **env):
+    """Package names of the live list, without version constraints (biglinux-livecd>=…)."""
+    installed_profile(tmp_path, packages_live, **env)
+    words = (tmp_path / "biglinux" / "kde" / "Packages-Live").read_text(encoding="utf-8").split()
+    return [re.split(r"[<>=]", word, maxsplit=1)[0] for word in words]
 
 
 def test_the_live_session_gets_a_keyring_that_trusts_the_community_key(tmp_path):
-    # biglinux-livecd-key's prebuilt keyring lacks the community key and the
+    # big-keyring-livecd's prebuilt keyring lacks the community key and the
     # live session has no master key to sign it with, so every community-testing
     # package failed its signature check there. Both packages install the same
     # files, hence a swap.
     packages = live_packages(tmp_path, COMMUNITY_TESTING="true")
     assert "community-livecd-key" in packages
-    assert "biglinux-livecd-key" not in packages
+    assert "big-keyring-livecd" not in packages
     # The live session itself stays BigLinux's.
     assert "biglinux-livecd" in packages
 
 
 def test_the_live_keyring_is_unchanged_when_off(tmp_path):
     packages = live_packages(tmp_path)
-    assert "biglinux-livecd-key" in packages
+    assert "big-keyring-livecd" in packages
     assert "community-livecd-key" not in packages
+
+
+def test_the_former_live_keyring_name_is_swapped_too(tmp_path):
+    # XivaStudio still lists biglinux-livecd-key, the former name.
+    live = tmp_path / "Packages-Live.xivastudio"
+    live.write_text("biglinux-livecd\nbiglinux-livecd-key\n", encoding="utf-8")
+    packages = live_packages(tmp_path, live, COMMUNITY_TESTING="true")
+    assert "community-livecd-key" in packages
+    assert "biglinux-livecd-key" not in packages
