@@ -49,9 +49,6 @@ gufw
 ## Connect Packages
 kamera
 
-## Package management
-pamac-tray-icon-plasma
-
 ## Display manager
 sddm
 sddm-kcm
