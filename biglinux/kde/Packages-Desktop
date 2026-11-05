@@ -19,13 +19,6 @@ kde-servicemenus-officeconverter
 libwebp-utils
 big-audio-converter
 big-video-converter
-big-audio-player
-big-video-player
-big-hardware-info
-big-network-info
-big-system-config
-bigrecorder
-ashypass
 rustdesk-bin
 kdegraphics-mobipocket
 gtk3
@@ -108,6 +101,10 @@ kwalletmanager
 gwenview
 gparted
 spectacle
+smplayer
+smplayer-themes
+mpv
+strawberry # VLC replaced by smplayer and strawberry, like a old times
 geoclue # Night Light automatic location mode
 gocryptfs # plasma-vault, for new vaults
 hspell # sonnet
