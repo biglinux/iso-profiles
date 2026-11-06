@@ -14,6 +14,12 @@ grub-theme-xivastudio
 biglinux-browser-selector
 xivastudio-mime
 vlc-plugins-all
+
+## Players kept for XivaStudio (KDE moved to the Big players)
+smplayer
+smplayer-themes
+mpv
+strawberry
 ## BigLinux
 big-parental-controls
 qbittorrent
@@ -113,10 +119,6 @@ kwalletmanager
 gwenview
 gparted
 spectacle
-smplayer
-smplayer-themes
-mpv
-strawberry # VLC replaced by smplayer and strawberry, like a old times
 geoclue # Night Light automatic location mode
 gocryptfs # plasma-vault, for new vaults
 hspell # sonnet
