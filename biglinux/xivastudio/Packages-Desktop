@@ -152,7 +152,6 @@ libpamac-flatpak-plugin
 flatpak-kcm  # ou flatseal
 ## Printing
 >extra manjaro-printer
->extra gtk3-print-backends
 
 ## Xorg Server and Graphics
 >multilib lib32-libva-intel-driver
