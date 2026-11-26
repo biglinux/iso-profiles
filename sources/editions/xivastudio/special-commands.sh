@@ -31,6 +31,7 @@ cp biglinux/xivastudio/live-overlay/usr/share/grub/themes/manjaro-live/xivastudi
   biglinux/xivastudio/live-overlay/usr/share/grub/themes/biglinux-live/xivastudio.png
 sed -i 's/file = "biglinux-grub.png"/file = "xivastudio.png"/' biglinux/xivastudio/live-overlay/usr/share/grub/themes/biglinux-live/theme.txt
 sed -i '/ExecStart=/s/biglinux/xivastudio/' biglinux/xivastudio/live-overlay/usr/lib/systemd/system/getty@.service
+sed -i '/Text mode/s/password: biglinux/password: xivastudio/' biglinux/xivastudio/live-overlay/usr/share/grub/cfg/kernels.cfg
 sed -i '/hostname=/s/hostname=.*/hostname="xivastudio"/' biglinux/xivastudio/profile.conf
 sed -i '/username=/s/username=.*/username="xivastudio"/' biglinux/xivastudio/profile.conf
 sed -i '/password=/s/password=.*/password="xivastudio"/' biglinux/xivastudio/profile.conf
