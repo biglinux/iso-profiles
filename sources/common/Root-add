@@ -33,8 +33,6 @@ ocl-icd
 #lib32-ocl-icd
 irqbalance
 x86_energy_perf_policy
-update-grub
-ntfs-3g
 hdparm
 
 # BigLinux Packages
@@ -122,7 +120,6 @@ virtualbox-guest-utils
   network-manager-disable-random-mac
   sysctl-network
 avahi
-networkmanager
 networkmanager-openvpn
 networkmanager-pptp
 networkmanager-vpnc
@@ -165,8 +162,6 @@ sshfs  # remote filesystem browser
   # pipewire-jack-dropin  # REMOVER ?
   biglinux-noise-reduction-pipewire
 alsa-firmware
-sof-firmware
-linux-firmware
 alsa-utils
 gst-libav
 gst-plugins-bad
