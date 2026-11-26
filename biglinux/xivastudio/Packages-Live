@@ -10,13 +10,12 @@ nbd
 testdisk
 timeshift
 calamares
-calamares-biglinux
-biglinux-livecd>=26.10.19-0000
+biglinux-livecd>=26.11.25-2022
 biglinux-grub-restore
 memtest86+
 memtest86+-efi
 qefientrymanager
-biglinux-livecd-key
+big-keyring-livecd
 calamares-xivastudio
 xivastudio-livecd
 falkon

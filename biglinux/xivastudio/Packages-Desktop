@@ -24,11 +24,9 @@ strawberry
 big-parental-controls
 qbittorrent
 big-preload
-kfind
 kdialog
 pavucontrol-qt
 kscreen
-wacomtablet
 plasma-thunderbolt
 kio-gdrive
 mintstick
@@ -51,7 +49,6 @@ rootactions-servicemenu-biglinux
 biglinux-session-and-themes
 biglinux-themes-gui
 sddm-theme-biglinux
-sddm-xorg-failsafe
 libreoffice-fresh
 libreoffice-fresh-pt-br
 keditbookmarks
@@ -76,7 +73,6 @@ plasma-keyboard
 bluedevil
 kde-gtk-config
 kdeplasma-addons
-kgamma
 kinfocenter
 kmenuedit
 kscreenlocker
@@ -153,25 +149,11 @@ flatpak-kcm  # ou flatseal
 ## Printing
 >extra manjaro-printer
 
-## Xorg Server and Graphics
+## Graphics
 >multilib lib32-libva-intel-driver
->multilib lib32-libva-mesa-driver
 libva-intel-driver
-libva-mesa-driver
 mesa-utils
 >multilib lib32-mesa-utils
-numlockx
-xdg-user-dirs
-xorg-server
-xorg-twm
-xorg-xinit
-xorg-xkill
-xorg-mkfontscale
-
-## Xorg Input Drivers
-xf86-input-elographics
-xf86-input-evdev
-xf86-input-libinput
 
 ## Misc
 
