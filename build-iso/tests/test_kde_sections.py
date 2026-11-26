@@ -9,9 +9,8 @@ from conftest import SCRIPTS
 SCRIPT = SCRIPTS.parent / "sources/editions/kde/special-commands.sh"
 SECTIONS = {
     "## Printing": "cups\n",
-    "## Xorg Server and Graphics": "xorg-server\n",
-    "## Xorg Input Drivers": "xf86-input-libinput\nxf86-input-void\n",
-    "## Misc": "mesa-utils\n",
+    "## Graphics": "libva-intel-driver\nmesa-utils\n",
+    "## Misc": "vulkan-tools\n",
 }
 BASE = "# BigLinux desktop\nplasma-desktop\n"
 PROFILE = "disable_systemd_live=('systemd-userdbd' 'mirrors-live')\n"
@@ -44,13 +43,13 @@ def upstream_text(sections):
 
 
 @pytest.mark.parametrize("final_newline", [False, True])
-def test_all_sections_are_copied_and_void_is_removed(tmp_path, final_newline):
+def test_all_sections_are_copied(tmp_path, final_newline):
     source = upstream_text(SECTIONS)
     if not final_newline:
         source = source.rstrip("\n")
     proc, generated = run_sections(tmp_path, source)
     assert proc.returncode == 0, proc.stderr
-    expected = BASE + upstream_text(SECTIONS).replace("xf86-input-void\n", "")
+    expected = BASE + upstream_text(SECTIONS)
     assert generated.read_text(encoding="utf-8").rstrip("\n") == expected.rstrip("\n")
 
 
@@ -82,7 +81,7 @@ def test_misc_may_be_empty_as_in_the_current_upstream_profile(tmp_path, misc):
     sections["## Misc"] = misc
     proc, generated = run_sections(tmp_path, upstream_text(sections))
     assert proc.returncode == 0, proc.stderr
-    expected = BASE + upstream_text(sections).replace("xf86-input-void\n", "")
+    expected = BASE + upstream_text(sections)
     assert generated.read_text(encoding="utf-8").rstrip("\n") == expected.rstrip("\n")
 
 
@@ -101,7 +100,7 @@ def test_whitespace_only_lines_end_a_section(tmp_path):
     for header, packages in SECTIONS.items():
         assert lines.count(header) == 1
         for package in packages.splitlines():
-            assert lines.count(package) == (0 if package == "xf86-input-void" else 1)
+            assert lines.count(package) == 1
 
 
 def test_kde_installs_drivers_without_mhwd(tmp_path):
