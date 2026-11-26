@@ -88,7 +88,6 @@ espeakup
 # Biglinux
   big-driver-manager-cli
   biglinux-vaapi
-libxvmc
 #lib32-mesa-vdpau
 #lib32-vulkan-intel
 #lib32-vulkan-radeon
@@ -105,13 +104,8 @@ vulkan-nouveau
 vulkan-radeon
 vulkan-tools
 vulkan-swrast
-xf86-video-amdgpu
-xf86-video-ati
-xf86-video-intel
-xf86-video-nouveau
 nvtop
 switcheroo-control
-xf86-input-synaptics
 alsa-oss
 
 ## Perdidos
@@ -124,12 +118,8 @@ wl-mirror
 ## Virtual Machines
 open-vm-tools
 qemu-guest-agent
-gdk-pixbuf-xlib
-xf86-input-vmmouse
 ## Imported from live
-# BigLinux
-  spice-vdagent-autostart-kde
-  virtualbox-guest-utils
+virtualbox-guest-utils
 
 ## Network
 # BigLinux

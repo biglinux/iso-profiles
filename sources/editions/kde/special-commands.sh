@@ -46,9 +46,10 @@ printf '%s\n\n' "${sectionContents[@]}" >> "$generatedDesktop"
 # BigLinux KDE installs its drivers with big-driver-manager-cli (live session
 # and installer), not mhwd. XivaStudio keeps mhwd for now, so this lives here
 # and not in sources/common: mhwd-live stays off in the live session, and the
-# offline repository drops what only mhwd's old configurations used.
+# offline repository drops what only mhwd's old configurations used. The Xorg
+# video drivers go too: nothing runs an Xorg session on Plasma 6.8.
 sed -i "s/^disable_systemd_live=('/disable_systemd_live=('mhwd-live' '/" biglinux/kde/profile.conf
 grep -q "^disable_systemd_live=('mhwd-live'" biglinux/kde/profile.conf
-grep -vE '(^|[[:space:]])(KERNEL-bbswitch|bumblebee|primus|lib32-primus|xf86-video-(intel|sisusb|voodoo|dummy))$' \
+grep -vE '(^|[[:space:]])(KERNEL-bbswitch|bumblebee|primus|lib32-primus|libxvmc|xf86-video-(amdgpu|ati|dummy|fbdev|intel|nouveau|sisusb|vesa|voodoo))$' \
     biglinux/kde/Packages-Mhwd > biglinux/kde/Packages-Mhwd.new
 mv biglinux/kde/Packages-Mhwd.new biglinux/kde/Packages-Mhwd

@@ -18,6 +18,8 @@ MHWD = (
     "KERNEL-bbswitch\n>multilib lib32-primus\nprimus\nbumblebee\n"
     "xf86-video-intel\nxf86-video-sisusb\nxf86-video-voodoo\nxf86-video-dummy\n"
     ">nonfree_x86_64 KERNEL-nvidia-open\nnvidia-prime\nxf86-video-amdgpu\n"
+    "xf86-video-ati\nxf86-video-fbdev\nxf86-video-nouveau\nxf86-video-vesa\n"
+    "libxvmc\nxf86-input-vmmouse\n"
 )
 
 
@@ -105,8 +107,10 @@ def test_whitespace_only_lines_end_a_section(tmp_path):
 
 def test_kde_installs_drivers_without_mhwd(tmp_path):
     """big-driver-manager-cli replaces mhwd on KDE: mhwd-live stays off and
-    the offline repository drops what only mhwd's old configurations used.
-    XivaStudio keeps mhwd, which is why this is not in sources/common."""
+    the offline repository drops what only mhwd's old configurations used,
+    the Xorg video drivers among them. xf86-input-vmmouse stays because
+    big-driver-manager-cli installs it on VMware guests. XivaStudio keeps
+    mhwd, which is why this is not in sources/common."""
     sections = {header: "pkg" for header in SECTIONS}
     proc, generated = run_sections(tmp_path, upstream_text(sections))
     assert proc.returncode == 0, proc.stderr
@@ -116,6 +120,6 @@ def test_kde_installs_drivers_without_mhwd(tmp_path):
     assert [line for line in mhwd if line] == [
         ">nonfree_x86_64 KERNEL-nvidia-open",
         "nvidia-prime",
-        "xf86-video-amdgpu",
+        "xf86-input-vmmouse",
     ]
 
