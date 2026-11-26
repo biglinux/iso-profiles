@@ -197,7 +197,7 @@ def test_the_live_keyring_is_unchanged_when_off(tmp_path):
 
 
 def test_the_former_live_keyring_name_is_swapped_too(tmp_path):
-    # XivaStudio still lists biglinux-livecd-key, the former name.
+    # biglinux-livecd-key, the former name, is swapped as well.
     live = tmp_path / "Packages-Live.xivastudio"
     live.write_text("biglinux-livecd\nbiglinux-livecd-key\n", encoding="utf-8")
     packages = live_packages(tmp_path, live, COMMUNITY_TESTING="true")

@@ -33,7 +33,6 @@ KERNEL-broadcom-wl
 libva-intel-driver
 libxaw
 libxpm
-libxvmc
 nvidia-prime
 open-vm-tools
 qemu-guest-agent
@@ -47,16 +46,4 @@ vulkan-radeon
 vulkan-swrast
 vulkan-virtio
 xf86-input-vmmouse
-xf86-video-amdgpu
-xf86-video-ati
-xf86-video-fbdev
-xf86-video-nouveau
-xf86-video-vesa
-#optimus-manager
 switcheroo-control
-
-nvidia-580xx-utils
-nvidia-580xx-settings
-KERNEL-nvidia-580xx
-KERNEL-nvidia-580xx-open
-lib32-nvidia-580xx-utils

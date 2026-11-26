@@ -225,10 +225,10 @@ There is always one. `Packages-Desktop` has no Manjaro base of its own, so
 `Desktop-add` is **written over it** rather than appended to it.
 
 That is not the whole story either: `editions/kde/special-commands.sh` then
-grafts four sections copied verbatim out of Manjaro's own KDE profile —
-`## Printing`, `## Xorg Server and Graphics`, `## Xorg Input Drivers` and
-`## Misc`. Which means `xorg-server` and the entire printing stack are *not* in
-`Desktop-add`, they arrive from upstream.
+grafts three sections copied verbatim out of Manjaro's own KDE profile —
+`## Printing`, `## Graphics` and `## Misc`. Which means the VA-API drivers and
+`mesa-utils` are *not* in `Desktop-add`, they arrive from upstream; `xorg-server`
+comes in as a dependency of `sddm`.
 
 So before you conclude "this package is missing" and add it: look in
 `special-commands.sh` first. It is probably already there, twice.

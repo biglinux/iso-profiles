@@ -65,8 +65,6 @@ wireless-regdb
 wpa_supplicant
 xfsprogs
 # Base
->i686 archlinux32-keyring
->multilib gcc-libs-multilib
 KERNEL-headers
 bash
 edk2-shell
@@ -80,7 +78,6 @@ grep
 gzip
 iproute2
 iputils
-linux-atm
 pacman
 pacman-contrib
 pciutils
@@ -95,7 +92,6 @@ make
 nvme-cli
 pacutils
 aspell-pt
-pulseaudio-alsa  # REMOVER ?
 bash-completion
 hunspell-en_us
 # # # qt5-translations
@@ -103,8 +99,6 @@ ocl-icd
 #lib32-ocl-icd
 irqbalance
 x86_energy_perf_policy
-update-grub
-ntfs-3g
 hdparm
 
 # BigLinux Packages
@@ -152,7 +146,6 @@ espeakup
 # Biglinux
   big-driver-manager-cli
   biglinux-vaapi
-libxvmc
 #lib32-mesa-vdpau
 #lib32-vulkan-intel
 #lib32-vulkan-radeon
@@ -169,14 +162,8 @@ vulkan-nouveau
 vulkan-radeon
 vulkan-tools
 vulkan-swrast
-xf86-video-amdgpu
-xf86-video-ati
-xf86-video-intel
-xf86-video-nouveau
 nvtop
 switcheroo-control
-xf86-input-synaptics
-alsa-oss
 
 ## Perdidos
 compsize
@@ -188,12 +175,8 @@ wl-mirror
 ## Virtual Machines
 open-vm-tools
 qemu-guest-agent
-gdk-pixbuf-xlib
-xf86-input-vmmouse
 ## Imported from live
-# BigLinux
-  spice-vdagent-autostart-kde
-  virtualbox-guest-utils
+virtualbox-guest-utils
 
 ## Network
 # BigLinux
@@ -201,7 +184,6 @@ xf86-input-vmmouse
   network-manager-disable-random-mac
   sysctl-network
 avahi
-networkmanager
 networkmanager-openvpn
 networkmanager-pptp
 networkmanager-vpnc
@@ -209,7 +191,6 @@ networkmanager-l2tp # VPN support for NetworkManager
 networkmanager-openconnect # VPN support for NetworkManager
 networkmanager-strongswan # VPN support for NetworkManager
 nss-mdns # NSS support for mDNS (optdepend for avahi)
-ntp
 mobile-broadband-provider-info
 modemmanager
 openresolv
@@ -232,26 +213,19 @@ gvfs-wsdd
 gvfs-onedrive
 gvfs-dnssd
 #gvfs-google
-mtpfs
-udiskie
 udisks2
 bluez
 bluez-hid2hci
-bluez-libs
 bluez-tools
 bluez-utils
 ## Optional dependencies for kdeconnect
 sshfs  # remote filesystem browser
-dhclient
-kldap
 
 ## Sound/Audio/Video
 # BigLinux
   # pipewire-jack-dropin  # REMOVER ?
   biglinux-noise-reduction-pipewire
 alsa-firmware
-sof-firmware
-linux-firmware
 alsa-utils
 gst-libav
 gst-plugins-bad
@@ -300,7 +274,6 @@ ttf-lato
   rpmtoarch
 pamac-gtk
 pamac-cli
->extra fwupd
 # # # manjaro-application-utility
 
 #Better wine support
@@ -370,7 +343,7 @@ system-config-printer
 simple-scan
 
 ## Optional dependencies for ark
-p7zip  # 7Z format support
+7zip  # 7Z format support
 unarchiver  # RAR format support
 cabextract
 
@@ -398,7 +371,7 @@ powertop
     rhvoice-voice-evgeniy-eng
 perl-file-mimeinfo
 zensu
-libappindicator-gtk3
+libappindicator
 xdg-user-dirs
 xdg-desktop-portal-kde
 appimagelauncher
@@ -446,5 +419,4 @@ ccid # Generic USB CCID/ICCD card readers
 automake
 autoconf
 libtool
->extra python-pip
 
