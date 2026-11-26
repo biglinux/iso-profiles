@@ -12,7 +12,6 @@ grep
 gzip
 iproute2
 iputils
-linux-atm
 pacman
 pacman-contrib
 pciutils
@@ -27,7 +26,6 @@ make
 nvme-cli
 pacutils
 aspell-pt
-pulseaudio-alsa  # REMOVER ?
 bash-completion
 hunspell-en_us
 # # # qt5-translations
@@ -104,7 +102,6 @@ vulkan-tools
 vulkan-swrast
 nvtop
 switcheroo-control
-alsa-oss
 
 ## Perdidos
 compsize
@@ -133,7 +130,6 @@ networkmanager-l2tp # VPN support for NetworkManager
 networkmanager-openconnect # VPN support for NetworkManager
 networkmanager-strongswan # VPN support for NetworkManager
 nss-mdns # NSS support for mDNS (optdepend for avahi)
-ntp
 mobile-broadband-provider-info
 modemmanager
 openresolv
@@ -156,18 +152,13 @@ gvfs-wsdd
 gvfs-onedrive
 gvfs-dnssd
 #gvfs-google
-mtpfs
-udiskie
 udisks2
 bluez
 bluez-hid2hci
-bluez-libs
 bluez-tools
 bluez-utils
 ## Optional dependencies for kdeconnect
 sshfs  # remote filesystem browser
-dhclient
-kldap
 
 ## Sound/Audio/Video
 # BigLinux
@@ -224,7 +215,6 @@ ttf-lato
   rpmtoarch
 pamac-gtk
 pamac-cli
->extra fwupd
 # # # manjaro-application-utility
 
 #Better wine support
@@ -372,5 +362,4 @@ ccid # Generic USB CCID/ICCD card readers
 automake
 autoconf
 libtool
->extra python-pip
 
