@@ -1,6 +1,4 @@
 # Base
->i686 archlinux32-keyring
->multilib gcc-libs-multilib
 KERNEL-headers
 bash
 edk2-shell
@@ -296,7 +294,7 @@ system-config-printer
 simple-scan
 
 ## Optional dependencies for ark
-p7zip  # 7Z format support
+7zip  # 7Z format support
 unarchiver  # RAR format support
 cabextract
 
@@ -326,7 +324,7 @@ powertop
     rhvoice-voice-evgeniy-eng
 perl-file-mimeinfo
 zensu
-libappindicator-gtk3
+libappindicator
 xdg-user-dirs
 xdg-desktop-portal-kde
 appimagelauncher

@@ -43,6 +43,10 @@ done
 # Command substitution strips trailing newlines; restore the section separator.
 printf '%s\n\n' "${sectionContents[@]}" >> "$generatedDesktop"
 
+# Mesa ships the VA-API driver itself now; the old package names only resolve
+# through its provides.
+sed -i -E '/^(>multilib )?(lib32-)?libva-mesa-driver$/d' "$generatedDesktop"
+
 # BigLinux KDE installs its drivers with big-driver-manager-cli (live session
 # and installer), not mhwd. XivaStudio keeps mhwd for now, so this lives here
 # and not in sources/common: mhwd-live stays off in the live session, and the

@@ -726,7 +726,7 @@ add_community_testing_to_profile() {
     printf '\ncommunity-keyring\n' >>"$PROFILE_PATH_EDITION/Packages-Root"
 
     # The live session does not populate its keyring: big-keyring-livecd (or
-    # biglinux-livecd-key, its former name, which XivaStudio still lists)
+    # biglinux-livecd-key, its former name)
     # copies a prebuilt pubring.gpg/trustdb.gpg over it, with no local master
     # key to sign anything added later, and that prebuilt keyring does not
     # carry the community key -- so every community-testing package failed its

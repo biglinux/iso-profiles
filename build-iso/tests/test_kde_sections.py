@@ -123,3 +123,17 @@ def test_kde_installs_drivers_without_mhwd(tmp_path):
         "xf86-input-vmmouse",
     ]
 
+
+def test_libva_mesa_driver_is_dropped(tmp_path):
+    """Mesa ships the VA-API driver; the old names only resolve through provides."""
+    sections = SECTIONS.copy()
+    sections["## Graphics"] = (
+        ">multilib lib32-libva-intel-driver\n>multilib lib32-libva-mesa-driver\n"
+        "libva-intel-driver\nlibva-mesa-driver\n"
+    )
+    proc, generated = run_sections(tmp_path, upstream_text(sections))
+    assert proc.returncode == 0, proc.stderr
+    lines = generated.read_text(encoding="utf-8").splitlines()
+    assert ">multilib lib32-libva-intel-driver" in lines
+    assert "libva-intel-driver" in lines
+    assert not [line for line in lines if "libva-mesa-driver" in line]
